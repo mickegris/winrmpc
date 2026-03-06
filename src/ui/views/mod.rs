@@ -1,0 +1,13 @@
+pub mod now_playing;
+pub mod queue;
+pub mod library;
+pub mod browser;
+pub mod search;
+pub mod artist;
+pub mod album;
+pub mod artists_list;
+pub mod albums_list;
+pub mod genres_list;
+pub mod genre_detail;
+pub mod partitions;
+pub mod outputs;
