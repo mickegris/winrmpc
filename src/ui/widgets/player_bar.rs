@@ -39,17 +39,14 @@ pub fn view<'a>(
 
     let is_playing = status.state == PlayState::Play;
 
-    let play_pause = styled_control_btn(
-        if is_playing { "Pause" } else { "Play" },
-        if is_playing { Message::Pause } else { Message::Play },
-        true,
-    );
-
     let controls = row![
         styled_control_btn("Prev", Message::Previous, false),
-        play_pause,
+        styled_control_btn(
+            if is_playing { "Pause" } else { "Play" },
+            if is_playing { Message::Pause } else { Message::Play },
+            true,
+        ),
         styled_control_btn("Next", Message::Next, false),
-        styled_control_btn("Stop", Message::Stop, false),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
@@ -84,24 +81,30 @@ pub fn view<'a>(
     .spacing(4)
     .align_y(Alignment::Center);
 
-    let repeat_label = if status.repeat { "Repeat: On" } else { "Repeat: Off" };
-    let random_label = if status.random { "Random: On" } else { "Random: Off" };
-    let single_label = match status.single {
-        SingleState::On => "Single: On",
-        SingleState::Oneshot => "Single: 1x",
-        SingleState::Off => "Single: Off",
+    let repeat_text = if status.repeat { "Repeat On" } else { "Repeat Off" };
+    let random_text = if status.random { "Random On" } else { "Random Off" };
+    let single_text = match status.single {
+        SingleState::On => "Single On",
+        SingleState::Oneshot => "Single 1x",
+        SingleState::Off => "Single Off",
     };
-    let consume_label = match status.consume {
-        ConsumeState::On => "Consume: On",
-        ConsumeState::Oneshot => "Consume: 1x",
-        ConsumeState::Off => "Consume: Off",
+    let consume_text = match status.consume {
+        ConsumeState::On => "Consume On",
+        ConsumeState::Oneshot => "Consume 1x",
+        ConsumeState::Off => "Consume Off",
     };
 
-    let mode_indicators = row![
-        mode_btn(repeat_label, status.repeat, Message::ToggleRepeat),
-        mode_btn(random_label, status.random, Message::ToggleRandom),
-        mode_btn(single_label, status.single != SingleState::Off, Message::ToggleSingle),
-        mode_btn(consume_label, status.consume != ConsumeState::Off, Message::ToggleConsume),
+    let mode_indicators = column![
+        row![
+            mode_btn(repeat_text, status.repeat, Message::ToggleRepeat),
+            mode_btn(random_text, status.random, Message::ToggleRandom),
+        ]
+        .spacing(2),
+        row![
+            mode_btn(single_text, status.single != SingleState::Off, Message::ToggleSingle),
+            mode_btn(consume_text, status.consume != ConsumeState::Off, Message::ToggleConsume),
+        ]
+        .spacing(2),
     ]
     .spacing(2);
 
@@ -186,14 +189,15 @@ fn mode_btn(label: &str, active: bool, msg: Message) -> Element<'_, Message> {
 
     button(
         container(
-            text(label.to_string()).size(10).color(fg),
+            text(label.to_string()).size(9).color(fg),
         )
         .center_x(Length::Fill)
         .center_y(Length::Fill),
     )
     .on_press(msg)
-    .height(22)
-    .padding([2, 6])
+    .height(18)
+    .width(70)
+    .padding([1, 4])
     .style(move |_theme: &iced::Theme, _status| button::Style {
         background: Some(bg.into()),
         text_color: fg,

@@ -70,21 +70,28 @@ pub fn view<'a>(
             .color(AppColors::TEXT_MUTED),
     );
     col = col.push(Space::with_height(8));
+    let album_dir = songs
+        .first()
+        .map(|s| {
+            if let Some(pos) = s.file.rfind('/') {
+                s.file[..pos].to_string()
+            } else {
+                s.file.clone()
+            }
+        })
+        .unwrap_or_default();
+
     col = col.push(
-        button(text("Play All").size(13))
-            .on_press(Message::QueueAddUri(
-                songs
-                    .first()
-                    .map(|s| {
-                        if let Some(pos) = s.file.rfind('/') {
-                            s.file[..pos].to_string()
-                        } else {
-                            s.file.clone()
-                        }
-                    })
-                    .unwrap_or_default(),
-            ))
-            .padding([6, 16]),
+        row![
+            button(text("Play All").size(13))
+                .on_press(Message::QueueAddAndPlay(album_dir.clone()))
+                .padding([6, 16]),
+            Space::with_width(8),
+            button(text("Queue All").size(13))
+                .on_press(Message::QueueAddOnly(album_dir))
+                .padding([6, 16]),
+        ]
+        .spacing(4),
     );
 
     // Wikipedia bio - expandable

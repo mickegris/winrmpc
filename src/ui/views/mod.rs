@@ -1,6 +1,5 @@
 pub mod now_playing;
 pub mod queue;
-pub mod library;
 pub mod browser;
 pub mod search;
 pub mod artist;

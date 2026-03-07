@@ -8,17 +8,54 @@ pub fn view<'a>(
     queue: &'a [Song],
     current_pos: Option<u32>,
 ) -> Element<'a, Message> {
-    let header = row![
-        text("#").size(12).width(40).color(AppColors::TEXT_MUTED),
-        text("Title").size(12).width(Length::FillPortion(3)).color(AppColors::TEXT_MUTED),
-        text("Artist").size(12).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
-        text("Album").size(12).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
-        text("Time").size(12).width(60).color(AppColors::TEXT_MUTED),
+    let toolbar = row![
+        text(format!("{} tracks", queue.len()))
+            .size(13)
+            .color(AppColors::TEXT_MUTED),
+        Space::with_width(Length::Fill),
+        button(text("Shuffle").size(12))
+            .on_press(Message::QueueShuffle)
+            .padding([4, 12]),
+        button(text("Clear").size(12))
+            .on_press(Message::QueueClear)
+            .padding([4, 12]),
     ]
     .spacing(8)
-    .padding([4, 12]);
+    .padding([8, 12]);
+
+    let header = container(
+        row![
+            text("#").size(11).width(40).color(AppColors::TEXT_MUTED),
+            text("Title").size(11).width(Length::FillPortion(3)).color(AppColors::TEXT_MUTED),
+            text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
+            text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
+            text("Time").size(11).width(55).color(AppColors::TEXT_MUTED),
+        ]
+        .spacing(8)
+        .padding([4, 12]),
+    )
+    .style(|_theme: &iced::Theme| container::Style {
+        border: iced::Border {
+            width: 1.0,
+            color: AppColors::BORDER,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
 
     let mut items = column![].spacing(0);
+
+    if queue.is_empty() {
+        items = items.push(
+            container(
+                text("Queue is empty. Add songs from Artists, Albums, Browse, or Search.")
+                    .size(14)
+                    .color(AppColors::TEXT_MUTED),
+            )
+            .padding(20),
+        );
+    }
+
     for (i, song) in queue.iter().enumerate() {
         let pos = song.pos.unwrap_or(0);
         let is_current = current_pos == Some(pos);
@@ -40,11 +77,26 @@ pub fn view<'a>(
         items = items.push(
             button(
                 row![
-                    text(format!("{}", pos + 1)).size(12).width(40).color(AppColors::TEXT_MUTED),
-                    text(song.display_title()).size(13).width(Length::FillPortion(3)).color(title_color),
-                    text(song.display_artist()).size(12).width(Length::FillPortion(2)).color(AppColors::TEXT_SECONDARY),
-                    text(song.display_album()).size(12).width(Length::FillPortion(2)).color(AppColors::TEXT_SECONDARY),
-                    text(song.format_duration()).size(12).width(60).color(AppColors::TEXT_MUTED),
+                    text(format!("{}", pos + 1))
+                        .size(12)
+                        .width(40)
+                        .color(AppColors::TEXT_MUTED),
+                    text(song.display_title())
+                        .size(12)
+                        .width(Length::FillPortion(3))
+                        .color(title_color),
+                    text(song.display_artist())
+                        .size(11)
+                        .width(Length::FillPortion(2))
+                        .color(AppColors::TEXT_SECONDARY),
+                    text(song.display_album())
+                        .size(11)
+                        .width(Length::FillPortion(2))
+                        .color(AppColors::TEXT_SECONDARY),
+                    text(song.format_duration())
+                        .size(11)
+                        .width(55)
+                        .color(AppColors::TEXT_MUTED),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -61,33 +113,10 @@ pub fn view<'a>(
         );
     }
 
-    let toolbar = row![
-        text(format!("{} tracks", queue.len()))
-            .size(13)
-            .color(AppColors::TEXT_MUTED),
-        Space::with_width(Length::Fill),
-        button(text("Shuffle").size(12))
-            .on_press(Message::QueueShuffle)
-            .padding([4, 12]),
-        button(text("Clear").size(12))
-            .on_press(Message::QueueClear)
-            .padding([4, 12]),
-    ]
-    .spacing(8)
-    .padding([8, 12]);
-
     container(
         column![
             toolbar,
-            container(header)
-                .style(|_theme: &iced::Theme| container::Style {
-                    border: iced::Border {
-                        width: 1.0,
-                        color: AppColors::BORDER,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
+            header,
             scrollable(items).height(Length::Fill),
         ]
         .spacing(0),

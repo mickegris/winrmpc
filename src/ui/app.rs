@@ -188,9 +188,30 @@ impl App {
             // =================================================================
             // Playback
             // =================================================================
-            Message::Play => self.mpd_cmd(|c| async move { c.play().await }),
-            Message::Pause => self.mpd_cmd(|c| async move { c.toggle_pause().await }),
-            Message::Stop => self.mpd_cmd(|c| async move { c.stop().await }),
+            Message::Play => {
+                let client = self.client.clone();
+                let status = self.status.state.clone();
+                Task::perform(
+                    async move {
+                        match status {
+                            PlayState::Pause => client.resume().await.ok(),
+                            PlayState::Stop => client.play().await.ok(),
+                            PlayState::Play => client.play().await.ok(),
+                        };
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::Pause => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.pause().await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::Stop => Task::none(),
             Message::Next => self.mpd_cmd(|c| async move { c.next().await }),
             Message::Previous => self.mpd_cmd(|c| async move { c.previous().await }),
             Message::SeekTo(pos) => {
@@ -316,9 +337,52 @@ impl App {
                     |_| Message::Tick,
                 )
             }
-            Message::QueueClear => self.mpd_cmd(|c| async move { c.clear().await }),
-            Message::QueueShuffle => self.mpd_cmd(|c| async move { c.shuffle().await }),
+            Message::QueueClear => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.clear().await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::QueueShuffle => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.shuffle().await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            } 
             Message::QueueAddUri(uri) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.add(&uri).await.ok();
+                        // Start playing if not already
+                        if let Ok(status) = client.status().await {
+                            if status.state == PlayState::Stop {
+                                client.play().await.ok();
+                            }
+                        }
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::QueueAddAndPlay(uri) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        // Clear queue, add the uri, and play
+                        client.clear().await.ok();
+                        client.add(&uri).await.ok();
+                        client.play().await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::QueueAddOnly(uri) => {
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -576,6 +640,11 @@ impl App {
                 Task::perform(
                     async move {
                         client.add(&uri).await.ok();
+                        if let Ok(status) = client.status().await {
+                            if status.state == PlayState::Stop {
+                                client.play().await.ok();
+                            }
+                        }
                     },
                     |_| Message::Tick,
                 )
@@ -753,7 +822,8 @@ impl App {
                 views::queue::view(&self.queue, self.status.song_pos)
             }
             View::Library => {
-                views::library::view()
+                // Redirect to Artists if someone navigates here
+                views::artists_list::view(&self.artists)
             }
             View::Artists => {
                 views::artists_list::view(&self.artists)
@@ -914,6 +984,7 @@ impl App {
     fn refresh_status(&self) -> Task<Message> {
         let c1 = self.client.clone();
         let c2 = self.client.clone();
+        let c3 = self.client.clone();
 
         let status_task = Task::perform(
             async move { c1.status().await.ok().map(Box::new) },
@@ -930,7 +1001,12 @@ impl App {
             |s| Message::CurrentSongUpdated(s),
         );
 
-        Task::batch([status_task, song_task])
+        let queue_task = Task::perform(
+            async move { c3.queue().await.unwrap_or_default() },
+            Message::QueueUpdated,
+        );
+
+        Task::batch([status_task, song_task, queue_task])
     }
 
     fn fetch_art(&self, uri: String, key: String) -> Task<Message> {
@@ -1074,6 +1150,29 @@ impl App {
                             .unwrap_or_default()
                     },
                     Message::PartitionsUpdated,
+                )
+            }
+            View::Library => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        let mut artists = client
+                            .list_tag("AlbumArtist")
+                            .await
+                            .unwrap_or_default();
+                        let track_artists = client
+                            .list_tag("Artist")
+                            .await
+                            .unwrap_or_default();
+                        for a in track_artists {
+                            if !a.is_empty() && !artists.contains(&a) {
+                                artists.push(a);
+                            }
+                        }
+                        artists.sort();
+                        artists
+                    },
+                    Message::ArtistsLoaded,
                 )
             }
             _ => Task::none(),

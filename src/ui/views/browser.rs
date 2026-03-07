@@ -47,6 +47,25 @@ pub fn view<'a>(
         r
     };
 
+    // Action buttons for current directory
+    let has_files = entries.iter().any(|e| matches!(e, DirectoryEntry::File(_)));
+    let dir_path = current_path.to_string();
+
+    let action_buttons = if has_files && !current_path.is_empty() {
+        row![
+            button(text("Play All").size(12))
+                .on_press(Message::QueueAddAndPlay(dir_path.clone()))
+                .padding([4, 12]),
+            Space::with_width(4),
+            button(text("Queue All").size(12))
+                .on_press(Message::QueueAddOnly(dir_path))
+                .padding([4, 12]),
+        ]
+        .spacing(4)
+    } else {
+        row![]
+    };
+
     let mut items = column![].spacing(0);
     for (i, entry) in entries.iter().enumerate() {
         let (prefix, label, action) = match entry {
@@ -60,7 +79,7 @@ pub fn view<'a>(
                     s.display_artist(),
                     s.display_title()
                 );
-                ("[file]", label, Message::BrowseAddToQueue(s.file.clone()))
+                ("[file]", label, Message::QueueAddUri(s.file.clone()))
             }
             DirectoryEntry::Playlist(p) => {
                 ("[list]", p.name.clone(), Message::QueueAddUri(p.name.clone()))
@@ -107,6 +126,8 @@ pub fn view<'a>(
                     text("Browse").size(24).color(AppColors::TEXT_PRIMARY),
                     Space::with_height(8),
                     breadcrumb,
+                    Space::with_height(8),
+                    action_buttons,
                 ]
             )
             .padding(12),

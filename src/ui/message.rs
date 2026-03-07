@@ -34,6 +34,8 @@ pub enum Message {
     QueueClear,
     QueueShuffle,
     QueueAddUri(String),
+    QueueAddAndPlay(String),
+    QueueAddOnly(String),
 
     // === Navigation ===
     NavigateTo(View),
