@@ -46,8 +46,8 @@ A modern, native Windows MPD (Music Player Daemon) client built entirely in Rust
 
 ## Screenshots
 
-<a href="assets/nowplaying.png">
-  <img src="assets/nowplaying.png" width="200" />
+<a href="assets/nowplaying.jpg">
+  <img src="assets/nowplaying.jpg" width="200" />
 </a>
 
 
