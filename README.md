@@ -1,4 +1,4 @@
-# WinRMPC
+# winrmpc
 
 A modern, native Windows MPD (Music Player Daemon) client built entirely in Rust with the [iced](https://iced.rs/) GUI framework.
 
