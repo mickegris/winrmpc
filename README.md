@@ -44,6 +44,13 @@ A modern, native Windows MPD (Music Player Daemon) client built entirely in Rust
 - Enable/disable outputs individually
 - Move outputs between partitions for flexible multi-room routing
 
+## Screenshots
+
+<a href="assets/nowplaying.png">
+  <img src="assets/nowplaying.png" width="200" />
+</a>
+
+
 ## Building from Source
 
 ### Prerequisites
