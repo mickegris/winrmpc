@@ -23,14 +23,15 @@ pub fn view<'a>(
         .sum();
     let total_mins = total_duration / 60;
 
-    let mut col = Column::new().spacing(0).padding(20);
+    // Fixed header
+    let mut header = Column::new().spacing(2).padding(20);
 
-    col = col.push(
+    header = header.push(
         button(text("<- Back").size(14).color(AppColors::ACCENT))
             .on_press(Message::GoBack)
             .padding([4, 8]),
     );
-    col = col.push(Space::with_height(12));
+    header = header.push(Space::with_height(12));
 
     let art: Element<'a, Message> = match art_handle {
         Some(handle) => image(handle.clone()).width(200).height(200).into(),
@@ -48,11 +49,11 @@ pub fn view<'a>(
             .into(),
     };
 
-    col = col.push(art);
-    col = col.push(Space::with_height(12));
-    col = col.push(text(album_name).size(22).color(AppColors::TEXT_PRIMARY));
-    col = col.push(Space::with_height(4));
-    col = col.push(
+    header = header.push(art);
+    header = header.push(Space::with_height(12));
+    header = header.push(text(album_name).size(22).color(AppColors::TEXT_PRIMARY));
+    header = header.push(Space::with_height(4));
+    header = header.push(
         button(text(artist).size(16).color(AppColors::ACCENT))
             .on_press(Message::ArtistSelected(artist.to_string()))
             .padding(0)
@@ -63,13 +64,14 @@ pub fn view<'a>(
                 ..Default::default()
             }),
     );
-    col = col.push(Space::with_height(4));
-    col = col.push(
+    header = header.push(Space::with_height(4));
+    header = header.push(
         text(format!("{} tracks  |  {} min", songs.len(), total_mins))
             .size(13)
             .color(AppColors::TEXT_MUTED),
     );
-    col = col.push(Space::with_height(8));
+    header = header.push(Space::with_height(8));
+
     let album_dir = songs
         .first()
         .map(|s| {
@@ -81,7 +83,7 @@ pub fn view<'a>(
         })
         .unwrap_or_default();
 
-    col = col.push(
+    header = header.push(
         row![
             button(text("Play All").size(13))
                 .on_press(Message::QueueAddAndPlay(album_dir.clone()))
@@ -94,12 +96,12 @@ pub fn view<'a>(
         .spacing(4),
     );
 
-    // Wikipedia bio - expandable
-    col = col.push(Space::with_height(12));
+    // Bio section
+    header = header.push(Space::with_height(8));
     match bio {
         Some(bio_text) => {
             let toggle_label = if show_bio { "Hide info" } else { "Show info" };
-            col = col.push(
+            header = header.push(
                 button(text(toggle_label).size(12).color(AppColors::ACCENT))
                     .on_press(Message::ToggleAlbumBio)
                     .padding([4, 8])
@@ -111,12 +113,10 @@ pub fn view<'a>(
                     }),
             );
             if show_bio {
-                col = col.push(Space::with_height(8));
-                col = col.push(
+                header = header.push(Space::with_height(4));
+                header = header.push(
                     container(
-                        text(bio_text)
-                            .size(12)
-                            .color(AppColors::TEXT_SECONDARY),
+                        text(bio_text).size(12).color(AppColors::TEXT_SECONDARY),
                     )
                     .padding(12)
                     .width(Length::Fill)
@@ -135,11 +135,15 @@ pub fn view<'a>(
         None => {}
     }
 
-    col = col.push(Space::with_height(16));
+    // Scrollable track list
+    let mut track_list = Column::new().spacing(0);
 
     if songs.is_empty() {
-        col = col.push(
-            text("Loading tracks...").size(14).color(AppColors::TEXT_MUTED),
+        track_list = track_list.push(
+            container(
+                text("Loading tracks...").size(14).color(AppColors::TEXT_MUTED),
+            )
+            .padding([10, 20]),
         );
     }
 
@@ -151,7 +155,7 @@ pub fn view<'a>(
         };
         let track_num = song.track.as_deref().unwrap_or("-");
 
-        col = col.push(
+        track_list = track_list.push(
             button(
                 row![
                     text(track_num.to_string())
@@ -181,8 +185,14 @@ pub fn view<'a>(
         );
     }
 
-    container(col)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    iced::widget::column![
+        header,
+        iced::widget::scrollable(
+            container(track_list).padding([0, 20])
+        )
+        .height(Length::Fill),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }

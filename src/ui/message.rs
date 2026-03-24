@@ -92,6 +92,8 @@ pub enum Message {
     ErrorOccurred(String),
     Tick,
     Noop,
+    UpdateDatabase,
+    DatabaseUpdating(u32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
