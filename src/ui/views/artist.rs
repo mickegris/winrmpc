@@ -10,16 +10,16 @@ pub fn view<'a>(
     bio: Option<&'a str>,
     show_bio: bool,
 ) -> Element<'a, Message> {
-    let mut col = Column::new().spacing(0).padding(20);
+    // Fixed header
+    let mut header = Column::new().spacing(4).padding(20);
 
-    col = col.push(
+    header = header.push(
         button(text("<- Back").size(14).color(AppColors::ACCENT))
             .on_press(Message::GoBack)
             .padding([4, 8]),
     );
-    col = col.push(Space::with_height(12));
+    header = header.push(Space::with_height(8));
 
-    // Artist header with art
     let artist_art_key = format!("artist:{artist_name}");
     let artist_art: Element<'a, Message> =
         if let Some(handle) = art_handles.get(&artist_art_key) {
@@ -42,7 +42,7 @@ pub fn view<'a>(
                 .into()
         };
 
-    col = col.push(
+    header = header.push(
         row![
             artist_art,
             Space::with_width(16),
@@ -58,32 +58,27 @@ pub fn view<'a>(
         .align_y(Alignment::Center),
     );
 
-    col = col.push(Space::with_height(12));
+    header = header.push(Space::with_height(8));
 
-    // Wikipedia bio - expandable
     match bio {
         Some(bio_text) => {
             let toggle_label = if show_bio { "Hide info" } else { "Show info" };
-            col = col.push(
-                button(
-                    text(toggle_label).size(12).color(AppColors::ACCENT),
-                )
-                .on_press(Message::ToggleArtistBio)
-                .padding([4, 8])
-                .style(|_theme: &iced::Theme, _status| button::Style {
-                    background: None,
-                    text_color: AppColors::ACCENT,
-                    border: iced::Border::default(),
-                    ..Default::default()
-                }),
+            header = header.push(
+                button(text(toggle_label).size(12).color(AppColors::ACCENT))
+                    .on_press(Message::ToggleArtistBio)
+                    .padding([4, 8])
+                    .style(|_theme: &iced::Theme, _status| button::Style {
+                        background: None,
+                        text_color: AppColors::ACCENT,
+                        border: iced::Border::default(),
+                        ..Default::default()
+                    }),
             );
             if show_bio {
-                col = col.push(Space::with_height(8));
-                col = col.push(
+                header = header.push(Space::with_height(4));
+                header = header.push(
                     container(
-                        text(bio_text)
-                            .size(12)
-                            .color(AppColors::TEXT_SECONDARY),
+                        text(bio_text).size(12).color(AppColors::TEXT_SECONDARY),
                     )
                     .padding(12)
                     .width(Length::Fill)
@@ -99,19 +94,20 @@ pub fn view<'a>(
                 );
             }
         }
-        None => {
-            col = col.push(
-                text("Loading info...").size(11).color(AppColors::TEXT_MUTED),
-            );
-        }
+        None => {}
     }
 
-    col = col.push(Space::with_height(16));
+    header = header.push(Space::with_height(8));
 
-    // Album list
+    // Scrollable album list
+    let mut album_list = Column::new().spacing(0);
+
     if albums.is_empty() {
-        col = col.push(
-            text("Loading albums...").size(14).color(AppColors::TEXT_MUTED),
+        album_list = album_list.push(
+            container(
+                text("Loading albums...").size(14).color(AppColors::TEXT_MUTED),
+            )
+            .padding([10, 20]),
         );
     }
 
@@ -144,7 +140,7 @@ pub fn view<'a>(
                     .into()
             };
 
-        col = col.push(
+        album_list = album_list.push(
             button(
                 row![
                     art_widget,
@@ -167,8 +163,14 @@ pub fn view<'a>(
         );
     }
 
-    container(col)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    iced::widget::column![
+        header,
+        iced::widget::scrollable(
+            container(album_list).padding([0, 20])
+        )
+        .height(Length::Fill),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }

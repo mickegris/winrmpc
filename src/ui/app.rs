@@ -795,6 +795,22 @@ impl App {
                 self.last_error = Some(e);
                 Task::none()
             }
+            Message::UpdateDatabase => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        match client.update(None).await {
+                            Ok(job_id) => Message::DatabaseUpdating(job_id),
+                            Err(e) => Message::ErrorOccurred(e.to_string()),
+                        }
+                    },
+                    |msg| msg,
+                )
+            }
+            Message::DatabaseUpdating(_job_id) => {
+                self.last_error = Some("Database update started".to_string());
+                Task::none()
+            }
             Message::Noop => Task::none(),
         }
     }
@@ -1179,13 +1195,13 @@ impl App {
         }
     }
 
-    fn settings_view(&self) -> Element<'_, Message> {
+fn settings_view(&self) -> Element<'_, Message> {
         use iced::widget::{button, column, container, text, text_input, Space};
 
-        let error_text: Element<Message> = match &self.last_error {
-            Some(e) => text(format!("Error: {e}"))
+        let error_text: Element<'_, Message> = match &self.last_error {
+            Some(e) => text(format!("Status: {e}"))
                 .size(13)
-                .color(AppColors::ERROR)
+                .color(AppColors::WARNING)
                 .into(),
             None => Space::with_height(0).into(),
         };
@@ -1230,6 +1246,18 @@ impl App {
             Space::with_height(16),
             button(text("Save & Reconnect").size(14))
                 .on_press(Message::SaveSettings)
+                .padding([8, 20]),
+            Space::with_height(20),
+            text("Database")
+                .size(16)
+                .color(AppColors::TEXT_PRIMARY),
+            Space::with_height(8),
+            text("Rescan your MPD music directory for new or changed files.")
+                .size(12)
+                .color(AppColors::TEXT_SECONDARY),
+            Space::with_height(8),
+            button(text("Update Database").size(14))
+                .on_press(Message::UpdateDatabase)
                 .padding([8, 20]),
         ]
         .spacing(4)
