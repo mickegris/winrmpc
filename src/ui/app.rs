@@ -58,6 +58,10 @@ pub struct App {
     show_artist_bio: bool,
     show_album_bio: bool,
 
+    // Radio UI
+    radio_add_name: String,
+    radio_add_url: String,
+
     // Partitions UI
     new_partition_name: String,
 
@@ -72,7 +76,9 @@ pub struct App {
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
-        let config = AppConfig::load();
+        let mut config = AppConfig::load();
+        config.ensure_builtin_stations();
+
         let client = MpdClient::new(&config.mpd_addr());
         let cache_dir = AppConfig::cache_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("./cache/art"));
@@ -113,6 +119,9 @@ impl App {
             album_bios: HashMap::new(),
             show_artist_bio: false,
             show_album_bio: false,
+
+            radio_add_name: String::new(),
+            radio_add_url: String::new(),
 
             new_partition_name: String::new(),
 
@@ -719,8 +728,15 @@ impl App {
                     async move {
                         client.switch_partition(&name).await.ok();
                     },
-                    |_| Message::Tick,
+                    |_| Message::RefreshAll,
                 )
+            }
+            Message::RefreshAll => {
+                if self.connected {
+                    self.fetch_all()
+                } else {
+                    Task::none()
+                }
             }
             Message::NewPartition(name) => {
                 if !name.is_empty() {
@@ -747,6 +763,46 @@ impl App {
             }
             Message::PartitionNameInput(s) => {
                 self.new_partition_name = s;
+                Task::none()
+            }
+
+            // =================================================================
+            // Radio
+            // =================================================================
+            Message::RadioPlay(url) => {
+                // Clear the queue, add the stream URL, and play
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.clear().await.ok();
+                        client.add(&url).await.ok();
+                        client.play().await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::RadioAddCustomName(name) => {
+                self.radio_add_name = name;
+                Task::none()
+            }
+            Message::RadioAddCustomUrl(url) => {
+                self.radio_add_url = url;
+                Task::none()
+            }
+            Message::RadioAddCustomSubmit => {
+                let name = self.radio_add_name.trim().to_string();
+                let url = self.radio_add_url.trim().to_string();
+                if !name.is_empty() && !url.is_empty() {
+                    self.config.add_radio_station(name, url);
+                    self.config.save().ok();
+                    self.radio_add_name.clear();
+                    self.radio_add_url.clear();
+                }
+                Task::none()
+            }
+            Message::RadioRemoveStation(url) => {
+                self.config.remove_radio_station(&url);
+                self.config.save().ok();
                 Task::none()
             }
 
@@ -892,6 +948,13 @@ impl App {
             }
             View::Search => {
                 views::search::view(&self.search_query, &self.search_results)
+            }
+            View::Radio => {
+                views::radio::view(
+                    &self.config.radio_stations,
+                    &self.radio_add_name,
+                    &self.radio_add_url,
+                )
             }
             View::Outputs => views::outputs::view(&self.outputs),
             View::Partitions => {
@@ -1190,6 +1253,10 @@ impl App {
                     },
                     Message::ArtistsLoaded,
                 )
+            }
+            View::Radio => {
+                // No async loading needed — stations come from config
+                Task::none()
             }
             _ => Task::none(),
         }

@@ -10,12 +10,47 @@ pub struct AppConfig {
     pub default_partition: Option<String>,
     pub art_cache_size_mb: u32,
     pub theme: ThemeConfig,
+    #[serde(default = "default_radio_stations")]
+    pub radio_stations: Vec<RadioStation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeConfig {
     pub dark_mode: bool,
     pub accent_color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RadioStation {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub is_builtin: bool,
+}
+
+fn default_radio_stations() -> Vec<RadioStation> {
+    vec![
+        RadioStation {
+            name: "SR P1".into(),
+            url: "https://live1.sr.se/p1-aac-320".into(),
+            is_builtin: true,
+        },
+        RadioStation {
+            name: "SR P2".into(),
+            url: "https://live1.sr.se/p2-aac-320".into(),
+            is_builtin: true,
+        },
+        RadioStation {
+            name: "SR P2 Flac".into(),
+            url: "https://live1.sr.se/p2-flac".into(),
+            is_builtin: true,
+        },
+        RadioStation {
+            name: "SR P3".into(),
+            url: "https://live1.sr.se/p3-aac-320".into(),
+            is_builtin: true,
+        },
+    ]
 }
 
 impl Default for AppConfig {
@@ -30,6 +65,7 @@ impl Default for AppConfig {
                 dark_mode: true,
                 accent_color: "#4fc3f7".into(),
             },
+            radio_stations: default_radio_stations(),
         }
     }
 }
@@ -73,5 +109,28 @@ impl AppConfig {
             std::fs::write(path, content)?;
         }
         Ok(())
+    }
+
+    /// Ensure all built-in stations are present (in case config was saved
+    /// before a new built-in was added).
+    pub fn ensure_builtin_stations(&mut self) {
+        let builtins = default_radio_stations();
+        for builtin in &builtins {
+            if !self.radio_stations.iter().any(|s| s.url == builtin.url) {
+                self.radio_stations.push(builtin.clone());
+            }
+        }
+    }
+
+    pub fn add_radio_station(&mut self, name: String, url: String) {
+        self.radio_stations.push(RadioStation {
+            name,
+            url,
+            is_builtin: false,
+        });
+    }
+
+    pub fn remove_radio_station(&mut self, url: &str) {
+        self.radio_stations.retain(|s| s.url != url || s.is_builtin);
     }
 }

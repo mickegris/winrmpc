@@ -10,3 +10,4 @@ pub mod genres_list;
 pub mod genre_detail;
 pub mod partitions;
 pub mod outputs;
+pub mod radio;

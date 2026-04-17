@@ -82,6 +82,13 @@ pub enum Message {
     DeletePartition(String),
     PartitionNameInput(String),
 
+    // === Radio ===
+    RadioPlay(String),
+    RadioAddCustomName(String),
+    RadioAddCustomUrl(String),
+    RadioAddCustomSubmit,
+    RadioRemoveStation(String),
+
     // === Settings ===
     HostChanged(String),
     PortChanged(String),
@@ -91,6 +98,7 @@ pub enum Message {
     // === Misc ===
     ErrorOccurred(String),
     Tick,
+    RefreshAll,
     Noop,
     UpdateDatabase,
     DatabaseUpdating(u32),
@@ -109,6 +117,7 @@ pub enum View {
     GenreDetail(String),
     Browser,
     Search,
+    Radio,
     Outputs,
     Partitions,
     Settings,

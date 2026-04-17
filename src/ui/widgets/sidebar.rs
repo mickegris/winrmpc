@@ -26,6 +26,7 @@ pub fn view<'a>(current_view: &View, connected: bool, mpd_addr: &str) -> Element
             nav_button("Genres", View::Genres, current_view),
             nav_button("Browse", View::Browser, current_view),
             nav_button("Search", View::Search, current_view),
+            nav_button("Radio", View::Radio, current_view),
             Space::with_height(Length::Fill),
             nav_button("Outputs", View::Outputs, current_view),
             nav_button("Partitions", View::Partitions, current_view),
