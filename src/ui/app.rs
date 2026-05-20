@@ -62,6 +62,10 @@ pub struct App {
     radio_add_name: String,
     radio_add_url: String,
 
+    // CD
+    cd_tracks: Vec<String>,
+    cd_probing: bool,
+
     // Partitions UI
     new_partition_name: String,
 
@@ -122,6 +126,9 @@ impl App {
 
             radio_add_name: String::new(),
             radio_add_url: String::new(),
+
+            cd_tracks: Vec::new(),
+            cd_probing: false,
 
             new_partition_name: String::new(),
 
@@ -709,13 +716,21 @@ impl App {
                     |_| Message::Tick,
                 )
             }
-            Message::MoveOutput(name) => {
+            Message::MoveOutput { output_name, target_partition } => {
                 let client = self.client.clone();
+                let current = self.status.partition
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string());
                 Task::perform(
                     async move {
-                        client.move_output(&name).await.ok();
+                        // Switch to target partition
+                        client.switch_partition(&target_partition).await.ok();
+                        // Move the output into the now-current partition
+                        client.move_output(&output_name).await.ok();
+                        // Switch back to where we were
+                        client.switch_partition(&current).await.ok();
                     },
-                    |_| Message::Tick,
+                    |_| Message::RefreshAll,
                 )
             }
 
@@ -807,8 +822,66 @@ impl App {
             }
 
             // =================================================================
-            // Settings
+            // CD
             // =================================================================
+            Message::CdPlayWhole => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.clear().await.ok();
+                        client.add("cdda:///").await.ok();
+                        client.play().await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::CdProbe => {
+                self.cd_tracks.clear();
+                self.cd_probing = true;
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        let mut tracks = Vec::new();
+                        for i in 1u32..=99 {
+                            let uri = format!("cdda:///{i}");
+                            match client.add_id(&uri).await {
+                                Ok(id) => {
+                                    client.delete_id(id).await.ok();
+                                    tracks.push(uri);
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        tracks
+                    },
+                    Message::CdTracksLoaded,
+                )
+            }
+            Message::CdTracksLoaded(tracks) => {
+                self.cd_tracks = tracks;
+                self.cd_probing = false;
+                Task::none()
+            }
+            Message::CdPlayTrack(uri) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.clear().await.ok();
+                        client.add(&uri).await.ok();
+                        client.play().await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::CdAddTrack(uri) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.add(&uri).await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
             Message::HostChanged(h) => {
                 self.settings_host = h;
                 Task::none()
@@ -956,7 +1029,10 @@ impl App {
                     &self.radio_add_url,
                 )
             }
-            View::Outputs => views::outputs::view(&self.outputs),
+            View::CD => {
+                views::cd::view(&self.cd_tracks, self.cd_probing)
+            }
+            View::Outputs => views::outputs::view(&self.outputs, &self.partitions),
             View::Partitions => {
                 let current = self
                     .status

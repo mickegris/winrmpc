@@ -11,3 +11,4 @@ pub mod genre_detail;
 pub mod partitions;
 pub mod outputs;
 pub mod radio;
+pub mod cd;
