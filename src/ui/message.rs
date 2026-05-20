@@ -74,7 +74,7 @@ pub enum Message {
 
     // === Outputs ===
     ToggleOutput(u32),
-    MoveOutput(String),
+    MoveOutput { output_name: String, target_partition: String },
 
     // === Partitions ===
     SwitchPartition(String),
@@ -88,6 +88,13 @@ pub enum Message {
     RadioAddCustomUrl(String),
     RadioAddCustomSubmit,
     RadioRemoveStation(String),
+
+    // === CD ===
+    CdProbe,
+    CdTracksLoaded(Vec<String>),
+    CdPlayWhole,
+    CdPlayTrack(String),
+    CdAddTrack(String),
 
     // === Settings ===
     HostChanged(String),
@@ -118,6 +125,7 @@ pub enum View {
     Browser,
     Search,
     Radio,
+    CD,
     Outputs,
     Partitions,
     Settings,
