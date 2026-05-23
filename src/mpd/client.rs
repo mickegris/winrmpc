@@ -61,14 +61,15 @@ impl MpdClient {
         self.cmd(cmd).await.map(|_| ())
     }
 
-    fn escape(s: &str) -> String {
-        s.replace('\\', "\\\\").replace('"', "\\\"")
-    }
-
     async fn cmd_binary(&self, cmd: &str) -> MpdResult<Option<(Vec<u8>, usize)>> {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
         conn.command_binary(cmd).await
+    }
+
+    /// Escape a user-supplied string value for inclusion inside MPD protocol quotes.
+    fn escape(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
     }
 
     // ========================================================================
