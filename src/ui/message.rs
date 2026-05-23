@@ -5,6 +5,7 @@ pub enum Message {
     // === Connection ===
     Connect,
     Connected(Result<(), String>),
+    Authenticated,
     Disconnected,
     ConnectionTick,
 

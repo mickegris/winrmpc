@@ -61,6 +61,10 @@ impl MpdClient {
         self.cmd(cmd).await.map(|_| ())
     }
 
+    fn escape(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+
     async fn cmd_binary(&self, cmd: &str) -> MpdResult<Option<(Vec<u8>, usize)>> {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
@@ -176,11 +180,11 @@ impl MpdClient {
     }
 
     pub async fn add(&self, uri: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("add \"{uri}\"")).await
+        self.cmd_ok(&format!("add \"{}\"", Self::escape(uri))).await
     }
 
     pub async fn add_id(&self, uri: &str) -> MpdResult<u32> {
-        let pairs = self.cmd(&format!("addid \"{uri}\"")).await?;
+        let pairs = self.cmd(&format!("addid \"{}\"", Self::escape(uri))).await?;
         pairs
             .iter()
             .find(|(k, _)| k == "Id")
@@ -224,38 +228,38 @@ impl MpdClient {
         filter_val: &str,
     ) -> MpdResult<Vec<String>> {
         let pairs = self
-            .cmd(&format!("list {tag} {filter_tag} \"{filter_val}\""))
+            .cmd(&format!("list {tag} {filter_tag} \"{}\"", Self::escape(filter_val)))
             .await?;
         Ok(commands::parse_tag_list(&pairs, tag))
     }
 
     pub async fn find(&self, tag: &str, value: &str) -> MpdResult<Vec<Song>> {
         let pairs = self
-            .cmd(&format!("find {tag} \"{value}\""))
+            .cmd(&format!("find {tag} \"{}\"", Self::escape(value)))
             .await?;
         Ok(commands::parse_songs(&pairs))
     }
 
     pub async fn search(&self, tag: &str, value: &str) -> MpdResult<Vec<Song>> {
         let pairs = self
-            .cmd(&format!("search {tag} \"{value}\""))
+            .cmd(&format!("search {tag} \"{}\"", Self::escape(value)))
             .await?;
         Ok(commands::parse_songs(&pairs))
     }
 
     pub async fn search_add(&self, tag: &str, value: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("searchadd {tag} \"{value}\"")).await
+        self.cmd_ok(&format!("searchadd {tag} \"{}\"", Self::escape(value))).await
     }
 
     pub async fn find_add(&self, tag: &str, value: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("findadd {tag} \"{value}\"")).await
+        self.cmd_ok(&format!("findadd {tag} \"{}\"", Self::escape(value))).await
     }
 
     pub async fn lsinfo(&self, path: &str) -> MpdResult<Vec<DirectoryEntry>> {
         let cmd = if path.is_empty() {
             "lsinfo".to_string()
         } else {
-            format!("lsinfo \"{path}\"")
+            format!("lsinfo \"{}\"", Self::escape(path))
         };
         let pairs = self.cmd(&cmd).await?;
         Ok(commands::parse_directory_listing(&pairs))
@@ -263,7 +267,7 @@ impl MpdClient {
 
     pub async fn update(&self, path: Option<&str>) -> MpdResult<u32> {
         let cmd = match path {
-            Some(p) => format!("update \"{p}\""),
+            Some(p) => format!("update \"{}\"", Self::escape(p)),
             None => "update".to_string(),
         };
         let pairs = self.cmd(&cmd).await?;
@@ -291,21 +295,21 @@ impl MpdClient {
 
     pub async fn list_playlist(&self, name: &str) -> MpdResult<Vec<Song>> {
         let pairs = self
-            .cmd(&format!("listplaylistinfo \"{name}\""))
+            .cmd(&format!("listplaylistinfo \"{}\"", Self::escape(name)))
             .await?;
         Ok(commands::parse_songs(&pairs))
     }
 
     pub async fn save_playlist(&self, name: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("save \"{name}\"")).await
+        self.cmd_ok(&format!("save \"{}\"", Self::escape(name))).await
     }
 
     pub async fn delete_playlist(&self, name: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("rm \"{name}\"")).await
+        self.cmd_ok(&format!("rm \"{}\"", Self::escape(name))).await
     }
 
     pub async fn load_playlist(&self, name: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("load \"{name}\"")).await
+        self.cmd_ok(&format!("load \"{}\"", Self::escape(name))).await
     }
 
     // ========================================================================
@@ -330,7 +334,7 @@ impl MpdClient {
     }
 
     pub async fn move_output(&self, name: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("moveoutput \"{name}\"")).await
+        self.cmd_ok(&format!("moveoutput \"{}\"", Self::escape(name))).await
     }
 
     // ========================================================================
@@ -343,15 +347,15 @@ impl MpdClient {
     }
 
     pub async fn switch_partition(&self, name: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("partition \"{name}\"")).await
+        self.cmd_ok(&format!("partition \"{}\"", Self::escape(name))).await
     }
 
     pub async fn new_partition(&self, name: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("newpartition \"{name}\"")).await
+        self.cmd_ok(&format!("newpartition \"{}\"", Self::escape(name))).await
     }
 
     pub async fn delete_partition(&self, name: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("delpartition \"{name}\"")).await
+        self.cmd_ok(&format!("delpartition \"{}\"", Self::escape(name))).await
     }
 
     // ========================================================================
@@ -367,7 +371,7 @@ impl MpdClient {
 
         loop {
             let result = self
-                .cmd_binary(&format!("albumart \"{uri}\" {offset}"))
+                .cmd_binary(&format!("albumart \"{}\" {offset}", Self::escape(uri)))
                 .await;
 
             match result {
@@ -407,7 +411,7 @@ impl MpdClient {
 
         loop {
             let result = self
-                .cmd_binary(&format!("readpicture \"{uri}\" {offset}"))
+                .cmd_binary(&format!("readpicture \"{}\" {offset}", Self::escape(uri)))
                 .await;
 
             match result {
@@ -463,6 +467,6 @@ impl MpdClient {
     // ========================================================================
 
     pub async fn password(&self, pw: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("password \"{pw}\"")).await
+        self.cmd_ok(&format!("password \"{}\"", Self::escape(pw))).await
     }
 }

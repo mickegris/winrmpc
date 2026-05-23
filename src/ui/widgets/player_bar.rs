@@ -46,6 +46,7 @@ pub fn view<'a>(
             if is_playing { Message::Pause } else { Message::Play },
             true,
         ),
+        styled_control_btn("Stop", Message::Stop, false),
         styled_control_btn("Next", Message::Next, false),
     ]
     .spacing(4)
