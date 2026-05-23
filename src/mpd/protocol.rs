@@ -68,6 +68,9 @@ impl MpdConnection {
         loop {
             let mut line = String::new();
             self.reader.read_line(&mut line).await?;
+            if line.is_empty() {
+                return Err(MpdError::Connection("Connection closed unexpectedly".into()));
+            }
             let trimmed = line.trim_end();
 
             if trimmed == "OK" {
@@ -97,6 +100,9 @@ impl MpdConnection {
         loop {
             let mut line = String::new();
             self.reader.read_line(&mut line).await?;
+            if line.is_empty() {
+                return Err(MpdError::Connection("Connection closed unexpectedly".into()));
+            }
             let trimmed = line.trim_end();
 
             if trimmed == "OK" {
@@ -118,6 +124,9 @@ impl MpdConnection {
         loop {
             let mut line = String::new();
             self.reader.read_line(&mut line).await?;
+            if line.is_empty() {
+                return Err(MpdError::Connection("Connection closed unexpectedly".into()));
+            }
             let trimmed = line.trim_end();
 
             if trimmed == "OK" {

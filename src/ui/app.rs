@@ -174,6 +174,18 @@ impl App {
                         self.connected = true;
                         self.last_error = None;
                         tracing::info!("Connected to MPD");
+                        if let Some(pw) = self.config.mpd_password.clone() {
+                            let client = self.client.clone();
+                            return Task::perform(
+                                async move {
+                                    client.password(&pw).await.map_err(|e| e.to_string())
+                                },
+                                |r| match r {
+                                    Ok(()) => Message::Authenticated,
+                                    Err(e) => Message::ErrorOccurred(format!("MPD auth failed: {e}")),
+                                },
+                            );
+                        }
                         return self.fetch_all();
                     }
                     Err(e) => {
@@ -182,6 +194,10 @@ impl App {
                     }
                 }
                 Task::none()
+            }
+            Message::Authenticated => {
+                self.last_error = None;
+                self.fetch_all()
             }
             Message::ConnectionTick => {
                 if !self.connected {
@@ -227,7 +243,7 @@ impl App {
                     |_| Message::Tick,
                 )
             }
-            Message::Stop => Task::none(),
+            Message::Stop => self.mpd_cmd(|c| async move { c.stop().await }),
             Message::Next => self.mpd_cmd(|c| async move { c.next().await }),
             Message::Previous => self.mpd_cmd(|c| async move { c.previous().await }),
             Message::SeekTo(pos) => {
@@ -546,7 +562,7 @@ impl App {
             Message::ArtistAlbumsLoaded(artist, albums) => {
                 let mut tasks = Vec::new();
                 for album in &albums {
-                    let key = format!("{artist}-{album}");
+                    let key = format!("{artist}\x1f{album}");
                     if !self.art_handles.contains_key(&key) {
                         // Find first song of this album to get URI for MPD art
                         let c = self.client.clone();
@@ -1182,12 +1198,7 @@ impl App {
                     return (key, Some(data));
                 }
 
-                // Parse artist and album from the key (format: "artist-album")
-                let parts: Vec<&str> = key.splitn(2, '-').collect();
-                if parts.len() == 2 {
-                    let artist = parts[0];
-                    let album = parts[1];
-
+                if let Some((artist, album)) = key.split_once('\x1f') {
                     // Try MusicBrainz / Cover Art Archive
                     if let Some(data) = mb.fetch_album_art(artist, album).await {
                         let _ = cache.store(&key, &data).await;

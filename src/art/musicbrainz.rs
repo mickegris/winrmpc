@@ -53,6 +53,24 @@ struct MbArtist {
     release_groups: Option<Vec<MbReleaseGroup>>,
 }
 
+/// Response shape when fetching an entity with `?inc=url-rels`
+#[derive(Debug, Deserialize)]
+struct MbEntityWithUrls {
+    relations: Option<Vec<MbUrlRelation>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MbUrlRelation {
+    #[serde(rename = "type")]
+    rel_type: String,
+    url: Option<MbUrlResource>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MbUrlResource {
+    resource: String,
+}
+
 impl MusicBrainzClient {
     pub fn new() -> Self {
         let http = Client::builder()
@@ -70,9 +88,10 @@ impl MusicBrainzClient {
         album: &str,
     ) -> Option<Vec<u8>> {
         // Try release-group search first (more reliable for cover art)
-        let rg_id = self.search_release_group(artist, album).await?;
-        if let Some(data) = self.fetch_cover_art_release_group(&rg_id).await {
-            return Some(data);
+        if let Some(rg_id) = self.search_release_group(artist, album).await {
+            if let Some(data) = self.fetch_cover_art_release_group(&rg_id).await {
+                return Some(data);
+            }
         }
 
         // Fallback: search for individual release
@@ -187,11 +206,8 @@ impl MusicBrainzClient {
 
     async fn download_image(&self, url: &str) -> Option<Vec<u8>> {
         let resp = self.http.get(url).send().await.ok()?;
-        if !resp.status().is_success() && !resp.status().is_redirection() {
-            // CAA returns 307 redirects, reqwest follows them automatically
-            if resp.status().as_u16() == 404 {
-                return None;
-            }
+        if !resp.status().is_success() {
+            return None;
         }
         let bytes = resp.bytes().await.ok()?;
         if bytes.is_empty() {
@@ -213,40 +229,132 @@ impl MusicBrainzClient {
             .replace('}', "")
     }
 
-    /// Fetch a Wikipedia summary for an artist
+    /// Fetch a Wikipedia summary for an artist.
+    ///
+    /// Strategy:
+    /// 1. Look up the artist in MusicBrainz and follow the curated English Wikipedia
+    ///    URL relation — this gives the exact disambiguated page title (e.g. "Tool_(band)").
+    /// 2. Fall back to trying common music-role suffixes ("(band)", "(musician)", …)
+    ///    and accepting only articles whose text looks music-related.
     pub async fn fetch_artist_bio(&self, artist: &str) -> Option<String> {
-        self.fetch_wikipedia_summary(artist).await
-    }
+        // Step 1: MusicBrainz Wikipedia link
+        if let Some(artist_id) = self.search_artist(artist).await {
+            if let Some(wiki_url) = self.get_wikipedia_url("artist", &artist_id).await {
+                if let Some(title) = Self::wiki_title_from_url(&wiki_url) {
+                    if let Some(summary) = self.fetch_wikipedia_summary(&title).await {
+                        return Some(summary);
+                    }
+                }
+            }
+        }
 
-    /// Fetch a Wikipedia summary for an album
-    pub async fn fetch_album_bio(&self, artist: &str, album: &str) -> Option<String> {
-        // Try "Album (album)" first, then "Album (Artist album)", then just "Album"
-        let queries = vec![
-            format!("{album} (album)"),
-            format!("{album} ({artist} album)"),
-            album.to_string(),
-        ];
-
-        for query in queries {
+        // Step 2: disambiguation suffix fallback
+        let suffixes = ["(band)", "(musician)", "(singer)", "(rapper)", "(DJ)", ""];
+        for suffix in suffixes {
+            let query = if suffix.is_empty() {
+                artist.to_string()
+            } else {
+                format!("{artist} {suffix}")
+            };
             if let Some(summary) = self.fetch_wikipedia_summary(&query).await {
-                // Basic check that we got a music-related article
-                let lower = summary.to_lowercase();
-                if lower.contains("album")
-                    || lower.contains("music")
-                    || lower.contains("song")
-                    || lower.contains("track")
-                    || lower.contains("record")
-                    || lower.contains("band")
-                    || lower.contains("artist")
-                    || lower.contains("singer")
-                    || lower.contains(artist.to_lowercase().as_str())
-                {
+                if Self::is_music_article(&summary, artist) {
                     return Some(summary);
                 }
             }
         }
 
         None
+    }
+
+    /// Fetch a Wikipedia summary for an album.
+    ///
+    /// Strategy:
+    /// 1. Look up the release group in MusicBrainz and follow its Wikipedia URL relation.
+    /// 2. Fall back to "(album)" / "({artist} album)" / bare title with content validation.
+    pub async fn fetch_album_bio(&self, artist: &str, album: &str) -> Option<String> {
+        // Step 1: MusicBrainz Wikipedia link
+        if let Some(rg_id) = self.search_release_group(artist, album).await {
+            if let Some(wiki_url) = self.get_wikipedia_url("release-group", &rg_id).await {
+                if let Some(title) = Self::wiki_title_from_url(&wiki_url) {
+                    if let Some(summary) = self.fetch_wikipedia_summary(&title).await {
+                        return Some(summary);
+                    }
+                }
+            }
+        }
+
+        // Step 2: disambiguation suffix fallback
+        let queries = [
+            format!("{album} (album)"),
+            format!("{album} ({artist} album)"),
+            album.to_string(),
+        ];
+        for query in &queries {
+            if let Some(summary) = self.fetch_wikipedia_summary(query).await {
+                if Self::is_music_article(&summary, artist) {
+                    return Some(summary);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Fetch the English Wikipedia URL relation stored on a MusicBrainz entity.
+    /// `entity_type` is e.g. "artist" or "release-group".
+    async fn get_wikipedia_url(&self, entity_type: &str, id: &str) -> Option<String> {
+        sleep(Duration::from_millis(1100)).await;
+
+        let url = format!("{MB_BASE}/{entity_type}/{id}?inc=url-rels&fmt=json");
+        let resp = self.http.get(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let detail: MbEntityWithUrls = resp.json().await.ok()?;
+        let relations = detail.relations?;
+
+        relations.into_iter().find_map(|rel| {
+            if rel.rel_type == "wikipedia" {
+                let resource = rel.url?.resource;
+                // Only accept English Wikipedia
+                if resource.contains("en.wikipedia.org") {
+                    return Some(resource);
+                }
+            }
+            None
+        })
+    }
+
+    /// Extract the page title from a Wikipedia URL.
+    /// e.g. "https://en.wikipedia.org/wiki/Tool_(band)" → "Tool_(band)"
+    fn wiki_title_from_url(url: &str) -> Option<String> {
+        let (_, after) = url.rsplit_once("/wiki/")?;
+        // Strip any fragment (e.g. #History)
+        let title = after.split('#').next().unwrap_or(after);
+        if title.is_empty() {
+            return None;
+        }
+        // Decode percent-encoding so our fetch function can re-encode correctly
+        Some(
+            urlencoding::decode(title)
+                .unwrap_or_else(|_| title.into())
+                .into_owned(),
+        )
+    }
+
+    /// Return true if the Wikipedia article text looks like it is about a
+    /// musical artist or release rather than some unrelated topic.
+    fn is_music_article(text: &str, artist: &str) -> bool {
+        let lower = text.to_lowercase();
+        lower.contains("band")
+            || lower.contains("musician")
+            || lower.contains("singer")
+            || lower.contains("rapper")
+            || lower.contains("album")
+            || lower.contains("discography")
+            || lower.contains("record label")
+            || lower.contains("music")
+            || lower.contains(&artist.to_lowercase())
     }
 
     async fn fetch_wikipedia_summary(&self, title: &str) -> Option<String> {
@@ -262,7 +370,7 @@ impl MusicBrainzClient {
 
         let json: serde_json::Value = resp.json().await.ok()?;
 
-        // Only use "standard" type articles (not disambiguation pages etc)
+        // Only use "standard" type articles (not disambiguation pages)
         let page_type = json.get("type")?.as_str()?;
         if page_type != "standard" {
             return None;

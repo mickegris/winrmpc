@@ -124,7 +124,7 @@ impl Song {
     }
 
     pub fn art_key(&self) -> String {
-        format!("{}-{}", self.display_album_artist(), self.display_album())
+        format!("{}\x1f{}", self.display_album_artist(), self.display_album())
     }
 }
 
