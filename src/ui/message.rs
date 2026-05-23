@@ -5,7 +5,6 @@ pub enum Message {
     // === Connection ===
     Connect,
     Connected(Result<(), String>),
-    Authenticated,
     Disconnected,
     ConnectionTick,
 
@@ -37,6 +36,8 @@ pub enum Message {
     QueueAddUri(String),
     QueueAddAndPlay(String),
     QueueAddOnly(String),
+    PlayAlbum(String),
+    QueueAlbum(String),
 
     // === Navigation ===
     NavigateTo(View),

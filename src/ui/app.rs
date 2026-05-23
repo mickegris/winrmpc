@@ -171,22 +171,22 @@ impl App {
             Message::Connected(result) => {
                 match result {
                     Ok(()) => {
-                        self.connected = true;
+                        // Do NOT set connected=true yet. Keep the ConnectionTick
+                        // subscription slow so no Tick fires before startup completes.
                         self.last_error = None;
                         tracing::info!("Connected to MPD");
-                        if let Some(pw) = self.config.mpd_password.clone() {
-                            let client = self.client.clone();
-                            return Task::perform(
-                                async move {
-                                    client.password(&pw).await.map_err(|e| e.to_string())
-                                },
-                                |r| match r {
-                                    Ok(()) => Message::Authenticated,
-                                    Err(e) => Message::ErrorOccurred(format!("MPD auth failed: {e}")),
-                                },
-                            );
-                        }
-                        return self.fetch_all();
+                        let client = self.client.clone();
+                        let partition = self.config.default_partition.clone();
+                        return Task::perform(
+                            async move {
+                                if let Some(p) = &partition {
+                                    if let Err(e) = client.switch_partition(p).await {
+                                        tracing::warn!("Could not restore partition '{p}': {e}");
+                                    }
+                                }
+                            },
+                            |_| Message::RefreshAll,
+                        );
                     }
                     Err(e) => {
                         self.connected = false;
@@ -195,8 +195,8 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Authenticated => {
-                self.last_error = None;
+            Message::RefreshAll => {
+                self.connected = true;
                 self.fetch_all()
             }
             Message::ConnectionTick => {
@@ -204,6 +204,11 @@ impl App {
                     let client = self.client.clone();
                     Task::perform(
                         async move {
+                            // Skip reconnect if the TCP connection is already up
+                            // (e.g. startup partition switch is still in progress).
+                            if client.is_connected().await {
+                                return Ok(());
+                            }
                             client.connect().await.map_err(|e| e.to_string())
                         },
                         Message::Connected,
@@ -419,6 +424,31 @@ impl App {
                 Task::perform(
                     async move {
                         client.add(&uri).await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::PlayAlbum(album) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.clear().await.ok();
+                        client.find_add("Album", &album).await.ok();
+                        client.play().await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::QueueAlbum(album) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.find_add("Album", &album).await.ok();
+                        if let Ok(status) = client.status().await {
+                            if status.state == PlayState::Stop {
+                                client.play().await.ok();
+                            }
+                        }
                     },
                     |_| Message::Tick,
                 )
@@ -754,6 +784,8 @@ impl App {
             // Partitions
             // =================================================================
             Message::SwitchPartition(name) => {
+                self.config.default_partition = Some(name.clone());
+                self.config.save().ok();
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -761,13 +793,6 @@ impl App {
                     },
                     |_| Message::RefreshAll,
                 )
-            }
-            Message::RefreshAll => {
-                if self.connected {
-                    self.fetch_all()
-                } else {
-                    Task::none()
-                }
             }
             Message::NewPartition(name) => {
                 if !name.is_empty() {
@@ -1198,6 +1223,7 @@ impl App {
                     return (key, Some(data));
                 }
 
+                // Parse artist and album from the key (format: "artist\x1falbum")
                 if let Some((artist, album)) = key.split_once('\x1f') {
                     // Try MusicBrainz / Cover Art Archive
                     if let Some(data) = mb.fetch_album_art(artist, album).await {

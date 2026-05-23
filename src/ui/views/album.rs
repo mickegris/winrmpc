@@ -72,25 +72,14 @@ pub fn view<'a>(
     );
     header = header.push(Space::with_height(8));
 
-    let album_dir = songs
-        .first()
-        .map(|s| {
-            if let Some(pos) = s.file.rfind('/') {
-                s.file[..pos].to_string()
-            } else {
-                s.file.clone()
-            }
-        })
-        .unwrap_or_default();
-
     header = header.push(
         row![
             button(text("Play All").size(13))
-                .on_press(Message::QueueAddAndPlay(album_dir.clone()))
+                .on_press(Message::PlayAlbum(album_name.to_string()))
                 .padding([6, 16]),
             Space::with_width(8),
             button(text("Queue All").size(13))
-                .on_press(Message::QueueAddOnly(album_dir))
+                .on_press(Message::QueueAlbum(album_name.to_string()))
                 .padding([6, 16]),
         ]
         .spacing(4),
