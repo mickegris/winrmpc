@@ -1,48 +1,57 @@
 # winrmpc
 
-A modern, native Windows MPD (Music Player Daemon) client built entirely in Rust with the [iced](https://iced.rs/) GUI framework.
+A modern, native Windows MPD (Music Player Daemon) client built in Rust with the [iced](https://iced.rs/) GUI framework. Runs without a console window; all diagnostic output is accessible through the built-in **Log** view.
 
 ## Features
 
 ### Music Playback & Control
-- Full playback controls: play, pause, previous, next, seek
+- Full transport controls: play, pause, stop, previous, next, seek
 - Volume control with slider
 - Repeat, random, single, and consume mode toggles
 - Real-time progress bar with elapsed/total time display
 - Now Playing view with album art
 
 ### Library Management
-- **Artist browsing** with album listings and artist art fetched from the internet
+- **Artist browsing** with album listings and artist art fetched from MusicBrainz
 - **Album browsing** with cover art, track listings, and total duration
 - **Genre browsing** with drill-down into albums per genre
 - **File/folder browser** — navigate your MPD music directory tree directly
-- **Search** — full-text search across your library with results grouped by album
-- Clickable navigation: click an artist name on an album to jump to that artist, click an album to see its tracks, etc.
+- **Search** — full-text search across your library
 
 ### Album & Artist Art
 - Art fetched from MPD embedded tags (FLAC, ALAC, MP3, etc.)
 - Fallback to **MusicBrainz** and **Cover Art Archive** for album covers
-- Artist images sourced from their most popular album cover via MusicBrainz
+- Artist images sourced from MusicBrainz
 - All art cached to disk — fast on subsequent loads
-- Art displayed on Now Playing, artist detail, album detail, and search views
 
 ### Wikipedia Integration
-- Artist biographies fetched from English Wikipedia
-- Album descriptions fetched from English Wikipedia
+- Artist biographies and album descriptions fetched from English Wikipedia via MusicBrainz URL relations
 - Expandable info boxes on artist and album detail views
-- Results cached in memory for instant subsequent views
+
+### CD Playback
+- Play whole disc or individual tracks
+- **Load Tracks** probes the disc and lists tracks with durations
+- Optional CD device path in Settings (e.g. `/dev/sr0`) for direct lsinfo support
+- Does not request album art for CD tracks, preventing MPD lockups
+
+### Radio
+- Built-in Swedish Radio streams (SR P1, P2, P3)
+- Add and remove custom stream URLs
 
 ### Partitions (Multi-Room Support)
-- **Full MPD partition support** — a feature rarely found in MPD clients
-- List, create, and delete partitions
-- Switch between partitions on the fly
-- Each partition has its own independent queue, player state, and audio outputs
-- Perfect for **multi-room audio setups** where different rooms play different music from the same MPD instance
+- List, create, and delete MPD partitions
+- Switch between partitions; selected partition persists across restarts
+- Move audio outputs between partitions
 
 ### Audio Outputs
 - View all configured MPD audio outputs
 - Enable/disable outputs individually
-- Move outputs between partitions for flexible multi-room routing
+- Move outputs between partitions
+
+### Log View
+- All application events visible inside the app under **Log** (below Settings)
+- No console window required — runs cleanly as a background-free desktop app
+- Clear button to reset the log
 
 ## Screenshots
 
@@ -68,7 +77,6 @@ A modern, native Windows MPD (Music Player Daemon) client built entirely in Rust
   <img src="assets/outputs.jpg" width="200" />
 </a>
 
-
 ## Building from Source
 
 ### Prerequisites
@@ -77,67 +85,62 @@ A modern, native Windows MPD (Music Player Daemon) client built entirely in Rust
 
 Download and install Rust from [https://rust-lang.org/tools/install](https://rust-lang.org/tools/install).
 
-On Windows, this installs `rustup` and `cargo`. During installation, choose **option 1 (default)** which selects the `x86_64-pc-windows-msvc` target.
+During installation choose **option 1 (default)** which selects the `x86_64-pc-windows-msvc` target.
 
 #### 2. Install Visual Studio Build Tools
 
-Rust on Windows requires the MSVC C++ build tools for linking.
+Rust on Windows requires the MSVC C++ build tools.
 
 **Option A: Visual Studio Build Tools (smaller download)**
 1. Download [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-2. Run the installer
-3. Check **"Desktop development with C++"**
-4. Click Install (~1-2 GB download)
+2. Run the installer, check **"Desktop development with C++"**, click Install (~1-2 GB)
 
-**Option B: Full Visual Studio**
-1. If you already have Visual Studio 2022 installed, open the **Visual Studio Installer**
-2. Click **Modify** on your installation
-3. Ensure **"Desktop development with C++"** workload is checked
+**Option B: Full Visual Studio**  
+Open the **Visual Studio Installer**, click **Modify**, ensure **"Desktop development with C++"** is checked.
 
-> **Note:** Visual Studio Code (VS Code) is a different product and does *not* include the required build tools.
+> **Note:** Visual Studio *Code* is a different product and does not include the required build tools.
 
 ### Build
 
 ```bash
-git clone https://github.com/yourusername/winrmpc.git
+git clone https://github.com/mickegris/winrmpc.git
 cd winrmpc
 cargo build --release
 ```
 
-The first build downloads all dependencies and compiles everything. This takes several minutes. Subsequent builds are incremental and much faster.
+The first build downloads all dependencies and compiles everything (several minutes). Subsequent builds are incremental and much faster.
 
-The compiled binary will be at:
+The compiled binary:
 ```
 target\release\winrmpc.exe
 ```
 
-For development builds (faster compilation, slower runtime):
+For development builds (faster compilation):
 ```bash
 cargo build
 ```
 
 ### Verify Rust toolchain
 
-If you encounter linker errors, verify your toolchain:
+If you encounter linker errors:
 ```bash
 rustup show
 ```
-
-You should see `stable-x86_64-pc-windows-msvc` as the active toolchain. If it shows `gnu` instead:
+You should see `stable-x86_64-pc-windows-msvc`. If it shows `gnu`:
 ```bash
 rustup default stable-x86_64-pc-windows-msvc
 ```
 
 ## Configuration
 
-On first launch, WinRMPC tries to connect to MPD at `127.0.0.1:6600`. Use the **Settings** view (bottom of the sidebar) to change the connection details.
+On first launch winrmpc connects to MPD at `127.0.0.1:6600`. Use the **Settings** view (bottom of the sidebar) to change the connection and optionally set a CD device path.
 
-Configuration is stored at:
+Configuration file:
 ```
-%APPDATA%\winrmpc\winrmpc\config.toml
+%APPDATA%\winrmpc\winrmpc\config\config.toml
 ```
 
-Album art cache is stored at:
+Album art cache:
 ```
 %LOCALAPPDATA%\winrmpc\winrmpc\cache\
 ```
@@ -148,6 +151,7 @@ Album art cache is stored at:
 mpd_host = "192.168.1.50"
 mpd_port = 6600
 # mpd_password = "your_password"
+# cd_device = "/dev/sr0"
 art_cache_size_mb = 500
 
 [theme]

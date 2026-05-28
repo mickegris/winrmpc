@@ -32,6 +32,7 @@ pub fn view<'a>(current_view: &View, connected: bool, mpd_addr: &str) -> Element
             nav_button("Outputs", View::Outputs, current_view),
             nav_button("Partitions", View::Partitions, current_view),
             nav_button("Settings", View::Settings, current_view),
+            nav_button("Log", View::Log, current_view),
             Space::with_height(8),
         ]
         .spacing(1)
