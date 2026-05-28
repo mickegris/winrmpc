@@ -100,6 +100,10 @@ pub enum Message {
     CdAddTrack(String),
     CdDeviceChanged(String),
 
+    // === Log ===
+    LogClear,
+    LogCopyAll,
+
     // === Settings ===
     HostChanged(String),
     PortChanged(String),
@@ -133,6 +137,7 @@ pub enum View {
     Outputs,
     Partitions,
     Settings,
+    Log,
 }
 
 impl Default for View {

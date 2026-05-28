@@ -15,7 +15,10 @@ Windows MPD (Music Player Daemon) client built in **Rust** with **Iced 0.13** (G
 
 ```
 src/
-  main.rs                    Entry point, sets up tracing, launches iced
+  main.rs                    Entry point: windows_subsystem, tracing layers, window icon, launches iced
+  logger.rs                  InAppLayer (tracing Layer) + static ring-buffer; get_entries() / clear_entries()
+  icon.rs                    Programmatic 32×32 RGBA icon (equalizer bars); make_icon() → iced::window::Icon
+  build.rs                   Generates 16×16+32×32 BMP-in-ICO, embeds via winres on Windows
   config/
     mod.rs                   Re-exports AppConfig
     settings.rs              AppConfig struct + load/save (TOML, platform dirs)
@@ -50,6 +53,7 @@ src/
       search.rs
       radio.rs
       cd.rs
+      log.rs
       outputs.rs
       partitions.rs
       mod.rs
@@ -156,5 +160,20 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
 ```
 
+## In-App Log (`src/logger.rs`)
+- `InAppLayer` implements `tracing_subscriber::Layer` — appends INFO+ events to a static `Mutex<Vec<LogEntry>>`
+- `get_entries()` / `clear_entries()` — called from app.rs
+- `App.log_entries` refreshed on every `Tick` (synchronous Mutex read, negligible cost)
+- Log view is `View::Log`, sidebar button beneath Settings
+
+## Windowless Startup
+`#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]` in `main.rs` hides the console.  
+Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer for the in-app view).
+
+## App Icon
+`src/icon.rs` — `make_icon()` generates RGBA pixels at runtime for the iced window icon.  
+`build.rs` — generates the same design as 16×16 + 32×32 BMP-in-ICO and embeds it via `winres`.  
+Build dependency: `winres = "0.1"` in `[build-dependencies]`.
+
 ## Current Version
-`0.1.4` — see `Cargo.toml`
+`0.1.5` — see `Cargo.toml`

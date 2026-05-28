@@ -1,6 +1,6 @@
 ﻿[package]
 name = "winrmpc"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "A modern Windows MPD client with album art, partitions, and outputs"
 license = "MIT"
@@ -23,6 +23,9 @@ flume = "0.11"
 fuzzy-matcher = "0.3"
 open = "5"
 urlencoding = "2"
+
+[build-dependencies]
+winres = "0.1"
 
 [profile.release]
 opt-level = 3

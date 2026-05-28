@@ -75,6 +75,9 @@ pub struct App {
     settings_password: String,
     settings_cd_device: String,
 
+    // Log
+    log_entries: Vec<crate::logger::LogEntry>,
+
     // Errors
     last_error: Option<String>,
 }
@@ -137,6 +140,8 @@ impl App {
             settings_port: config.mpd_port.to_string(),
             settings_password: config.mpd_password.clone().unwrap_or_default(),
             settings_cd_device: config.cd_device.clone().unwrap_or_default(),
+
+            log_entries: Vec::new(),
 
             last_error: None,
         };
@@ -1009,9 +1014,30 @@ impl App {
             }
 
             // =================================================================
+            // Log
+            // =================================================================
+            Message::LogClear => {
+                crate::logger::clear_entries();
+                self.log_entries.clear();
+                Task::none()
+            }
+            Message::LogCopyAll => {
+                let text = self.log_entries
+                    .iter()
+                    .map(|e| {
+                        let target = e.target.strip_prefix("winrmpc::").unwrap_or(&e.target);
+                        format!("[{}] {:5} {}  {}", e.timestamp, e.level, target, e.message)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                iced::clipboard::write(text)
+            }
+
+            // =================================================================
             // Tick / Error / Noop
             // =================================================================
             Message::Tick => {
+                self.log_entries = crate::logger::get_entries();
                 if self.connected {
                     self.refresh_status()
                 } else {
@@ -1145,6 +1171,7 @@ impl App {
                 )
             }
             View::Settings => self.settings_view(),
+            View::Log => views::log::view(&self.log_entries),
         };
 
         let player_bar =
