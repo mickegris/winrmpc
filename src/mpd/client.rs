@@ -213,6 +213,12 @@ impl MpdClient {
         self.cmd_ok("shuffle").await
     }
 
+    /// Delete all queue items from `start` to the end of the queue.
+    /// Sends `delete {start}:` (open-ended range).
+    pub async fn delete_range_from(&self, start: u32) -> MpdResult<()> {
+        self.cmd_ok(&format!("delete {start}:")).await
+    }
+
     // ========================================================================
     // Database / Library
     // ========================================================================

@@ -5,7 +5,12 @@ use crate::ui::theme::AppColors;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Element, Length};
 
-pub fn view<'a>(tracks: &'a [String], probing: bool) -> Element<'a, Message> {
+fn fmt_dur(secs: f64) -> String {
+    let s = secs as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+pub fn view<'a>(tracks: &'a [(String, Option<f64>)], probing: bool) -> Element<'a, Message> {
     let title = text("Audio CD")
         .size(24)
         .color(AppColors::TEXT_PRIMARY);
@@ -41,11 +46,17 @@ pub fn view<'a>(tracks: &'a [String], probing: bool) -> Element<'a, Message> {
     } else {
         let mut track_rows = column![].spacing(4);
 
-        for (i, uri) in tracks.iter().enumerate() {
-            let track_num = text(format!("Track {}", i + 1))
+        for (i, (uri, dur)) in tracks.iter().enumerate() {
+            let label = text(format!("Track {}", i + 1))
                 .size(14)
                 .color(AppColors::TEXT_PRIMARY)
                 .width(Length::Fill);
+
+            let dur_label = text(
+                dur.map(fmt_dur).unwrap_or_else(|| "--:--".to_string())
+            )
+            .size(12)
+            .color(AppColors::TEXT_MUTED);
 
             let play_btn = button(text("Play").size(12))
                 .on_press(Message::CdPlayTrack(uri.clone()))
@@ -55,7 +66,7 @@ pub fn view<'a>(tracks: &'a [String], probing: bool) -> Element<'a, Message> {
                 .on_press(Message::CdAddTrack(uri.clone()))
                 .padding([4, 8]);
 
-            let row_content = row![track_num, play_btn, add_btn]
+            let row_content = row![label, dur_label, play_btn, add_btn]
                 .spacing(8)
                 .align_y(iced::Alignment::Center);
 

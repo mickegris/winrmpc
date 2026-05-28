@@ -12,6 +12,11 @@ pub struct AppConfig {
     pub theme: ThemeConfig,
     #[serde(default = "default_radio_stations")]
     pub radio_stations: Vec<RadioStation>,
+    /// Optional CD device path on the MPD server, e.g. `/dev/sr0`.
+    /// When set, track listing uses `lsinfo cdda://{device}` instead of
+    /// the add/delete probe loop.
+    #[serde(default)]
+    pub cd_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +71,7 @@ impl Default for AppConfig {
                 accent_color: "#4fc3f7".into(),
             },
             radio_stations: default_radio_stations(),
+            cd_device: None,
         }
     }
 }
