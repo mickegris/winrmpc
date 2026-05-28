@@ -93,10 +93,12 @@ pub enum Message {
 
     // === CD ===
     CdProbe,
-    CdTracksLoaded(Vec<String>),
+    /// (uri, optional_duration_secs)
+    CdTracksLoaded(Vec<(String, Option<f64>)>),
     CdPlayWhole,
     CdPlayTrack(String),
     CdAddTrack(String),
+    CdDeviceChanged(String),
 
     // === Settings ===
     HostChanged(String),

@@ -63,7 +63,7 @@ pub struct App {
     radio_add_url: String,
 
     // CD
-    cd_tracks: Vec<String>,
+    cd_tracks: Vec<(String, Option<f64>)>,
     cd_probing: bool,
 
     // Partitions UI
@@ -73,6 +73,7 @@ pub struct App {
     settings_host: String,
     settings_port: String,
     settings_password: String,
+    settings_cd_device: String,
 
     // Errors
     last_error: Option<String>,
@@ -135,6 +136,7 @@ impl App {
             settings_host: config.mpd_host.clone(),
             settings_port: config.mpd_port.to_string(),
             settings_password: config.mpd_password.clone().unwrap_or_default(),
+            settings_cd_device: config.cd_device.clone().unwrap_or_default(),
 
             last_error: None,
         };
@@ -867,10 +869,15 @@ impl App {
             // =================================================================
             Message::CdPlayWhole => {
                 let client = self.client.clone();
+                let device = self.config.cd_device.clone();
                 Task::perform(
                     async move {
                         client.clear().await.ok();
-                        client.add("cdda:///").await.ok();
+                        let uri = match &device {
+                            Some(dev) => format!("cdda://{dev}"),
+                            None => "cdda:///".to_string(),
+                        };
+                        client.add(&uri).await.ok();
                         client.play().await.ok();
                     },
                     |_| Message::Tick,
@@ -880,19 +887,61 @@ impl App {
                 self.cd_tracks.clear();
                 self.cd_probing = true;
                 let client = self.client.clone();
+                let device = self.config.cd_device.clone();
                 Task::perform(
                     async move {
-                        let mut tracks = Vec::new();
-                        for i in 1u32..=99 {
-                            let uri = format!("cdda:///{i}");
-                            match client.add_id(&uri).await {
-                                Ok(id) => {
-                                    client.delete_id(id).await.ok();
-                                    tracks.push(uri);
+                        // Preferred: lsinfo on the configured device path.
+                        // Returns track URIs with durations without touching the queue.
+                        if let Some(ref dev) = device {
+                            let lsinfo_uri = format!("cdda://{dev}");
+                            if let Ok(entries) = client.lsinfo(&lsinfo_uri).await {
+                                let tracks: Vec<(String, Option<f64>)> = entries
+                                    .into_iter()
+                                    .filter_map(|e| match e {
+                                        crate::mpd::DirectoryEntry::File(s) => {
+                                            Some((s.file, s.duration_secs))
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect();
+                                if !tracks.is_empty() {
+                                    return tracks;
                                 }
-                                Err(_) => break,
                             }
                         }
+                        // Batch probe: add all tracks first, read durations from the
+                        // queue, then delete the range in one shot. This avoids the
+                        // "exception: Failed to load file" log spam that the old
+                        // add_id + immediate delete_id pattern caused (MPD starts a
+                        // background read on add; deleting before it completes fails).
+                        let Ok(status) = client.status().await else {
+                            return vec![];
+                        };
+                        let queue_start = status.queue_length;
+                        let mut added = 0u32;
+                        for i in 1u32..=99 {
+                            let uri = match &device {
+                                Some(dev) => format!("cdda://{dev}/{i}"),
+                                None => format!("cdda:///{i}"),
+                            };
+                            if client.add(&uri).await.is_err() {
+                                break;
+                            }
+                            added += 1;
+                        }
+                        if added == 0 {
+                            return vec![];
+                        }
+                        // Read the slice we just added to get URIs and durations.
+                        let queue = client.queue().await.unwrap_or_default();
+                        let tracks: Vec<(String, Option<f64>)> = queue
+                            .into_iter()
+                            .skip(queue_start as usize)
+                            .take(added as usize)
+                            .map(|s| (s.file, s.duration_secs))
+                            .collect();
+                        // Remove everything we added in a single range delete.
+                        client.delete_range_from(queue_start).await.ok();
                         tracks
                     },
                     Message::CdTracksLoaded,
@@ -935,6 +984,10 @@ impl App {
                 self.settings_password = p;
                 Task::none()
             }
+            Message::CdDeviceChanged(d) => {
+                self.settings_cd_device = d;
+                Task::none()
+            }
             Message::SaveSettings => {
                 self.config.mpd_host = self.settings_host.clone();
                 self.config.mpd_port =
@@ -943,6 +996,11 @@ impl App {
                     None
                 } else {
                     Some(self.settings_password.clone())
+                };
+                self.config.cd_device = if self.settings_cd_device.trim().is_empty() {
+                    None
+                } else {
+                    Some(self.settings_cd_device.trim().to_string())
                 };
                 self.config.save().ok();
                 self.client = MpdClient::new(&self.config.mpd_addr());
@@ -1206,6 +1264,13 @@ impl App {
     }
 
     fn fetch_art(&self, uri: String, key: String) -> Task<Message> {
+        // Never request art for CD audio tracks. MPD tries to open the CD drive
+        // when asked for albumart/readpicture on cdda:// URIs, which corrupts its
+        // internal state and triggers cascading "Failed to open CD drive" failures.
+        if uri.starts_with("cdda://") {
+            return Task::none();
+        }
+
         let client = self.client.clone();
         let cache = self.art_cache.clone_inner();
         let mb = crate::art::MusicBrainzClient::new();
@@ -1423,6 +1488,13 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .on_input(Message::PasswordChanged)
                 .padding(8)
                 .secure(true),
+            Space::with_height(8),
+            text("CD Device (optional, e.g. /dev/sr0)")
+                .size(14)
+                .color(AppColors::TEXT_SECONDARY),
+            text_input("/dev/sr0", &self.settings_cd_device)
+                .on_input(Message::CdDeviceChanged)
+                .padding(8),
             Space::with_height(16),
             button(text("Save & Reconnect").size(14))
                 .on_press(Message::SaveSettings)
