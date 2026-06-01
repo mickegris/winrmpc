@@ -204,3 +204,176 @@ pub fn parse_tag_list(pairs: &[(String, String)], tag: &str) -> Vec<String> {
         .map(|(_, v)| v.clone())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn parse_status_reads_core_fields() {
+        let p = pairs(&[
+            ("volume", "70"),
+            ("repeat", "1"),
+            ("random", "0"),
+            ("single", "oneshot"),
+            ("consume", "0"),
+            ("state", "play"),
+            ("song", "3"),
+            ("elapsed", "12.500"),
+            ("duration", "200.0"),
+            ("audio", "44100:16:2"),
+            ("partition", "kitchen"),
+        ]);
+        let s = parse_status(&p).unwrap();
+        assert_eq!(s.volume, 70);
+        assert!(s.repeat);
+        assert!(!s.random);
+        assert_eq!(s.single, SingleState::Oneshot);
+        assert_eq!(s.state, PlayState::Play);
+        assert_eq!(s.song_pos, Some(3));
+        assert_eq!(s.elapsed.unwrap().as_secs_f64(), 12.5);
+        assert_eq!(s.partition.as_deref(), Some("kitchen"));
+        let audio = s.audio.unwrap();
+        assert_eq!((audio.sample_rate, audio.bits, audio.channels), (44100, 16, 2));
+    }
+
+    #[test]
+    fn parse_status_defaults_when_missing() {
+        let s = parse_status(&[]).unwrap();
+        assert_eq!(s.volume, -1);
+        assert_eq!(s.state, PlayState::Stop);
+        assert!(s.song_pos.is_none());
+        assert!(s.audio.is_none());
+    }
+
+    #[test]
+    fn parse_song_maps_known_tags() {
+        let p = pairs(&[
+            ("file", "music/a.flac"),
+            ("Title", "Song A"),
+            ("Artist", "Artist A"),
+            ("Album", "Album A"),
+            ("Track", "5"),
+            ("duration", "183.2"),
+        ]);
+        let song = parse_song(&p);
+        assert_eq!(song.file, "music/a.flac");
+        assert_eq!(song.title.as_deref(), Some("Song A"));
+        assert_eq!(song.track.as_deref(), Some("5"));
+        assert_eq!(song.duration_secs, Some(183.2));
+    }
+
+    #[test]
+    fn parse_song_time_fallback_when_no_duration() {
+        // Older MPD only emits "Time" (integer seconds); use it only if
+        // the float "duration" is absent.
+        let p = pairs(&[("file", "a.flac"), ("Time", "200")]);
+        let song = parse_song(&p);
+        assert_eq!(song.duration_secs, Some(200.0));
+    }
+
+    #[test]
+    fn parse_song_duration_wins_over_time() {
+        let p = pairs(&[("file", "a.flac"), ("Time", "200"), ("duration", "199.5")]);
+        let song = parse_song(&p);
+        assert_eq!(song.duration_secs, Some(199.5));
+    }
+
+    #[test]
+    fn parse_song_unknown_tags_go_to_tags_map() {
+        let p = pairs(&[("file", "a.flac"), ("MUSICBRAINZ_TRACKID", "abc-123")]);
+        let song = parse_song(&p);
+        assert_eq!(song.tags["MUSICBRAINZ_TRACKID"], vec!["abc-123"]);
+    }
+
+    #[test]
+    fn parse_songs_splits_multiple() {
+        let p = pairs(&[
+            ("file", "a.flac"),
+            ("Title", "A"),
+            ("file", "b.flac"),
+            ("Title", "B"),
+        ]);
+        let songs = parse_songs(&p);
+        assert_eq!(songs.len(), 2);
+        assert_eq!(songs[0].title.as_deref(), Some("A"));
+        assert_eq!(songs[1].file, "b.flac");
+    }
+
+    #[test]
+    fn parse_outputs_reads_enabled_flag() {
+        let p = pairs(&[
+            ("outputid", "0"),
+            ("outputname", "Living Room"),
+            ("plugin", "alsa"),
+            ("outputenabled", "1"),
+            ("outputid", "1"),
+            ("outputname", "Kitchen"),
+            ("plugin", "pulse"),
+            ("outputenabled", "0"),
+        ]);
+        let outs = parse_outputs(&p);
+        assert_eq!(outs.len(), 2);
+        assert_eq!(outs[0].name, "Living Room");
+        assert!(outs[0].enabled);
+        assert!(!outs[1].enabled);
+    }
+
+    #[test]
+    fn parse_partitions_collects_names() {
+        let p = pairs(&[("partition", "default"), ("partition", "kitchen")]);
+        let parts = parse_partitions(&p);
+        let names: Vec<_> = parts.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["default", "kitchen"]);
+    }
+
+    #[test]
+    fn parse_directory_listing_mixes_entry_types() {
+        let p = pairs(&[
+            ("directory", "Rock"),
+            ("file", "Rock/song.flac"),
+            ("Title", "Song"),
+            ("playlist", "Favourites"),
+        ]);
+        let entries = parse_directory_listing(&p);
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(entries[0], DirectoryEntry::Directory(_)));
+        assert!(matches!(entries[1], DirectoryEntry::File(_)));
+        assert!(matches!(entries[2], DirectoryEntry::Playlist(_)));
+        if let DirectoryEntry::File(song) = &entries[1] {
+            assert_eq!(song.title.as_deref(), Some("Song"));
+        }
+    }
+
+    #[test]
+    fn parse_tag_list_filters_by_tag() {
+        let p = pairs(&[
+            ("Album", "One"),
+            ("Album", "Two"),
+            ("Artist", "Ignored"),
+        ]);
+        assert_eq!(parse_tag_list(&p, "Album"), vec!["One", "Two"]);
+    }
+
+    #[test]
+    fn parse_stats_parses_counts() {
+        let p = pairs(&[
+            ("artists", "12"),
+            ("albums", "34"),
+            ("songs", "567"),
+            ("uptime", "100"),
+        ]);
+        let stats = parse_stats(&p).unwrap();
+        assert_eq!(stats.artists, 12);
+        assert_eq!(stats.albums, 34);
+        assert_eq!(stats.songs, 567);
+        assert_eq!(stats.uptime.as_secs(), 100);
+    }
+}
