@@ -214,3 +214,82 @@ pub fn split_groups(
     }
     groups
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build owned pairs from string-slice literals for terse test data.
+    fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn pairs_to_map_collects_duplicate_keys() {
+        let p = pairs(&[("Artist", "A"), ("Artist", "B"), ("Album", "X")]);
+        let map = pairs_to_map(&p);
+        assert_eq!(map["Artist"], vec!["A", "B"]);
+        assert_eq!(map["Album"], vec!["X"]);
+    }
+
+    #[test]
+    fn pairs_to_map_empty() {
+        assert!(pairs_to_map(&[]).is_empty());
+    }
+
+    #[test]
+    fn split_groups_splits_on_group_key() {
+        let p = pairs(&[
+            ("file", "a.flac"),
+            ("Title", "A"),
+            ("file", "b.flac"),
+            ("Title", "B"),
+        ]);
+        let groups = split_groups(&p, "file");
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0][0], ("file".into(), "a.flac".into()));
+        assert_eq!(groups[1][0], ("file".into(), "b.flac".into()));
+        assert_eq!(groups[1][1], ("Title".into(), "B".into()));
+    }
+
+    #[test]
+    fn split_groups_never_drops_pairs() {
+        // A leading non-key pair forms its own leading group; the key thing
+        // is that no pair is ever lost and every later group starts with the
+        // group key.
+        let p = pairs(&[("directory", "music"), ("file", "a.flac"), ("Title", "A")]);
+        let groups = split_groups(&p, "file");
+        let total: usize = groups.iter().map(|g| g.len()).sum();
+        assert_eq!(total, p.len());
+        // The group containing the file starts with the file key.
+        let file_group = groups.iter().find(|g| g[0].0 == "file").unwrap();
+        assert_eq!(file_group[0].1, "a.flac");
+        assert_eq!(file_group[1], ("Title".into(), "A".into()));
+    }
+
+    #[test]
+    fn split_groups_empty_input() {
+        assert!(split_groups(&[], "file").is_empty());
+    }
+
+    #[test]
+    fn parse_ack_extracts_code_and_message() {
+        let err = MpdConnection::parse_ack("ACK [50@0] {lsinfo} No such file");
+        match err {
+            MpdError::Server { code, message } => {
+                assert_eq!(code, 50);
+                assert_eq!(message, "{lsinfo} No such file");
+            }
+            other => panic!("expected Server error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ack_malformed_falls_back_to_protocol_error() {
+        let err = MpdConnection::parse_ack("ACK garbage without brackets");
+        assert!(matches!(err, MpdError::Protocol(_)));
+    }
+}

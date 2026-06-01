@@ -1,7 +1,30 @@
-# winrmpc — Project Guide for Claude
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
 Windows MPD (Music Player Daemon) client built in **Rust** with **Iced 0.13** (GUI) and **Tokio** (async runtime). Connects to a remote MPD server over TCP. Target: Windows desktop, MPD server typically on Linux.
+
+## Commands
+Run all of these from the repo root (`C:\Users\mikae\winrmpc`), **not** from `src/`.
+
+```powershell
+cargo check              # fast type-check — primary feedback loop
+cargo build              # dev build (fast compile, slow runtime)
+cargo build --release    # optimized build → target\release\winrmpc.exe (embeds icon via build.rs)
+cargo run                # build + launch the GUI
+cargo test               # run the test suite
+cargo test <name>        # run tests whose name matches <name>
+cargo test <mod>::tests::<fn> -- --exact   # run one specific test
+```
+
+- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 32 tests cover the pure-logic core, all I/O-free:
+  - `mpd/client.rs` — `escape` injection safety (quotes, backslashes, ordering)
+  - `mpd/protocol.rs` — `pairs_to_map`, `split_groups`, `parse_ack`
+  - `mpd/commands.rs` — every response parser (`parse_status`/`song`/`songs`/`outputs`/`partitions`/`directory_listing`/`stats`/`tag_list`); note the `Time`→`duration` fallback rule
+  - `mpd/types.rs` — `Song` display fallbacks, `format_duration`, `art_key` (0x1f separator, hyphen-collision guard)
+  - Not yet covered (would need a mock `AsyncRead`/`AsyncWrite`): the `protocol.rs` read loops & EOF guards.
+- Icon embedding (`build.rs` → `winres`) needs `rc.exe`/`windres` on PATH; if absent it's skipped with a `cargo:warning`, build still succeeds.
 
 ## Tech Stack
 - Rust 2021 edition
@@ -176,4 +199,4 @@ Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer fo
 Build dependency: `winres = "0.1"` in `[build-dependencies]`.
 
 ## Current Version
-`0.1.5` — see `Cargo.toml`
+`0.1.6` — see `Cargo.toml`

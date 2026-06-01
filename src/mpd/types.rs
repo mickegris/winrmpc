@@ -210,3 +210,86 @@ pub struct AlbumArt {
     pub data: Vec<u8>,
     pub mime_type: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song() -> Song {
+        Song::default()
+    }
+
+    #[test]
+    fn display_title_falls_back_to_filename() {
+        let mut s = song();
+        s.file = "music/Artist/Album/05 - Track.flac".into();
+        assert_eq!(s.display_title(), "05 - Track.flac");
+
+        s.title = Some("Real Title".into());
+        assert_eq!(s.display_title(), "Real Title");
+    }
+
+    #[test]
+    fn display_album_artist_prefers_album_artist_then_artist() {
+        let mut s = song();
+        assert_eq!(s.display_album_artist(), "Unknown Artist");
+
+        s.artist = Some("Track Artist".into());
+        assert_eq!(s.display_album_artist(), "Track Artist");
+
+        s.album_artist = Some("Album Artist".into());
+        assert_eq!(s.display_album_artist(), "Album Artist");
+    }
+
+    #[test]
+    fn art_key_uses_unit_separator() {
+        let mut s = song();
+        s.album_artist = Some("Pink Floyd".into());
+        s.album = Some("The Wall".into());
+        assert_eq!(s.art_key(), "Pink Floyd\u{1f}The Wall");
+    }
+
+    #[test]
+    fn art_key_does_not_collide_on_hyphenated_names() {
+        // The 0x1f separator must keep these distinct even though a naive
+        // "{artist}-{album}" key would make both "A-B-C".
+        let mut a = song();
+        a.album_artist = Some("A-B".into());
+        a.album = Some("C".into());
+
+        let mut b = song();
+        b.album_artist = Some("A".into());
+        b.album = Some("B-C".into());
+
+        assert_ne!(a.art_key(), b.art_key());
+    }
+
+    #[test]
+    fn art_key_falls_back_for_missing_metadata() {
+        assert_eq!(song().art_key(), "Unknown Artist\u{1f}Unknown Album");
+    }
+
+    #[test]
+    fn format_duration_renders_minutes_and_seconds() {
+        let mut s = song();
+        s.duration_secs = Some(183.0);
+        assert_eq!(s.format_duration(), "3:03");
+
+        s.duration_secs = Some(5.0);
+        assert_eq!(s.format_duration(), "0:05");
+    }
+
+    #[test]
+    fn format_duration_unknown_when_absent() {
+        assert_eq!(song().format_duration(), "--:--");
+    }
+
+    #[test]
+    fn duration_converts_secs_to_duration() {
+        let mut s = song();
+        s.duration_secs = Some(90.0);
+        assert_eq!(s.duration().unwrap().as_secs(), 90);
+        s.duration_secs = None;
+        assert!(s.duration().is_none());
+    }
+}

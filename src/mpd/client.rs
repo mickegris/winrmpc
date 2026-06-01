@@ -477,3 +477,51 @@ impl MpdClient {
         self.cmd_ok(&format!("password \"{}\"", Self::escape(pw))).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_passes_plain_text_through() {
+        assert_eq!(MpdClient::escape("Pink Floyd"), "Pink Floyd");
+        assert_eq!(MpdClient::escape(""), "");
+        assert_eq!(MpdClient::escape("AC/DC"), "AC/DC");
+    }
+
+    #[test]
+    fn escape_escapes_double_quotes() {
+        // A quote would otherwise close the MPD argument early.
+        assert_eq!(MpdClient::escape(r#"say "hi""#), r#"say \"hi\""#);
+    }
+
+    #[test]
+    fn escape_escapes_backslashes() {
+        assert_eq!(MpdClient::escape(r"a\b"), r"a\\b");
+    }
+
+    #[test]
+    fn escape_handles_backslash_then_quote_in_order() {
+        // Backslash must be escaped before the quote, otherwise the
+        // backslash we add for the quote would itself get doubled.
+        // Input:  \"   →  \\\"
+        assert_eq!(MpdClient::escape("\\\""), "\\\\\\\"");
+    }
+
+    #[test]
+    fn escape_neutralizes_injection_attempt() {
+        // A naive interpolation would let this close the argument and run a
+        // second command. After escaping, every embedded quote is preceded
+        // by a backslash, so the whole thing stays one string argument.
+        let malicious = r#"x" ; clear ; add "evil"#;
+        let escaped = MpdClient::escape(malicious);
+        assert_eq!(escaped, r#"x\" ; clear ; add \"evil"#);
+        // No bare (unescaped) double-quote survives.
+        let bytes = escaped.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'"' {
+                assert!(i > 0 && bytes[i - 1] == b'\\', "bare quote at {i}");
+            }
+        }
+    }
+}
