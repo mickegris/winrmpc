@@ -1,6 +1,12 @@
 # winrmpc
 
-A modern, native Windows MPD (Music Player Daemon) client built in Rust with the [iced](https://iced.rs/) GUI framework. Runs without a console window; all diagnostic output is accessible through the built-in **Log** view.
+A modern, native MPD (Music Player Daemon) client built in Rust with the [iced](https://iced.rs/) GUI framework. Runs without a console window; all diagnostic output is accessible through the built-in **Log** view.
+
+## Cross-platform
+
+winrmpc began as a Windows-only project (hence the name — **win**dows **r**ust **mpc**), but the goal is for it to run on every major desktop OS. The codebase is written against cross-platform crates (iced, tokio, directories), so it should build and run fine on **Linux** and **macOS** as well — only the icon embedding and console-hiding are Windows-specific (and are cleanly guarded behind `cfg(target_os = "windows")`).
+
+The name stays `winrmpc` regardless of platform — consider the `win` a historical artifact, not a limitation.
 
 ## Features
 
@@ -79,17 +85,11 @@ A modern, native Windows MPD (Music Player Daemon) client built in Rust with the
 
 ## Building from Source
 
-### Prerequisites
+All platforms need **Rust** (stable). Install it from [https://rust-lang.org/tools/install](https://rust-lang.org/tools/install). Then follow the prerequisites for your OS and run the common build step below.
 
-#### 1. Install Rust
+### Windows
 
-Download and install Rust from [https://rust-lang.org/tools/install](https://rust-lang.org/tools/install).
-
-During installation choose **option 1 (default)** which selects the `x86_64-pc-windows-msvc` target.
-
-#### 2. Install Visual Studio Build Tools
-
-Rust on Windows requires the MSVC C++ build tools.
+Rust on Windows requires the MSVC C++ build tools for linking.
 
 **Option A: Visual Studio Build Tools (smaller download)**
 1. Download [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
@@ -100,7 +100,37 @@ Open the **Visual Studio Installer**, click **Modify**, ensure **"Desktop develo
 
 > **Note:** Visual Studio *Code* is a different product and does not include the required build tools.
 
-### Build
+When the Rust installer asks, choose **option 1 (default)**, which selects the `x86_64-pc-windows-msvc` target. If you later hit linker errors, verify the toolchain:
+```bash
+rustup show          # expect stable-x86_64-pc-windows-msvc
+rustup default stable-x86_64-pc-windows-msvc   # if it shows -gnu instead
+```
+
+### Linux
+
+Install a C toolchain plus the development headers iced needs for graphics, fonts, and the clipboard. On Debian/Ubuntu:
+```bash
+sudo apt install build-essential pkg-config \
+  libfontconfig1-dev libxkbcommon-dev \
+  libwayland-dev libx11-dev
+```
+On Fedora:
+```bash
+sudo dnf install gcc pkg-config \
+  fontconfig-devel libxkbcommon-devel \
+  wayland-devel libX11-devel
+```
+Rendering uses `wgpu` (Vulkan/GL), so a working GPU driver or a software fallback (e.g. `mesa`) is required at runtime.
+
+### macOS
+
+Install the Xcode Command Line Tools (provides the C toolchain and system frameworks):
+```bash
+xcode-select --install
+```
+No other dependencies are needed — Metal is used for rendering.
+
+### Build (all platforms)
 
 ```bash
 git clone https://github.com/mickegris/winrmpc.git
@@ -112,24 +142,23 @@ The first build downloads all dependencies and compiles everything (several minu
 
 The compiled binary:
 ```
-target\release\winrmpc.exe
+target/release/winrmpc        # winrmpc.exe on Windows
 ```
 
-For development builds (faster compilation):
+For development builds (faster compilation, slower runtime):
 ```bash
 cargo build
 ```
 
-### Verify Rust toolchain
+### Running tests
 
-If you encounter linker errors:
 ```bash
-rustup show
+cargo test                 # run the whole suite
+cargo test escape          # run tests whose name matches "escape"
+cargo test parse_status -- --exact   # run one specific test
 ```
-You should see `stable-x86_64-pc-windows-msvc`. If it shows `gnu`:
-```bash
-rustup default stable-x86_64-pc-windows-msvc
-```
+
+The suite is pure-logic (command escaping, protocol parsing, type formatting) and needs no running MPD server.
 
 ## Configuration
 
