@@ -18,11 +18,12 @@ cargo test <name>        # run tests whose name matches <name>
 cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 ```
 
-- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 32 tests cover the pure-logic core, all I/O-free:
+- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 45 tests cover the pure-logic core, all I/O-free:
   - `mpd/client.rs` — `escape` injection safety (quotes, backslashes, ordering)
   - `mpd/protocol.rs` — `pairs_to_map`, `split_groups`, `parse_ack`
   - `mpd/commands.rs` — every response parser (`parse_status`/`song`/`songs`/`outputs`/`partitions`/`directory_listing`/`stats`/`tag_list`); note the `Time`→`duration` fallback rule
-  - `mpd/types.rs` — `Song` display fallbacks, `format_duration`, `art_key` (0x1f separator, hyphen-collision guard)
+  - `mpd/types.rs` — `Song` display fallbacks, `format_duration`, `art_key` (0x1f separator, hyphen-collision guard), `display_format` (codec from extension), `push_recent` (dedup/move-to-front/cap-at-8)
+  - `lyrics/lrclib.rs` — `parse_lrc` (`[mm:ss.xx]` timestamps, sort-by-time, malformed-skip, empty input, integer seconds)
   - Not yet covered (would need a mock `AsyncRead`/`AsyncWrite`): the `protocol.rs` read loops & EOF guards.
 - Icon embedding (`build.rs` → `winres`) needs `rc.exe`/`windres` on PATH; if absent it's skipped with a `cargo:warning`, build still succeeds.
 
@@ -95,6 +96,7 @@ Fields saved to TOML via `directories` (Windows: `%APPDATA%\winrmpc\winrmpc\conf
 - `theme: ThemeConfig`
 - `radio_stations: Vec<RadioStation>` — built-ins + user customs
 - `cd_device: Option<String>` — e.g. `/dev/sr0`; used for CD lsinfo, `#[serde(default)]`
+- `recent_albums: Vec<RecentAlbum>` — most-recent-first, capped at 8, `#[serde(default)]`; updated on `CurrentSongUpdated` when the album changes
 
 All new optional fields must carry `#[serde(default)]` so existing config files still load.
 

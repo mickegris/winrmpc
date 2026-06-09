@@ -1,6 +1,7 @@
 use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::link::icon_btn;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -68,55 +69,79 @@ pub fn view<'a>(
 
     let mut items = column![].spacing(0);
     for (i, entry) in entries.iter().enumerate() {
-        let (prefix, label, action) = match entry {
-            DirectoryEntry::Directory(d) => {
-                let name = d.path.rsplit('/').next().unwrap_or(&d.path);
-                ("[dir]", name.to_string(), Message::BrowsePath(d.path.clone()))
-            }
-            DirectoryEntry::File(s) => {
-                let label = format!(
-                    "{} - {}",
-                    s.display_artist(),
-                    s.display_title()
-                );
-                ("[file]", label, Message::QueueAddUri(s.file.clone()))
-            }
-            DirectoryEntry::Playlist(p) => {
-                ("[list]", p.name.clone(), Message::QueueAddUri(p.name.clone()))
-            }
-        };
-
-        let prefix_color = match entry {
-            DirectoryEntry::Directory(_) => AppColors::ACCENT,
-            DirectoryEntry::File(_) => AppColors::TEXT_MUTED,
-            DirectoryEntry::Playlist(_) => AppColors::SUCCESS,
-        };
-
         let bg = if i % 2 == 0 {
             AppColors::ROW_EVEN
         } else {
             AppColors::ROW_ODD
         };
 
-        items = items.push(
-            button(
-                row![
-                    text(prefix).size(11).width(40).color(prefix_color),
-                    text(label).size(13).color(AppColors::TEXT_PRIMARY),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            )
-            .on_press(action)
-            .padding([6, 12])
-            .width(Length::Fill)
-            .style(move |_theme: &iced::Theme, _status| button::Style {
-                background: Some(bg.into()),
-                text_color: AppColors::TEXT_PRIMARY,
-                border: iced::Border::default(),
-                ..Default::default()
-            }),
-        );
+        match entry {
+            DirectoryEntry::File(s) => {
+                // File rows show: [file] | artist – title | duration | ▶ | ＋
+                let label = format!("{} – {}", s.display_artist(), s.display_title());
+                let duration = s.format_duration();
+                let file_uri = s.file.clone();
+                let play_uri = file_uri.clone();
+                items = items.push(
+                    container(
+                        row![
+                            icon_btn("▶", Message::PlaySong(play_uri)),
+                            icon_btn("+", Message::QueueAddOnly(file_uri)),
+                            text(label)
+                                .size(13)
+                                .color(AppColors::TEXT_PRIMARY)
+                                .width(Length::Fill),
+                            text(duration)
+                                .size(11)
+                                .color(AppColors::TEXT_MUTED),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([6, 12])
+                    .width(Length::Fill)
+                    .style(move |_theme: &iced::Theme| container::Style {
+                        background: Some(bg.into()),
+                        ..Default::default()
+                    }),
+                );
+            }
+            _ => {
+                let (prefix, label, action) = match entry {
+                    DirectoryEntry::Directory(d) => {
+                        let name = d.path.rsplit('/').next().unwrap_or(&d.path);
+                        ("[dir]", name.to_string(), Message::BrowsePath(d.path.clone()))
+                    }
+                    DirectoryEntry::Playlist(p) => {
+                        ("[list]", p.name.clone(), Message::QueueAddUri(p.name.clone()))
+                    }
+                    DirectoryEntry::File(_) => unreachable!(),
+                };
+                let prefix_color = match entry {
+                    DirectoryEntry::Directory(_) => AppColors::ACCENT,
+                    _ => AppColors::SUCCESS,
+                };
+                items = items.push(
+                    button(
+                        row![
+                            text(prefix).size(11).width(40).color(prefix_color),
+                            text(label).size(13).color(AppColors::TEXT_PRIMARY),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .on_press(action)
+                    .padding([6, 12])
+                    .width(Length::Fill)
+                    .style(move |_theme: &iced::Theme, _status| button::Style {
+                        background: Some(bg.into()),
+                        text_color: AppColors::TEXT_PRIMARY,
+                        border: iced::Border::default(),
+                        ..Default::default()
+                    }),
+                );
+            }
+        }
     }
 
     container(

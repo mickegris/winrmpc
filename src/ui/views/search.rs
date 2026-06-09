@@ -1,6 +1,7 @@
 use crate::mpd::types::Song;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::link::icon_btn;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::BTreeMap;
@@ -81,9 +82,11 @@ pub fn view<'a>(
             row_index += 1;
 
             result_list = result_list.push(
-                button(
+                container(
                     row![
-                        Space::with_width(16),
+                        Space::with_width(8),
+                        icon_btn("▶", Message::PlaySong(song.file.clone())),
+                        icon_btn("+", Message::QueueAddOnly(song.file.clone())),
                         text(track.to_string())
                             .size(12)
                             .width(30)
@@ -103,13 +106,10 @@ pub fn view<'a>(
                     .spacing(6)
                     .align_y(Alignment::Center),
                 )
-                .on_press(Message::SearchAddToQueue(song.file.clone()))
                 .padding([4, 12])
                 .width(Length::Fill)
-                .style(move |_theme: &iced::Theme, _status| button::Style {
+                .style(move |_theme: &iced::Theme| container::Style {
                     background: Some(bg.into()),
-                    text_color: AppColors::TEXT_PRIMARY,
-                    border: iced::Border::default(),
                     ..Default::default()
                 }),
             );
