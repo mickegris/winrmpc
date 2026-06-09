@@ -3,6 +3,7 @@
 use crate::art::ArtCache;
 use crate::config::AppConfig;
 use crate::mpd::MpdClient;
+use crate::store::Store;
 use crate::mpd::types::{push_recent, *};
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
@@ -47,6 +48,9 @@ pub struct App {
     search_query: String,
     search_results: Vec<Song>,
 
+    // Cache store (album art + lyrics, redb-backed)
+    store: Store,
+
     // Album Art
     art_cache: ArtCache,
     mb_client: crate::art::MusicBrainzClient,
@@ -84,7 +88,6 @@ pub struct App {
 
     // Lyrics
     lyrics_client: crate::lyrics::LyricsClient,
-    lyrics_dir: std::path::PathBuf,
     lyrics: HashMap<String, Option<crate::lyrics::Lyrics>>,
     show_lyrics: bool,
     lyrics_scroll_id: scrollable::Id,
@@ -100,10 +103,8 @@ impl App {
 
         let client = MpdClient::new(&config.mpd_addr());
         let cache_dir = AppConfig::cache_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("./cache/art"));
-        let lyrics_dir = AppConfig::cache_dir()
-            .map(|d| d.join("lyrics"))
-            .unwrap_or_else(|| std::path::PathBuf::from("./cache/lyrics"));
+            .unwrap_or_else(|| std::path::PathBuf::from("./cache"));
+        let store = Store::open(&cache_dir);
 
         let app = Self {
             client,
@@ -133,7 +134,8 @@ impl App {
             search_query: String::new(),
             search_results: Vec::new(),
 
-            art_cache: ArtCache::new(cache_dir),
+            store: store.clone(),
+            art_cache: ArtCache::new(store, config.art_cache_size_mb),
             mb_client: crate::art::MusicBrainzClient::new(),
             art_handles: HashMap::new(),
 
@@ -161,7 +163,6 @@ impl App {
             log_show_mpd_only: true,
 
             lyrics_client: crate::lyrics::LyricsClient::new(),
-            lyrics_dir,
             lyrics: HashMap::new(),
             show_lyrics: true,
             lyrics_scroll_id: scrollable::Id::unique(),
@@ -1415,6 +1416,12 @@ impl App {
                     return (key, Some(data));
                 }
 
+                // Persisted negative cache: we've looked before and found
+                // nothing — don't hammer MPD/MusicBrainz again every launch.
+                if cache.is_known(&key).await {
+                    return (key, None);
+                }
+
                 // Try MPD embedded art
                 if let Ok(Some(data)) = client.album_art(&uri).await {
                     let _ = cache.store(&key, &data).await;
@@ -1605,7 +1612,7 @@ fn fetch_lyrics(&self, song: &Song) -> Task<Message> {
         return Task::none();
     }
     let client = self.lyrics_client.clone();
-    let lyrics_dir = self.lyrics_dir.clone();
+    let store = self.store.clone();
     let artist = song.display_artist().to_string();
     let title = song.display_title().to_string();
     let album = song.display_album().to_string();
@@ -1613,26 +1620,24 @@ fn fetch_lyrics(&self, song: &Song) -> Task<Message> {
     let k = key.clone();
     Task::perform(
         async move {
-            // Check disk cache first (sync I/O — files are tiny, network is slower).
-            let cache_file = crate::lyrics::cache_path(&lyrics_dir, &k);
-            if cache_file.exists() {
-                if let Ok(data) = std::fs::read(&cache_file) {
-                    if let Ok(cached) =
-                        serde_json::from_slice::<Option<crate::lyrics::Lyrics>>(&data)
-                    {
-                        return (k, cached);
-                    }
-                }
+            // Check the persisted cache first (redb read on a blocking thread).
+            let s = store.clone();
+            let lookup_key = k.clone();
+            let cached = tokio::task::spawn_blocking(move || s.lyrics_get(&lookup_key))
+                .await
+                .ok()
+                .flatten();
+            if let Some(cached) = cached {
+                return (k, cached);
             }
-            // Fetch from LRCLIB.
+            // Fetch from LRCLIB, then persist (including the negative result).
             let result = client.fetch(&artist, &title, &album, duration).await;
-            // Persist to disk so we don't re-fetch on next launch.
-            if let Ok(json) = serde_json::to_vec(&result) {
-                if let Some(parent) = cache_file.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&cache_file, json);
-            }
+            let s = store.clone();
+            let put_key = k.clone();
+            let to_store = result.clone();
+            tokio::task::spawn_blocking(move || s.lyrics_put(&put_key, &to_store))
+                .await
+                .ok();
             (k, result)
         },
         |(key, lyrics)| Message::LyricsLoaded(key, lyrics),
