@@ -8,6 +8,7 @@ mod art;
 mod config;
 mod logger;
 mod icon;
+mod lyrics;
 
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;

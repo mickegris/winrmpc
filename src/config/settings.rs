@@ -1,3 +1,4 @@
+use crate::mpd::types::RecentAlbum;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -17,6 +18,9 @@ pub struct AppConfig {
     /// the add/delete probe loop.
     #[serde(default)]
     pub cd_device: Option<String>,
+    /// Recently played albums, most recent first; capped at 8.
+    #[serde(default)]
+    pub recent_albums: Vec<RecentAlbum>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +76,7 @@ impl Default for AppConfig {
             },
             radio_stations: default_radio_stations(),
             cd_device: None,
+            recent_albums: Vec::new(),
         }
     }
 }

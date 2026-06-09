@@ -3,12 +3,12 @@
 use crate::art::ArtCache;
 use crate::config::AppConfig;
 use crate::mpd::MpdClient;
-use crate::mpd::types::*;
+use crate::mpd::types::{push_recent, *};
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
 use crate::ui::views;
 use crate::ui::widgets;
-use iced::widget::{column, container, image::Handle as ImageHandle, row};
+use iced::widget::{column, container, image::Handle as ImageHandle, row, scrollable};
 use iced::{Element, Length, Subscription, Task, Theme};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -75,8 +75,19 @@ pub struct App {
     settings_password: String,
     settings_cd_device: String,
 
+    // Recently played albums (most recent first, capped at 8)
+    recent_albums: Vec<RecentAlbum>,
+
     // Log
     log_entries: Vec<crate::logger::LogEntry>,
+    log_show_mpd_only: bool,
+
+    // Lyrics
+    lyrics_client: crate::lyrics::LyricsClient,
+    lyrics_dir: std::path::PathBuf,
+    lyrics: HashMap<String, Option<crate::lyrics::Lyrics>>,
+    show_lyrics: bool,
+    lyrics_scroll_id: scrollable::Id,
 
     // Errors
     last_error: Option<String>,
@@ -90,6 +101,9 @@ impl App {
         let client = MpdClient::new(&config.mpd_addr());
         let cache_dir = AppConfig::cache_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("./cache/art"));
+        let lyrics_dir = AppConfig::cache_dir()
+            .map(|d| d.join("lyrics"))
+            .unwrap_or_else(|| std::path::PathBuf::from("./cache/lyrics"));
 
         let app = Self {
             client,
@@ -141,7 +155,16 @@ impl App {
             settings_password: config.mpd_password.clone().unwrap_or_default(),
             settings_cd_device: config.cd_device.clone().unwrap_or_default(),
 
+            recent_albums: config.recent_albums.clone(),
+
             log_entries: Vec::new(),
+            log_show_mpd_only: true,
+
+            lyrics_client: crate::lyrics::LyricsClient::new(),
+            lyrics_dir,
+            lyrics: HashMap::new(),
+            show_lyrics: true,
+            lyrics_scroll_id: scrollable::Id::unique(),
 
             last_error: None,
         };
@@ -204,7 +227,8 @@ impl App {
             }
             Message::RefreshAll => {
                 self.connected = true;
-                self.fetch_all()
+                let art_tasks = self.fetch_recent_art();
+                Task::batch([self.fetch_all(), art_tasks])
             }
             Message::ConnectionTick => {
                 if !self.connected {
@@ -336,16 +360,43 @@ impl App {
                 Task::none()
             }
             Message::CurrentSongUpdated(song) => {
-                if let Some(ref s) = song {
-                    let key = s.art_key();
-                    if !self.art_handles.contains_key(&key) {
-                        let task = self.fetch_art(s.file.clone(), key);
-                        self.current_song = song.map(|s| *s);
-                        return task;
+                // Track recently played: when the album changes, push the NEW
+                // album to the recent list (so "recently played" = what's been
+                // playing in this session, most recent first). Skip CD tracks.
+                if let Some(ref new_song) = song {
+                    let new_album = new_song.display_album();
+                    let new_artist = new_song.display_album_artist();
+                    let same_album = self.current_song.as_ref()
+                        .map(|s| s.display_album() == new_album)
+                        .unwrap_or(false);
+                    if !same_album
+                        && new_album != "Unknown Album"
+                        && !new_song.file.starts_with("cdda://")
+                    {
+                        let entry = RecentAlbum {
+                            artist: new_artist.to_string(),
+                            album: new_album.to_string(),
+                        };
+                        push_recent(&mut self.recent_albums, entry);
+                        self.config.recent_albums = self.recent_albums.clone();
+                        self.config.save().ok();
                     }
                 }
+
+                let mut tasks: Vec<Task<Message>> = Vec::new();
+                if let Some(ref s) = song {
+                    let art_key = s.art_key();
+                    if !self.art_handles.contains_key(&art_key) {
+                        tasks.push(self.fetch_art(s.file.clone(), art_key));
+                    }
+                    tasks.push(self.fetch_lyrics(s));
+                }
                 self.current_song = song.map(|s| *s);
-                Task::none()
+                if tasks.is_empty() {
+                    Task::none()
+                } else {
+                    Task::batch(tasks)
+                }
             }
             Message::QueueUpdated(q) => {
                 self.queue = q;
@@ -431,6 +482,18 @@ impl App {
                 Task::perform(
                     async move {
                         client.add(&uri).await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::PlaySong(uri) => {
+                // Insert at end of queue and immediately play — non-destructive.
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        if let Ok(id) = client.add_id(&uri).await {
+                            client.play_id(id).await.ok();
+                        }
                     },
                     |_| Message::Tick,
                 )
@@ -761,13 +824,17 @@ impl App {
             // Outputs
             // =================================================================
             Message::ToggleOutput(id) => {
-                let client = self.client.clone();
-                Task::perform(
-                    async move {
-                        client.toggle_output(id).await.ok();
-                    },
+                let c1 = self.client.clone();
+                let c2 = self.client.clone();
+                let toggle_task = Task::perform(
+                    async move { c1.toggle_output(id).await.ok(); },
                     |_| Message::Tick,
-                )
+                );
+                let outputs_task = Task::perform(
+                    async move { c2.outputs().await.unwrap_or_default() },
+                    Message::OutputsUpdated,
+                );
+                Task::batch([toggle_task, outputs_task])
             }
             Message::MoveOutput { output_name, target_partition } => {
                 let client = self.client.clone();
@@ -1014,6 +1081,18 @@ impl App {
             }
 
             // =================================================================
+            // Lyrics
+            // =================================================================
+            Message::LyricsLoaded(key, lyrics) => {
+                self.lyrics.insert(key, lyrics);
+                Task::none()
+            }
+            Message::ToggleLyrics => {
+                self.show_lyrics = !self.show_lyrics;
+                Task::none()
+            }
+
+            // =================================================================
             // Log
             // =================================================================
             Message::LogClear => {
@@ -1022,8 +1101,10 @@ impl App {
                 Task::none()
             }
             Message::LogCopyAll => {
+                let show_mpd = self.log_show_mpd_only;
                 let text = self.log_entries
                     .iter()
+                    .filter(|e| !show_mpd || e.target.contains("mpd"))
                     .map(|e| {
                         let target = e.target.strip_prefix("winrmpc::").unwrap_or(&e.target);
                         format!("[{}] {:5} {}  {}", e.timestamp, e.level, target, e.message)
@@ -1032,6 +1113,10 @@ impl App {
                     .join("\n");
                 iced::clipboard::write(text)
             }
+            Message::LogToggleMpdOnly => {
+                self.log_show_mpd_only = !self.log_show_mpd_only;
+                Task::none()
+            }
 
             // =================================================================
             // Tick / Error / Noop
@@ -1039,7 +1124,7 @@ impl App {
             Message::Tick => {
                 self.log_entries = crate::logger::get_entries();
                 if self.connected {
-                    self.refresh_status()
+                    Task::batch([self.refresh_status(), self.lyrics_autoscroll()])
                 } else {
                     Task::none()
                 }
@@ -1082,10 +1167,31 @@ impl App {
                     .current_song
                     .as_ref()
                     .and_then(|s| self.art_handles.get(&s.art_key()));
+                // Resolve next song from status.next_song_pos + queue
+                let next_song = self.status.next_song_pos.and_then(|pos| {
+                    self.queue.iter().find(|s| s.pos == Some(pos))
+                });
+                // Lyrics: None=loading, Some(None)=not found, Some(Some(l))=found
+                let lyrics: Option<Option<&crate::lyrics::Lyrics>> =
+                    self.current_song.as_ref().and_then(|s| {
+                        let key = format!(
+                            "{}\x1f{}\x1f{}",
+                            s.display_artist(),
+                            s.display_title(),
+                            s.display_album()
+                        );
+                        self.lyrics.get(&key).map(|opt| opt.as_ref())
+                    });
                 views::now_playing::view(
                     &self.current_song,
                     &self.status,
                     art_handle,
+                    next_song,
+                    &self.recent_albums,
+                    &self.art_handles,
+                    lyrics,
+                    self.show_lyrics,
+                    self.lyrics_scroll_id.clone(),
                 )
             }
             View::Queue => {
@@ -1171,7 +1277,7 @@ impl App {
                 )
             }
             View::Settings => self.settings_view(),
-            View::Log => views::log::view(&self.log_entries),
+            View::Log => views::log::view(&self.log_entries, self.log_show_mpd_only),
         };
 
         let player_bar =
@@ -1360,6 +1466,26 @@ impl App {
         )
     }
 
+    /// Kick off art fetches for any recently-played album not already in
+    /// `art_handles`.  Passes an empty URI so the MPD embedded-art step is
+    /// skipped (we have no file path), but disk cache and MusicBrainz fallback
+    /// both work via the `"artist\x1falbum"` key alone.
+    fn fetch_recent_art(&self) -> Task<Message> {
+        let tasks: Vec<Task<Message>> = self
+            .recent_albums
+            .iter()
+            .filter_map(|r| {
+                let key = format!("{}\x1f{}", r.artist, r.album);
+                if self.art_handles.contains_key(&key) {
+                    None
+                } else {
+                    Some(self.fetch_art(String::new(), key))
+                }
+            })
+            .collect();
+        Task::batch(tasks)
+    }
+
     fn on_view_enter(&self, view: View) -> Task<Message> {
         match view {
             View::Artists => {
@@ -1466,6 +1592,87 @@ impl App {
             _ => Task::none(),
         }
     }
+
+fn fetch_lyrics(&self, song: &Song) -> Task<Message> {
+    let key = format!(
+        "{}\x1f{}\x1f{}",
+        song.display_artist(),
+        song.display_title(),
+        song.display_album()
+    );
+    // Already cached in memory (including "not found" = Some(None)) — skip.
+    if self.lyrics.contains_key(&key) {
+        return Task::none();
+    }
+    let client = self.lyrics_client.clone();
+    let lyrics_dir = self.lyrics_dir.clone();
+    let artist = song.display_artist().to_string();
+    let title = song.display_title().to_string();
+    let album = song.display_album().to_string();
+    let duration = song.duration_secs;
+    let k = key.clone();
+    Task::perform(
+        async move {
+            // Check disk cache first (sync I/O — files are tiny, network is slower).
+            let cache_file = crate::lyrics::cache_path(&lyrics_dir, &k);
+            if cache_file.exists() {
+                if let Ok(data) = std::fs::read(&cache_file) {
+                    if let Ok(cached) =
+                        serde_json::from_slice::<Option<crate::lyrics::Lyrics>>(&data)
+                    {
+                        return (k, cached);
+                    }
+                }
+            }
+            // Fetch from LRCLIB.
+            let result = client.fetch(&artist, &title, &album, duration).await;
+            // Persist to disk so we don't re-fetch on next launch.
+            if let Ok(json) = serde_json::to_vec(&result) {
+                if let Some(parent) = cache_file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&cache_file, json);
+            }
+            (k, result)
+        },
+        |(key, lyrics)| Message::LyricsLoaded(key, lyrics),
+    )
+}
+
+/// Keep the highlighted synced-lyric line in view by snapping the lyrics
+/// scrollable to a position proportional to the active line. No-op unless
+/// lyrics are shown and the current track has synced lyrics.
+fn lyrics_autoscroll(&self) -> Task<Message> {
+    if !self.show_lyrics {
+        return Task::none();
+    }
+    let Some(song) = &self.current_song else {
+        return Task::none();
+    };
+    let key = format!(
+        "{}\x1f{}\x1f{}",
+        song.display_artist(),
+        song.display_title(),
+        song.display_album()
+    );
+    let Some(Some(lyrics)) = self.lyrics.get(&key) else {
+        return Task::none();
+    };
+    let Some(synced) = &lyrics.synced else {
+        return Task::none();
+    };
+    if synced.len() < 2 {
+        return Task::none();
+    }
+    let elapsed = self.status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    let t = elapsed - crate::ui::views::now_playing::LYRIC_SYNC_OFFSET;
+    let active = synced.iter().rposition(|l| l.secs <= t).unwrap_or(0);
+    let ratio = active as f32 / (synced.len() - 1) as f32;
+    scrollable::snap_to(
+        self.lyrics_scroll_id.clone(),
+        scrollable::RelativeOffset { x: 0.0, y: ratio },
+    )
+}
 
 fn settings_view(&self) -> Element<'_, Message> {
         use iced::widget::{button, column, container, text, text_input, Space};

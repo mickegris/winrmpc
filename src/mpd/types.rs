@@ -91,6 +91,48 @@ impl Song {
         self.duration_secs.map(Duration::from_secs_f64)
     }
 
+    /// Human-readable format label derived from the file extension.
+    ///
+    /// MPD does not report the actual codec, so for *container* formats that can
+    /// hold multiple codecs (e.g. `.m4a` may be AAC **or** ALAC, `.ogg` may be
+    /// Vorbis/Opus/FLAC) we show the honest container name rather than guessing a
+    /// codec. Extensions that map 1:1 to a codec show that codec. Unknown
+    /// extensions are uppercased; no extension yields an empty string.
+    pub fn display_format(&self) -> String {
+        // Strip any query-string / fragment that some URIs carry
+        let path = self.file.split('?').next().unwrap_or(&self.file);
+        // Extract the filename component so we don't confuse dots in directory
+        // names with the file extension (e.g. `/some.dir/trackname`).
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        if !filename.contains('.') {
+            return String::new();
+        }
+        let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+        match ext.as_str() {
+            // --- Ambiguous containers: show the container, never guess a codec
+            "m4a" | "m4b" | "mp4" => "M4A".into(),
+            "ogg" | "oga" => "OGG".into(),
+            "mka" => "MKA".into(),
+
+            // --- Unambiguous: extension maps 1:1 to a codec
+            "flac" => "FLAC".into(),
+            "mp3" => "MP3".into(),
+            "aac" => "AAC".into(),
+            "alac" => "ALAC".into(),
+            "opus" => "Opus".into(),
+            "wav" | "wave" => "WAV".into(),
+            "aiff" | "aif" => "AIFF".into(),
+            "wv" => "WavPack".into(),
+            "ape" => "APE".into(),
+            "wma" => "WMA".into(),
+            "dsf" | "dff" => "DSD".into(),
+            "mpc" | "mp+" | "mpp" => "Musepack".into(),
+
+            _ if !ext.is_empty() => ext.to_uppercase(),
+            _ => String::new(),
+        }
+    }
+
     pub fn display_title(&self) -> &str {
         self.title
             .as_deref()
@@ -211,6 +253,23 @@ pub struct AlbumArt {
     pub mime_type: Option<String>,
 }
 
+/// A recently-played album entry kept in App state and persisted in config.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecentAlbum {
+    pub artist: String,
+    pub album: String,
+}
+
+/// Insert `entry` at the front of `recents`, deduplicating and capping at 8.
+///
+/// Extracted as a pure function so it can be unit-tested without the GUI.
+pub fn push_recent(recents: &mut Vec<RecentAlbum>, entry: RecentAlbum) {
+    // Remove any existing occurrence (move-to-front semantics)
+    recents.retain(|r| r != &entry);
+    recents.insert(0, entry);
+    recents.truncate(8);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +350,97 @@ mod tests {
         assert_eq!(s.duration().unwrap().as_secs(), 90);
         s.duration_secs = None;
         assert!(s.duration().is_none());
+    }
+
+    // --- display_format -------------------------------------------------
+
+    #[test]
+    fn display_format_known_extensions() {
+        let cases = [
+            ("track.flac", "FLAC"),
+            ("track.mp3", "MP3"),
+            ("track.aac", "AAC"),
+            ("track.opus", "Opus"),
+            ("track.wav", "WAV"),
+            ("track.aiff", "AIFF"),
+            ("track.wv", "WavPack"),
+            ("track.ape", "APE"),
+            ("track.wma", "WMA"),
+            ("track.dsf", "DSD"),
+        ];
+        for (file, expected) in cases {
+            let mut s = song();
+            s.file = file.into();
+            assert_eq!(s.display_format(), expected, "file={file}");
+        }
+    }
+
+    #[test]
+    fn display_format_ambiguous_containers_show_container_name() {
+        // MPD can't tell us the codec, so .m4a/.ogg must not claim AAC/Vorbis.
+        for file in ["track.m4a", "track.m4b", "track.mp4"] {
+            let mut s = song();
+            s.file = file.into();
+            assert_eq!(s.display_format(), "M4A", "file={file}");
+        }
+        for file in ["track.ogg", "track.oga"] {
+            let mut s = song();
+            s.file = file.into();
+            assert_eq!(s.display_format(), "OGG", "file={file}");
+        }
+    }
+
+    #[test]
+    fn display_format_unknown_extension_uppercased() {
+        let mut s = song();
+        s.file = "track.xyz".into();
+        assert_eq!(s.display_format(), "XYZ");
+    }
+
+    #[test]
+    fn display_format_no_extension_returns_empty() {
+        let mut s = song();
+        s.file = "track".into();
+        assert_eq!(s.display_format(), "");
+    }
+
+    #[test]
+    fn display_format_case_insensitive() {
+        let mut s = song();
+        s.file = "track.FLAC".into();
+        assert_eq!(s.display_format(), "FLAC");
+    }
+
+    // --- push_recent ----------------------------------------------------
+
+    #[test]
+    fn push_recent_inserts_at_front() {
+        let mut v = vec![];
+        push_recent(&mut v, RecentAlbum { artist: "A".into(), album: "1".into() });
+        push_recent(&mut v, RecentAlbum { artist: "B".into(), album: "2".into() });
+        assert_eq!(v[0].album, "2");
+        assert_eq!(v[1].album, "1");
+    }
+
+    #[test]
+    fn push_recent_deduplicates_and_moves_to_front() {
+        let mut v = vec![
+            RecentAlbum { artist: "A".into(), album: "1".into() },
+            RecentAlbum { artist: "B".into(), album: "2".into() },
+        ];
+        push_recent(&mut v, RecentAlbum { artist: "A".into(), album: "1".into() });
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].album, "1");
+    }
+
+    #[test]
+    fn push_recent_caps_at_eight() {
+        let mut v = vec![];
+        for i in 0..10u32 {
+            push_recent(&mut v, RecentAlbum { artist: "X".into(), album: i.to_string() });
+        }
+        assert_eq!(v.len(), 8);
+        // Most recent is at front
+        assert_eq!(v[0].album, "9");
     }
 }

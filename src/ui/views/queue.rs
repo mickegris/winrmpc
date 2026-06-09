@@ -74,25 +74,62 @@ pub fn view<'a>(
             AppColors::TEXT_PRIMARY
         };
 
+        // Title plays the track; artist and album navigate to their views.
+        let title_btn = button(
+            text(song.display_title()).size(12).color(title_color),
+        )
+        .on_press(Message::QueuePlay(pos))
+        .padding(0)
+        .width(Length::FillPortion(3))
+        .style(|_t: &iced::Theme, _s: button::Status| button::Style {
+            background: None,
+            text_color: AppColors::TEXT_PRIMARY,
+            border: iced::Border::default(),
+            shadow: iced::Shadow::default(),
+        });
+
+        let artist_btn = button(
+            text(song.display_artist()).size(11),
+        )
+        .on_press(Message::ArtistSelected(song.display_artist().to_string()))
+        .padding(0)
+        .width(Length::FillPortion(2))
+        .style(|_t: &iced::Theme, s: button::Status| button::Style {
+            background: None,
+            text_color: match s {
+                button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
+                _ => AppColors::TEXT_SECONDARY,
+            },
+            border: iced::Border::default(),
+            shadow: iced::Shadow::default(),
+        });
+
+        let album_btn = button(
+            text(song.display_album()).size(11),
+        )
+        .on_press(Message::AlbumSelected(song.display_album().to_string()))
+        .padding(0)
+        .width(Length::FillPortion(2))
+        .style(|_t: &iced::Theme, s: button::Status| button::Style {
+            background: None,
+            text_color: match s {
+                button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
+                _ => AppColors::TEXT_SECONDARY,
+            },
+            border: iced::Border::default(),
+            shadow: iced::Shadow::default(),
+        });
+
         items = items.push(
-            button(
+            container(
                 row![
                     text(format!("{}", pos + 1))
                         .size(12)
                         .width(40)
                         .color(AppColors::TEXT_MUTED),
-                    text(song.display_title())
-                        .size(12)
-                        .width(Length::FillPortion(3))
-                        .color(title_color),
-                    text(song.display_artist())
-                        .size(11)
-                        .width(Length::FillPortion(2))
-                        .color(AppColors::TEXT_SECONDARY),
-                    text(song.display_album())
-                        .size(11)
-                        .width(Length::FillPortion(2))
-                        .color(AppColors::TEXT_SECONDARY),
+                    title_btn,
+                    artist_btn,
+                    album_btn,
                     text(song.format_duration())
                         .size(11)
                         .width(55)
@@ -101,13 +138,10 @@ pub fn view<'a>(
                 .spacing(8)
                 .align_y(Alignment::Center),
             )
-            .on_press(Message::QueuePlay(pos))
             .padding([5, 12])
             .width(Length::Fill)
-            .style(move |_theme: &iced::Theme, _status| button::Style {
+            .style(move |_theme: &iced::Theme| container::Style {
                 background: Some(bg.into()),
-                text_color: AppColors::TEXT_PRIMARY,
-                border: iced::Border::default(),
                 ..Default::default()
             }),
         );

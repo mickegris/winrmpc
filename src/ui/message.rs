@@ -91,6 +91,10 @@ pub enum Message {
     RadioAddCustomSubmit,
     RadioRemoveStation(String),
 
+    // === Single-song actions ===
+    /// Insert song at end of queue and immediately play it (non-destructive).
+    PlaySong(String),
+
     // === CD ===
     CdProbe,
     /// (uri, optional_duration_secs)
@@ -103,6 +107,11 @@ pub enum Message {
     // === Log ===
     LogClear,
     LogCopyAll,
+    LogToggleMpdOnly,
+
+    // === Lyrics ===
+    LyricsLoaded(String, Option<crate::lyrics::Lyrics>),
+    ToggleLyrics,
 
     // === Settings ===
     HostChanged(String),

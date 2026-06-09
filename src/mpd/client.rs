@@ -54,7 +54,22 @@ impl MpdClient {
     async fn cmd(&self, cmd: &str) -> MpdResult<Vec<(String, String)>> {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
-        conn.command(cmd).await
+        let verb = cmd.split_whitespace().next().unwrap_or(cmd);
+        // Suppress high-frequency polling verbs from the in-app log
+        let quiet = matches!(
+            verb,
+            "status" | "currentsong" | "playlistinfo"
+                | "outputs" | "listpartitions"
+                | "idle" | "noidle"
+        );
+        let result = conn.command(cmd).await;
+        match &result {
+            Ok(_) if !quiet => tracing::info!("→ {verb}"),
+            Err(e) if !quiet => tracing::warn!("← ERR {verb}: {e}"),
+            Err(e) => tracing::debug!("← ERR {verb}: {e}"),
+            _ => {}
+        }
+        result
     }
 
     async fn cmd_ok(&self, cmd: &str) -> MpdResult<()> {
