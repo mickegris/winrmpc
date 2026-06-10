@@ -22,6 +22,8 @@ const ART: TableDefinition<&str, &[u8]> = TableDefinition::new("art");
 const ART_META: TableDefinition<&str, &[u8]> = TableDefinition::new("art_meta");
 // key = "artist\x1ftitle\x1falbum"; value = serde_json(Option<Lyrics>)
 const LYRICS: TableDefinition<&str, &[u8]> = TableDefinition::new("lyrics");
+// Schema/migration markers; key = marker name, value = ignored
+const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 #[derive(Serialize, Deserialize)]
 struct ArtMeta {
@@ -74,6 +76,7 @@ impl Store {
         };
         let store = Self { db: Arc::new(db) };
         store.ensure_tables();
+        store.purge_poisoned_negatives();
         store.cleanup_legacy(cache_dir);
         store
     }
@@ -85,7 +88,61 @@ impl Store {
             let _ = wtx.open_table(ART);
             let _ = wtx.open_table(ART_META);
             let _ = wtx.open_table(LYRICS);
+            let _ = wtx.open_table(META);
             let _ = wtx.commit();
+        }
+    }
+
+    /// One-time cleanup: builds before 2026-06-10 let the empty-URI
+    /// recently-played art fetch persist negative entries even though it could
+    /// only try MusicBrainz, permanently blocking the MPD embedded-art path
+    /// for those albums. Purge all negative entries once so they re-resolve;
+    /// genuinely missing art just gets re-recorded on the next real lookup.
+    fn purge_poisoned_negatives(&self) {
+        const MARKER: &str = "neg_purge_v1";
+        let already_done = (|| {
+            let rtx = self.db.begin_read().ok()?;
+            let table = rtx.open_table(META).ok()?;
+            Some(table.get(MARKER).ok()?.is_some())
+        })()
+        .unwrap_or(false);
+        if already_done {
+            return;
+        }
+
+        let mut empties: Vec<String> = Vec::new();
+        if let Ok(rtx) = self.db.begin_read() {
+            if let Ok(table) = rtx.open_table(ART_META) {
+                if let Ok(iter) = table.iter() {
+                    for (k, v) in iter.flatten() {
+                        if let Ok(m) = serde_json::from_slice::<ArtMeta>(v.value()) {
+                            if m.is_empty {
+                                empties.push(k.value().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(wtx) = self.db.begin_write() {
+            {
+                if let Ok(mut table) = wtx.open_table(ART_META) {
+                    for k in &empties {
+                        let _ = table.remove(k.as_str());
+                    }
+                }
+                if let Ok(mut table) = wtx.open_table(META) {
+                    let _ = table.insert(MARKER, [1u8].as_slice());
+                }
+            }
+            let _ = wtx.commit();
+            if !empties.is_empty() {
+                tracing::info!(
+                    "Purged {} stale negative art-cache entries",
+                    empties.len()
+                );
+            }
         }
     }
 

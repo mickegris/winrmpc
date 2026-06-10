@@ -421,6 +421,7 @@ impl MpdClient {
         if full_data.is_empty() {
             Ok(None)
         } else {
+            tracing::info!("→ albumart \"{uri}\" ({} KB)", full_data.len() / 1024);
             Ok(Some(full_data))
         }
     }
@@ -456,6 +457,7 @@ impl MpdClient {
         if full_data.is_empty() {
             Ok(None)
         } else {
+            tracing::info!("→ readpicture \"{uri}\" ({} KB)", full_data.len() / 1024);
             Ok(Some(full_data))
         }
     }

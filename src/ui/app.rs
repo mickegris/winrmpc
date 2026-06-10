@@ -1416,16 +1416,21 @@ impl App {
                     return (key, Some(data));
                 }
 
-                // Persisted negative cache: we've looked before and found
-                // nothing — don't hammer MPD/MusicBrainz again every launch.
-                if cache.is_known(&key).await {
-                    return (key, None);
+                // Try MPD embedded art. This runs even when the negative cache
+                // says "missing" — it's a cheap local query, and a stale
+                // negative entry (e.g. written by an empty-URI recents fetch
+                // that could only try MusicBrainz) must not block it forever.
+                if !uri.is_empty() {
+                    if let Ok(Some(data)) = client.album_art(&uri).await {
+                        let _ = cache.store(&key, &data).await;
+                        return (key, Some(data));
+                    }
                 }
 
-                // Try MPD embedded art
-                if let Ok(Some(data)) = client.album_art(&uri).await {
-                    let _ = cache.store(&key, &data).await;
-                    return (key, Some(data));
+                // Persisted negative cache gates only the expensive,
+                // rate-limited MusicBrainz lookup.
+                if cache.is_known(&key).await {
+                    return (key, None);
                 }
 
                 // Parse artist and album from the key (format: "artist\x1falbum")
@@ -1437,7 +1442,15 @@ impl App {
                     }
                 }
 
-                cache.store_empty(&key).await;
+                // Only persist "not found" when we had a real URI and actually
+                // tried MPD. An empty-URI fetch (used for recently-played art at
+                // startup) only reaches MusicBrainz; a miss there must NOT poison
+                // the cache, because when the album is played later in the same
+                // session fetch_art will be called with a real file URI and we
+                // want the MPD embedded-art path to still run.
+                if !uri.is_empty() {
+                    cache.store_empty(&key).await;
+                }
                 (key, None)
             },
             |(key, data)| Message::ArtLoaded(key, data),
