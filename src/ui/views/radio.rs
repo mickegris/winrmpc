@@ -88,22 +88,22 @@ pub fn view<'a>(
 
     let add_form = column![
         add_section_title,
-        Space::with_height(8),
+        Space::new().height(8),
         name_input,
-        Space::with_height(4),
+        Space::new().height(4),
         url_input,
-        Space::with_height(8),
+        Space::new().height(8),
         add_btn,
     ]
     .spacing(2);
 
     let content = column![
         title,
-        Space::with_height(4),
+        Space::new().height(4),
         subtitle,
-        Space::with_height(16),
+        Space::new().height(16),
         scrollable(station_rows).height(Length::Fill),
-        Space::with_height(20),
+        Space::new().height(20),
         add_form,
     ]
     .spacing(4)

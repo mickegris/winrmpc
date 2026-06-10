@@ -114,11 +114,11 @@ pub fn view<'a>(
             progress,
             row![
                 song_info,
-                Space::with_width(Length::Fill),
+                Space::new().width(Length::Fill),
                 controls,
-                Space::with_width(Length::Fill),
+                Space::new().width(Length::Fill),
                 mode_indicators,
-                Space::with_width(16),
+                Space::new().width(16),
                 volume_slider,
             ]
             .align_y(Alignment::Center)

@@ -9,7 +9,7 @@ use iced::Element;
 /// the accent colour on hover. Emits `on_press` when clicked.
 pub fn link<'a>(
     label: impl text::IntoFragment<'a>,
-    size: u16,
+    size: u32,
     on_press: Message,
 ) -> Element<'a, Message> {
     button(text(label).size(size))
@@ -24,7 +24,7 @@ pub fn link<'a>(
                 background: None,
                 text_color,
                 border: iced::Border::default(),
-                shadow: iced::Shadow::default(),
+                ..Default::default()
             }
         })
         .into()
@@ -56,7 +56,7 @@ pub fn icon_btn<'a>(label: &'static str, on_press: Message) -> Element<'a, Messa
                     radius: 3.0.into(),
                     ..Default::default()
                 },
-                shadow: iced::Shadow::default(),
+                ..Default::default()
             }
         })
         .into()
@@ -66,7 +66,7 @@ pub fn icon_btn<'a>(label: &'static str, on_press: Message) -> Element<'a, Messa
 /// the artist line on the Now Playing view).
 pub fn link_accent<'a>(
     label: impl text::IntoFragment<'a>,
-    size: u16,
+    size: u32,
     on_press: Message,
 ) -> Element<'a, Message> {
     button(text(label).size(size))
@@ -81,7 +81,7 @@ pub fn link_accent<'a>(
                 background: None,
                 text_color,
                 border: iced::Border::default(),
-                shadow: iced::Shadow::default(),
+                ..Default::default()
             }
         })
         .into()

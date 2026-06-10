@@ -90,7 +90,7 @@ pub struct App {
     lyrics_client: crate::lyrics::LyricsClient,
     lyrics: HashMap<String, Option<crate::lyrics::Lyrics>>,
     show_lyrics: bool,
-    lyrics_scroll_id: scrollable::Id,
+    lyrics_scroll_id: iced::widget::Id,
 
     // Errors
     last_error: Option<String>,
@@ -165,7 +165,7 @@ impl App {
             lyrics_client: crate::lyrics::LyricsClient::new(),
             lyrics: HashMap::new(),
             show_lyrics: true,
-            lyrics_scroll_id: scrollable::Id::unique(),
+            lyrics_scroll_id: iced::widget::Id::unique(),
 
             last_error: None,
         };
@@ -535,7 +535,10 @@ impl App {
             }
             Message::GoBack => {
                 if let Some(prev) = self.view_history.pop() {
-                    self.current_view = prev;
+                    self.current_view = prev.clone();
+                    if prev == View::NowPlaying {
+                        return self.reset_lyrics_scroll();
+                    }
                 }
                 Task::none()
             }
@@ -1609,8 +1612,20 @@ impl App {
                 // No async loading needed — stations come from config
                 Task::none()
             }
+            View::NowPlaying => self.reset_lyrics_scroll(),
             _ => Task::none(),
         }
+    }
+
+    /// Snap the lyrics pane back to the top. Scrollable state is reused
+    /// positionally when views swap, so the pane can inherit a large offset
+    /// from another view's scrollable and render blank (scrolled past all
+    /// content). The per-Tick autoscroll then re-syncs synced lyrics.
+    fn reset_lyrics_scroll(&self) -> Task<Message> {
+        iced::widget::operation::snap_to(
+            self.lyrics_scroll_id.clone(),
+            scrollable::RelativeOffset::START,
+        )
     }
 
 fn fetch_lyrics(&self, song: &Song) -> Task<Message> {
@@ -1661,7 +1676,7 @@ fn fetch_lyrics(&self, song: &Song) -> Task<Message> {
 /// scrollable to a position proportional to the active line. No-op unless
 /// lyrics are shown and the current track has synced lyrics.
 fn lyrics_autoscroll(&self) -> Task<Message> {
-    if !self.show_lyrics {
+    if !self.show_lyrics || self.current_view != View::NowPlaying {
         return Task::none();
     }
     let Some(song) = &self.current_song else {
@@ -1686,7 +1701,7 @@ fn lyrics_autoscroll(&self) -> Task<Message> {
     let t = elapsed - crate::ui::views::now_playing::LYRIC_SYNC_OFFSET;
     let active = synced.iter().rposition(|l| l.secs <= t).unwrap_or(0);
     let ratio = active as f32 / (synced.len() - 1) as f32;
-    scrollable::snap_to(
+    iced::widget::operation::snap_to(
         self.lyrics_scroll_id.clone(),
         scrollable::RelativeOffset { x: 0.0, y: ratio },
     )
@@ -1700,7 +1715,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .size(13)
                 .color(AppColors::WARNING)
                 .into(),
-            None => Space::with_height(0).into(),
+            None => Space::new().height(0).into(),
         };
 
         let connection_status = if self.connected {
@@ -1715,24 +1730,24 @@ fn settings_view(&self) -> Element<'_, Message> {
 
         let content = column![
             text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
-            Space::with_height(12),
+            Space::new().height(12),
             connection_status,
             error_text,
-            Space::with_height(16),
+            Space::new().height(16),
             text("MPD Host")
                 .size(14)
                 .color(AppColors::TEXT_SECONDARY),
             text_input("127.0.0.1", &self.settings_host)
                 .on_input(Message::HostChanged)
                 .padding(8),
-            Space::with_height(8),
+            Space::new().height(8),
             text("MPD Port")
                 .size(14)
                 .color(AppColors::TEXT_SECONDARY),
             text_input("6600", &self.settings_port)
                 .on_input(Message::PortChanged)
                 .padding(8),
-            Space::with_height(8),
+            Space::new().height(8),
             text("Password (optional)")
                 .size(14)
                 .color(AppColors::TEXT_SECONDARY),
@@ -1740,26 +1755,26 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .on_input(Message::PasswordChanged)
                 .padding(8)
                 .secure(true),
-            Space::with_height(8),
+            Space::new().height(8),
             text("CD Device (optional, e.g. /dev/sr0)")
                 .size(14)
                 .color(AppColors::TEXT_SECONDARY),
             text_input("/dev/sr0", &self.settings_cd_device)
                 .on_input(Message::CdDeviceChanged)
                 .padding(8),
-            Space::with_height(16),
+            Space::new().height(16),
             button(text("Save & Reconnect").size(14))
                 .on_press(Message::SaveSettings)
                 .padding([8, 20]),
-            Space::with_height(20),
+            Space::new().height(20),
             text("Database")
                 .size(16)
                 .color(AppColors::TEXT_PRIMARY),
-            Space::with_height(8),
+            Space::new().height(8),
             text("Rescan your MPD music directory for new or changed files.")
                 .size(12)
                 .color(AppColors::TEXT_SECONDARY),
-            Space::with_height(8),
+            Space::new().height(8),
             button(text("Update Database").size(14))
                 .on_press(Message::UpdateDatabase)
                 .padding([8, 20]),

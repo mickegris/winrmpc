@@ -36,7 +36,8 @@ fn main() -> iced::Result {
 
     tracing::info!("Starting winrmpc v{}", env!("CARGO_PKG_VERSION"));
 
-    iced::application("winrmpc", App::update, App::view)
+    iced::application(App::new, App::update, App::view)
+        .title("winrmpc")
         .subscription(App::subscription)
         .theme(App::theme)
         .window(iced::window::Settings {
@@ -44,5 +45,5 @@ fn main() -> iced::Result {
             icon: icon::make_icon(),
             ..Default::default()
         })
-        .run_with(App::new)
+        .run()
 }

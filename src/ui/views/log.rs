@@ -26,11 +26,11 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
 
     let header = row![
         title,
-        Space::with_width(Length::Fill),
+        Space::new().width(Length::Fill),
         toggle_btn,
-        Space::with_width(8),
+        Space::new().width(8),
         copy_btn,
-        Space::with_width(8),
+        Space::new().width(8),
         clear_btn,
     ]
     .align_y(iced::Alignment::Center);
@@ -100,7 +100,7 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
 
     let content = column![
         header,
-        Space::with_height(12),
+        Space::new().height(12),
         scrollable(log_col).height(Length::Fill),
     ]
     .padding(20)
