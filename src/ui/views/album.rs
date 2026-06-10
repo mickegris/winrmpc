@@ -32,7 +32,7 @@ pub fn view<'a>(
             .on_press(Message::GoBack)
             .padding([4, 8]),
     );
-    header = header.push(Space::with_height(12));
+    header = header.push(Space::new().height(12));
 
     let art: Element<'a, Message> = match art_handle {
         Some(handle) => image(handle.clone()).width(200).height(200).into(),
@@ -51,9 +51,9 @@ pub fn view<'a>(
     };
 
     header = header.push(art);
-    header = header.push(Space::with_height(12));
+    header = header.push(Space::new().height(12));
     header = header.push(text(album_name).size(22).color(AppColors::TEXT_PRIMARY));
-    header = header.push(Space::with_height(4));
+    header = header.push(Space::new().height(4));
     header = header.push(
         button(text(artist).size(16).color(AppColors::ACCENT))
             .on_press(Message::ArtistSelected(artist.to_string()))
@@ -65,20 +65,20 @@ pub fn view<'a>(
                 ..Default::default()
             }),
     );
-    header = header.push(Space::with_height(4));
+    header = header.push(Space::new().height(4));
     header = header.push(
         text(format!("{} tracks  |  {} min", songs.len(), total_mins))
             .size(13)
             .color(AppColors::TEXT_MUTED),
     );
-    header = header.push(Space::with_height(8));
+    header = header.push(Space::new().height(8));
 
     header = header.push(
         row![
             button(text("Play All").size(13))
                 .on_press(Message::PlayAlbum(album_name.to_string()))
                 .padding([6, 16]),
-            Space::with_width(8),
+            Space::new().width(8),
             button(text("Queue All").size(13))
                 .on_press(Message::QueueAlbum(album_name.to_string()))
                 .padding([6, 16]),
@@ -87,7 +87,7 @@ pub fn view<'a>(
     );
 
     // Bio section
-    header = header.push(Space::with_height(8));
+    header = header.push(Space::new().height(8));
     match bio {
         Some(bio_text) => {
             let toggle_label = if show_bio { "Hide info" } else { "Show info" };
@@ -103,7 +103,7 @@ pub fn view<'a>(
                     }),
             );
             if show_bio {
-                header = header.push(Space::with_height(4));
+                header = header.push(Space::new().height(4));
                 header = header.push(
                     container(
                         text(bio_text).size(12).color(AppColors::TEXT_SECONDARY),

@@ -50,7 +50,7 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
                         ]
                         .width(Length::Fill),
                         text(status_text).size(14).color(status_color),
-                        Space::with_width(12),
+                        Space::new().width(12),
                         button(
                             text(if output.enabled { "Disable" } else { "Enable" }).size(13),
                         )
@@ -59,10 +59,10 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),
-                    Space::with_height(6),
+                    Space::new().height(6),
                     row![
                         text("Move to:").size(11).color(AppColors::TEXT_SECONDARY),
-                        Space::with_width(8),
+                        Space::new().width(8),
                         move_row,
                     ]
                     .align_y(Alignment::Center),
@@ -84,11 +84,11 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
     container(
         column![
             text("Outputs").size(24).color(AppColors::TEXT_PRIMARY),
-            Space::with_height(8),
+            Space::new().height(8),
             text("Enable/disable outputs or move them to a partition.")
                 .size(13)
                 .color(AppColors::TEXT_SECONDARY),
-            Space::with_height(16),
+            Space::new().height(16),
             output_list,
         ]
         .spacing(4)

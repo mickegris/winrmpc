@@ -90,12 +90,21 @@ impl MusicBrainzClient {
         // Try release-group search first (more reliable for cover art)
         let rg_id = self.search_release_group(artist, album).await?;
         if let Some(data) = self.fetch_cover_art_release_group(&rg_id).await {
+            tracing::info!(
+                "Cover art from MusicBrainz: {artist} — {album} ({} KB)",
+                data.len() / 1024
+            );
             return Some(data);
         }
 
         // Fallback: search for individual release
         let release_id = self.search_release(artist, album).await?;
-        self.fetch_cover_art_release(&release_id).await
+        let data = self.fetch_cover_art_release(&release_id).await?;
+        tracing::info!(
+            "Cover art from MusicBrainz: {artist} — {album} ({} KB)",
+            data.len() / 1024
+        );
+        Some(data)
     }
 
     /// Fetch artist art: find the artist, get their most popular release group, use its cover
@@ -116,6 +125,10 @@ impl MusicBrainzClient {
         // Try each release group until we find art
         for rg in groups {
             if let Some(data) = self.fetch_cover_art_release_group(&rg.id).await {
+                tracing::info!(
+                    "Artist image from MusicBrainz: {artist} ({} KB)",
+                    data.len() / 1024
+                );
                 return Some(data);
             }
         }

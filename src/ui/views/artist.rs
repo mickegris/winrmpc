@@ -18,7 +18,7 @@ pub fn view<'a>(
             .on_press(Message::GoBack)
             .padding([4, 8]),
     );
-    header = header.push(Space::with_height(8));
+    header = header.push(Space::new().height(8));
 
     let artist_art_key = format!("artist:{artist_name}");
     let artist_art: Element<'a, Message> =
@@ -45,10 +45,10 @@ pub fn view<'a>(
     header = header.push(
         row![
             artist_art,
-            Space::with_width(16),
+            Space::new().width(16),
             Column::new()
                 .push(text(artist_name).size(26).color(AppColors::TEXT_PRIMARY))
-                .push(Space::with_height(4))
+                .push(Space::new().height(4))
                 .push(
                     text(format!("{} albums", albums.len()))
                         .size(14)
@@ -58,7 +58,7 @@ pub fn view<'a>(
         .align_y(Alignment::Center),
     );
 
-    header = header.push(Space::with_height(8));
+    header = header.push(Space::new().height(8));
 
     match bio {
         Some(bio_text) => {
@@ -75,7 +75,7 @@ pub fn view<'a>(
                     }),
             );
             if show_bio {
-                header = header.push(Space::with_height(4));
+                header = header.push(Space::new().height(4));
                 header = header.push(
                     container(
                         text(bio_text).size(12).color(AppColors::TEXT_SECONDARY),
@@ -97,7 +97,7 @@ pub fn view<'a>(
         None => {}
     }
 
-    header = header.push(Space::with_height(8));
+    header = header.push(Space::new().height(8));
 
     // Scrollable album list
     let mut album_list = Column::new().spacing(0);
@@ -144,7 +144,7 @@ pub fn view<'a>(
             button(
                 row![
                     art_widget,
-                    Space::with_width(10),
+                    Space::new().width(10),
                     text(album.as_str())
                         .size(14)
                         .color(AppColors::TEXT_PRIMARY),

@@ -39,9 +39,9 @@ pub fn view<'a>(
                 button(text("<- Back").size(14).color(AppColors::ACCENT))
                     .on_press(Message::GoBack)
                     .padding([4, 8]),
-                Space::with_width(12),
+                Space::new().width(12),
                 text(genre_name).size(24).color(AppColors::TEXT_PRIMARY),
-                Space::with_width(12),
+                Space::new().width(12),
                 text(format!("{} albums", albums.len()))
                     .size(14)
                     .color(AppColors::TEXT_MUTED),
