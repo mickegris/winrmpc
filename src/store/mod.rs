@@ -10,7 +10,7 @@
 //! from inside `tokio::task::spawn_blocking` at the async call sites. Never hold
 //! a redb transaction across an `.await`.
 
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -55,11 +55,21 @@ impl Store {
         let path = cache_dir.join("winrmpc.redb");
         let db = match Database::create(&path) {
             Ok(db) => db,
-            Err(e) => {
-                tracing::warn!("Cache DB at {path:?} unavailable ({e}); using in-memory cache");
-                Database::builder()
-                    .create_with_backend(redb::backends::InMemoryBackend::new())
-                    .expect("in-memory redb backend")
+            Err(first_err) => {
+                // Most likely an incompatible on-disk format from an older redb
+                // major (the cache predates this build). The cache is disposable,
+                // so wipe the file and recreate it; fall back to an in-memory DB
+                // only if even a fresh file can't be opened.
+                tracing::warn!("Cache DB at {path:?} couldn't be opened ({first_err}); rebuilding it");
+                std::fs::remove_file(&path).ok();
+                Database::create(&path).unwrap_or_else(|second_err| {
+                    tracing::warn!(
+                        "Rebuilding cache DB failed ({second_err}); using in-memory cache"
+                    );
+                    Database::builder()
+                        .create_with_backend(redb::backends::InMemoryBackend::new())
+                        .expect("in-memory redb backend")
+                })
             }
         };
         let store = Self { db: Arc::new(db) };
@@ -207,8 +217,7 @@ impl Store {
         if let Ok(rtx) = self.db.begin_read() {
             if let Ok(table) = rtx.open_table(ART_META) {
                 if let Ok(iter) = table.iter() {
-                    for item in iter.flatten() {
-                        let (k, v) = item;
+                    for (k, v) in iter.flatten() {
                         if let Ok(m) = serde_json::from_slice::<ArtMeta>(v.value()) {
                             if !m.is_empty {
                                 total += m.size;
