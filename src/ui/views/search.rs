@@ -53,7 +53,7 @@ pub fn view<'a>(
                     text(album.clone())
                         .size(13)
                         .color(AppColors::ACCENT),
-                    Space::new().width(8),
+                    Space::with_width(8),
                     text(format!("by {artist}"))
                         .size(11)
                         .color(AppColors::TEXT_MUTED),
@@ -84,7 +84,7 @@ pub fn view<'a>(
             result_list = result_list.push(
                 container(
                     row![
-                        Space::new().width(8),
+                        Space::with_width(8),
                         icon_btn("▶", Message::PlaySong(song.file.clone())),
                         icon_btn("+", Message::QueueAddOnly(song.file.clone())),
                         text(track.to_string())
@@ -127,9 +127,9 @@ pub fn view<'a>(
             container(
                 column![
                     text("Search").size(24).color(AppColors::TEXT_PRIMARY),
-                    Space::new().height(12),
+                    Space::with_height(12),
                     search_bar,
-                    Space::new().height(8),
+                    Space::with_height(8),
                     text(status_text).size(13).color(AppColors::TEXT_MUTED),
                 ]
             )

@@ -36,9 +36,9 @@ pub fn view<'a>(albums: &'a [String]) -> Element<'a, Message> {
                 button(text("<- Back").size(14).color(AppColors::ACCENT))
                     .on_press(Message::GoBack)
                     .padding([4, 8]),
-                Space::new().width(12),
+                Space::with_width(12),
                 text("Albums").size(24).color(AppColors::TEXT_PRIMARY),
-                Space::new().width(12),
+                Space::with_width(12),
                 text(format!("{} albums", albums.len()))
                     .size(14)
                     .color(AppColors::TEXT_MUTED),
