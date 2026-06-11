@@ -78,6 +78,10 @@ pub struct App {
     settings_port: String,
     settings_password: String,
     settings_cd_device: String,
+    settings_server_name: String,
+    active_server: String,
+    settings_renaming: Option<String>,
+    settings_rename_input: String,
 
     // Recently played albums (most recent first, capped at 8)
     recent_albums: Vec<RecentAlbum>,
@@ -101,7 +105,12 @@ impl App {
         let mut config = AppConfig::load();
         config.ensure_builtin_stations();
 
-        let client = MpdClient::new(&config.mpd_addr());
+        let active_server = config
+            .default_server
+            .clone()
+            .or_else(|| config.servers.first().map(|s| s.name.clone()))
+            .unwrap_or_else(|| "Default".into());
+        let client = MpdClient::new(&config.server_addr(&active_server));
         let cache_dir = AppConfig::cache_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("./cache"));
         let store = Store::open(&cache_dir);
@@ -152,10 +161,14 @@ impl App {
 
             new_partition_name: String::new(),
 
-            settings_host: config.mpd_host.clone(),
-            settings_port: config.mpd_port.to_string(),
-            settings_password: config.mpd_password.clone().unwrap_or_default(),
+            settings_host: String::new(),
+            settings_port: String::new(),
+            settings_password: String::new(),
             settings_cd_device: config.cd_device.clone().unwrap_or_default(),
+            settings_server_name: String::new(),
+            active_server: active_server.clone(),
+            settings_renaming: None,
+            settings_rename_input: String::new(),
 
             recent_albums: config.recent_albums.clone(),
 
@@ -207,7 +220,10 @@ impl App {
                         self.last_error = None;
                         tracing::info!("Connected to MPD");
                         let client = self.client.clone();
-                        let partition = self.config.default_partition.clone();
+                        // Per-server partition, falling back to legacy global field.
+                        let partition = self.config.server(&self.active_server)
+                            .and_then(|s| s.default_partition.clone())
+                            .or_else(|| self.config.default_partition.clone());
                         return Task::perform(
                             async move {
                                 if let Some(p) = &partition {
@@ -859,6 +875,9 @@ impl App {
             // Partitions
             // =================================================================
             Message::SwitchPartition(name) => {
+                if let Some(server) = self.config.server_mut(&self.active_server) {
+                    server.default_partition = Some(name.clone());
+                }
                 self.config.default_partition = Some(name.clone());
                 self.config.save().ok();
                 let client = self.client.clone();
@@ -1061,24 +1080,133 @@ impl App {
                 self.settings_cd_device = d;
                 Task::none()
             }
-            Message::SaveSettings => {
-                self.config.mpd_host = self.settings_host.clone();
-                self.config.mpd_port =
-                    self.settings_port.parse().unwrap_or(6600);
-                self.config.mpd_password = if self.settings_password.is_empty() {
-                    None
-                } else {
-                    Some(self.settings_password.clone())
-                };
+            Message::StartRename(name) => {
+                self.settings_rename_input = name.clone();
+                self.settings_renaming = Some(name);
+                Task::none()
+            }
+            Message::RenameInputChanged(s) => {
+                self.settings_rename_input = s;
+                Task::none()
+            }
+            Message::ConfirmRename => {
+                let new_name = self.settings_rename_input.trim().to_string();
+                if let Some(old_name) = self.settings_renaming.take() {
+                    if !new_name.is_empty()
+                        && !self.config.servers.iter().any(|s| s.name == new_name && s.name != old_name)
+                    {
+                        if let Some(s) = self.config.server_mut(&old_name) {
+                            s.name = new_name.clone();
+                        }
+                        if self.active_server == old_name {
+                            self.active_server = new_name.clone();
+                        }
+                        if self.config.default_server.as_deref() == Some(old_name.as_str()) {
+                            self.config.default_server = Some(new_name.clone());
+                        }
+                        self.config.save().ok();
+                    }
+                }
+                self.settings_rename_input.clear();
+                Task::none()
+            }
+            Message::CancelRename => {
+                self.settings_renaming = None;
+                self.settings_rename_input.clear();
+                Task::none()
+            }
+            Message::SaveCdDevice => {
                 self.config.cd_device = if self.settings_cd_device.trim().is_empty() {
                     None
                 } else {
                     Some(self.settings_cd_device.trim().to_string())
                 };
                 self.config.save().ok();
-                self.client = MpdClient::new(&self.config.mpd_addr());
+                Task::none()
+            }
+            // Legacy — no longer in the UI; kept for compatibility.
+            Message::SaveSettings => Task::none(),
+            Message::ServerNameChanged(s) => {
+                self.settings_server_name = s;
+                Task::none()
+            }
+            Message::SwitchServer(name) => {
+                if name == self.active_server {
+                    return Task::none();
+                }
+                self.active_server = name.clone();
+                let addr = self.config.server_addr(&name);
+                self.client = MpdClient::new(&addr);
                 self.connected = false;
+                // Mirror legacy fields to the active server.
+                if let Some(s) = self.config.server(&name) {
+                    let host = s.host.clone();
+                    let port = s.port;
+                    let password = s.password.clone();
+                    let partition = s.default_partition.clone();
+                    self.config.mpd_host = host;
+                    self.config.mpd_port = port;
+                    self.config.mpd_password = password;
+                    self.config.default_partition = partition;
+                }
                 Task::perform(async {}, |_| Message::Connect)
+            }
+            Message::SetDefaultServer(name) => {
+                self.config.default_server = Some(name.clone());
+                self.config.save().ok();
+                // Also switch active connection so the sidebar dropdown reflects
+                // the new default immediately.
+                if name != self.active_server {
+                    return self.update(Message::SwitchServer(name));
+                }
+                Task::none()
+            }
+            Message::AddServer => {
+                let name = self.settings_server_name.trim().to_string();
+                let host = self.settings_host.trim().to_string();
+                let port: u16 = self.settings_port.trim().parse().unwrap_or(6600);
+                let password = if self.settings_password.is_empty() {
+                    None
+                } else {
+                    Some(self.settings_password.clone())
+                };
+                if !name.is_empty()
+                    && !host.is_empty()
+                    && !self.config.servers.iter().any(|s| s.name == name)
+                {
+                    self.config.servers.push(crate::config::MpdServer {
+                        name,
+                        host,
+                        port,
+                        password,
+                        default_partition: None,
+                    });
+                    self.config.save().ok();
+                    self.settings_server_name.clear();
+                    self.settings_host.clear();
+                    self.settings_port.clear();
+                    self.settings_password.clear();
+                }
+                Task::none()
+            }
+            Message::RemoveServer(name) => {
+                if self.config.servers.len() <= 1 {
+                    return Task::none();
+                }
+                let switching = self.active_server == name;
+                self.config.servers.retain(|s| s.name != name);
+                if self.config.default_server.as_deref() == Some(name.as_str()) {
+                    self.config.default_server =
+                        self.config.servers.first().map(|s| s.name.clone());
+                }
+                self.config.save().ok();
+                if switching {
+                    if let Some(first) = self.config.servers.first() {
+                        let first_name = first.name.clone();
+                        return self.update(Message::SwitchServer(first_name));
+                    }
+                }
+                Task::none()
             }
 
             // =================================================================
@@ -1159,7 +1287,9 @@ impl App {
         let sidebar = widgets::sidebar::view(
             &self.current_view,
             self.connected,
-            &self.config.mpd_addr(),
+            &self.config.server_addr(&self.active_server),
+            &self.config.servers,
+            &self.active_server,
         );
 
         let main_content: Element<Message> = match &self.current_view {
@@ -1262,7 +1392,7 @@ impl App {
                 )
             }
             View::CD => {
-                views::cd::view(&self.cd_tracks, self.cd_probing)
+                views::cd::view(&self.cd_tracks, self.cd_probing, &self.settings_cd_device)
             }
             View::Outputs => views::outputs::view(&self.outputs, &self.partitions),
             View::Partitions => {
@@ -1693,7 +1823,7 @@ fn lyrics_autoscroll(&self) -> Task<Message> {
 }
 
 fn settings_view(&self) -> Element<'_, Message> {
-        use iced::widget::{button, column, container, text, text_input, Space};
+        use iced::widget::{button, column, container, row, text, text_input, Space};
 
         let error_text: Element<'_, Message> = match &self.last_error {
             Some(e) => text(format!("Status: {e}"))
@@ -1703,58 +1833,237 @@ fn settings_view(&self) -> Element<'_, Message> {
             None => Space::with_height(0).into(),
         };
 
-        let connection_status = if self.connected {
-            text("Connected")
-                .size(14)
-                .color(AppColors::SUCCESS)
+        let conn_badge = if self.connected {
+            text("Connected").size(13).color(AppColors::SUCCESS)
         } else {
-            text("Disconnected")
-                .size(14)
-                .color(AppColors::ERROR)
+            text("Disconnected").size(13).color(AppColors::ERROR)
         };
 
+        // Server list rows
+        let mut server_list = column![].spacing(4);
+        for server in &self.config.servers {
+            let is_active = server.name == self.active_server;
+            let is_default =
+                self.config.default_server.as_deref() == Some(server.name.as_str());
+            let can_remove = self.config.servers.len() > 1;
+            let is_renaming = self.settings_renaming.as_deref() == Some(server.name.as_str());
+
+            let row_bg = if is_active {
+                AppColors::BG_TERTIARY
+            } else {
+                AppColors::BG_SECONDARY
+            };
+
+            let row_content: Element<'_, Message> = if is_renaming {
+                // Inline rename row
+                row![
+                    text_input("Server name", &self.settings_rename_input)
+                        .on_input(Message::RenameInputChanged)
+                        .on_submit(Message::ConfirmRename)
+                        .padding([4, 8])
+                        .size(13)
+                        .width(200),
+                    Space::with_width(6),
+                    button(text("Save").size(11))
+                        .on_press(Message::ConfirmRename)
+                        .padding([3, 10]),
+                    Space::with_width(4),
+                    button(text("Cancel").size(11))
+                        .on_press(Message::CancelRename)
+                        .padding([3, 10]),
+                ]
+                .align_y(iced::Alignment::Center)
+                .spacing(4)
+                .into()
+            } else {
+                let name_text: Element<'_, Message> = if is_active {
+                    text(&server.name).size(13).color(AppColors::ACCENT).into()
+                } else {
+                    text(&server.name).size(13).color(AppColors::TEXT_PRIMARY).into()
+                };
+
+                let addr_text = text(server.addr()).size(11).color(AppColors::TEXT_MUTED);
+
+                let connect_btn: Element<'_, Message> = if is_active {
+                    text("●").size(13).color(AppColors::SUCCESS).into()
+                } else {
+                    button(text("Connect").size(11))
+                        .on_press(Message::SwitchServer(server.name.clone()))
+                        .padding([3, 8])
+                        .into()
+                };
+
+                let default_btn: Element<'_, Message> = if is_default {
+                    container(text("Default").size(10).color(AppColors::ACCENT))
+                        .padding([3, 8])
+                        .style(|_t: &iced::Theme| container::Style {
+                            background: None,
+                            border: iced::Border {
+                                color: AppColors::ACCENT,
+                                width: 1.0,
+                                radius: 3.0.into(),
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                } else {
+                    button(text("Set as default").size(10))
+                        .on_press(Message::SetDefaultServer(server.name.clone()))
+                        .padding([3, 8])
+                        .style(|_t: &iced::Theme, s: button::Status| button::Style {
+                            background: None,
+                            text_color: match s {
+                                button::Status::Hovered | button::Status::Pressed => {
+                                    AppColors::TEXT_PRIMARY
+                                }
+                                _ => AppColors::TEXT_MUTED,
+                            },
+                            border: iced::Border {
+                                color: AppColors::TEXT_MUTED,
+                                width: 1.0,
+                                radius: 3.0.into(),
+                            },
+                            shadow: iced::Shadow::default(),
+                        })
+                        .into()
+                };
+
+                let rename_btn: Element<'_, Message> =
+                    button(text("Rename").size(10))
+                        .on_press(Message::StartRename(server.name.clone()))
+                        .padding([3, 8])
+                        .style(|_t: &iced::Theme, s: button::Status| button::Style {
+                            background: None,
+                            text_color: match s {
+                                button::Status::Hovered | button::Status::Pressed => {
+                                    AppColors::TEXT_PRIMARY
+                                }
+                                _ => AppColors::TEXT_MUTED,
+                            },
+                            border: iced::Border::default(),
+                            shadow: iced::Shadow::default(),
+                        })
+                        .into();
+
+                let remove_btn: Element<'_, Message> = if can_remove {
+                    button(text("×").size(13))
+                        .on_press(Message::RemoveServer(server.name.clone()))
+                        .padding([3, 8])
+                        .style(|_t: &iced::Theme, _s: button::Status| button::Style {
+                            background: None,
+                            text_color: AppColors::TEXT_MUTED,
+                            border: iced::Border::default(),
+                            shadow: iced::Shadow::default(),
+                        })
+                        .into()
+                } else {
+                    Space::with_width(0).into()
+                };
+
+                row![
+                    name_text,
+                    Space::with_width(8),
+                    addr_text,
+                    Space::with_width(Length::Fill),
+                    connect_btn,
+                    default_btn,
+                    rename_btn,
+                    remove_btn,
+                ]
+                .align_y(iced::Alignment::Center)
+                .spacing(4)
+                .into()
+            };
+
+            server_list = server_list.push(
+                container(row_content)
+                    .padding([6, 10])
+                    .width(Length::Fill)
+                    .style(move |_t: &iced::Theme| container::Style {
+                        background: Some(row_bg.into()),
+                        border: iced::Border {
+                            radius: 4.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+
+        // Add-server form
+        let add_form = column![
+            text("Add server").size(14).color(AppColors::TEXT_SECONDARY),
+            Space::with_height(6),
+            row![
+                column![
+                    text("Name").size(11).color(AppColors::TEXT_MUTED),
+                    text_input("My Server", &self.settings_server_name)
+                        .on_input(Message::ServerNameChanged)
+                        .padding(6)
+                        .size(12),
+                ]
+                .spacing(2)
+                .width(Length::FillPortion(2)),
+                Space::with_width(6),
+                column![
+                    text("Host").size(11).color(AppColors::TEXT_MUTED),
+                    text_input("127.0.0.1", &self.settings_host)
+                        .on_input(Message::HostChanged)
+                        .padding(6)
+                        .size(12),
+                ]
+                .spacing(2)
+                .width(Length::FillPortion(3)),
+                Space::with_width(6),
+                column![
+                    text("Port").size(11).color(AppColors::TEXT_MUTED),
+                    text_input("6600", &self.settings_port)
+                        .on_input(Message::PortChanged)
+                        .padding(6)
+                        .size(12),
+                ]
+                .spacing(2)
+                .width(70),
+                Space::with_width(6),
+                column![
+                    text("Password").size(11).color(AppColors::TEXT_MUTED),
+                    text_input("", &self.settings_password)
+                        .on_input(Message::PasswordChanged)
+                        .padding(6)
+                        .size(12)
+                        .secure(true),
+                ]
+                .spacing(2)
+                .width(Length::FillPortion(2)),
+                Space::with_width(6),
+                column![
+                    Space::with_height(15),
+                    button(text("Add").size(12))
+                        .on_press(Message::AddServer)
+                        .padding([6, 14]),
+                ]
+                .spacing(2),
+            ]
+            .align_y(iced::Alignment::End),
+        ]
+        .spacing(4);
+
         let content = column![
-            text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
-            Space::with_height(12),
-            connection_status,
+            row![
+                text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
+                Space::with_width(Length::Fill),
+                conn_badge,
+            ]
+            .align_y(iced::Alignment::Center),
             error_text,
-            Space::with_height(16),
-            text("MPD Host")
-                .size(14)
-                .color(AppColors::TEXT_SECONDARY),
-            text_input("127.0.0.1", &self.settings_host)
-                .on_input(Message::HostChanged)
-                .padding(8),
-            Space::with_height(8),
-            text("MPD Port")
-                .size(14)
-                .color(AppColors::TEXT_SECONDARY),
-            text_input("6600", &self.settings_port)
-                .on_input(Message::PortChanged)
-                .padding(8),
-            Space::with_height(8),
-            text("Password (optional)")
-                .size(14)
-                .color(AppColors::TEXT_SECONDARY),
-            text_input("", &self.settings_password)
-                .on_input(Message::PasswordChanged)
-                .padding(8)
-                .secure(true),
-            Space::with_height(8),
-            text("CD Device (optional, e.g. /dev/sr0)")
-                .size(14)
-                .color(AppColors::TEXT_SECONDARY),
-            text_input("/dev/sr0", &self.settings_cd_device)
-                .on_input(Message::CdDeviceChanged)
-                .padding(8),
-            Space::with_height(16),
-            button(text("Save & Reconnect").size(14))
-                .on_press(Message::SaveSettings)
-                .padding([8, 20]),
             Space::with_height(20),
-            text("Database")
-                .size(16)
-                .color(AppColors::TEXT_PRIMARY),
+            text("Servers").size(16).color(AppColors::TEXT_PRIMARY),
+            Space::with_height(8),
+            server_list,
+            Space::with_height(12),
+            add_form,
+            Space::with_height(24),
+            text("Database").size(16).color(AppColors::TEXT_PRIMARY),
             Space::with_height(8),
             text("Rescan your MPD music directory for new or changed files.")
                 .size(12)
@@ -1766,7 +2075,7 @@ fn settings_view(&self) -> Element<'_, Message> {
         ]
         .spacing(4)
         .padding(20)
-        .max_width(500);
+        .max_width(600);
 
         container(content)
             .width(Length::Fill)

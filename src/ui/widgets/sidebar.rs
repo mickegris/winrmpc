@@ -1,9 +1,16 @@
+use crate::config::MpdServer;
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
-use iced::widget::{button, column, container, text, Space};
+use iced::widget::{button, column, container, pick_list, text, Space};
 use iced::{Alignment, Element, Length};
 
-pub fn view<'a>(current_view: &View, connected: bool, mpd_addr: &str) -> Element<'a, Message> {
+pub fn view<'a>(
+    current_view: &View,
+    connected: bool,
+    mpd_addr: &str,
+    servers: &'a [MpdServer],
+    active_server: &'a str,
+) -> Element<'a, Message> {
     let status_text = if connected {
         text(format!("Connected\n{mpd_addr}"))
             .size(9)
@@ -14,11 +21,31 @@ pub fn view<'a>(current_view: &View, connected: bool, mpd_addr: &str) -> Element
             .color(AppColors::ERROR)
     };
 
+    // Server picker — only shown when there are multiple servers.
+    let server_picker: Element<'a, Message> = if servers.len() > 1 {
+        let names: Vec<String> = servers.iter().map(|s| s.name.clone()).collect();
+        pick_list(names, Some(active_server.to_string()), Message::SwitchServer)
+            .width(Length::Fill)
+            .text_size(9)
+            .padding([3, 6])
+            .into()
+    } else {
+        Space::with_height(0).into()
+    };
+
+    let version_text = text(concat!("v", env!("CARGO_PKG_VERSION")))
+        .size(9)
+        .color(AppColors::TEXT_MUTED);
+
     container(
         column![
             Space::with_height(12),
             container(status_text).center_x(Length::Fill),
-            Space::with_height(16),
+            Space::with_height(4),
+            server_picker,
+            Space::with_height(4),
+            container(version_text).center_x(Length::Fill),
+            Space::with_height(12),
             nav_button("Now Playing", View::NowPlaying, current_view),
             nav_button("Queue", View::Queue, current_view),
             nav_button("Artists", View::Artists, current_view),

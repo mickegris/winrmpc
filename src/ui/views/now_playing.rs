@@ -22,6 +22,16 @@ pub fn view<'a>(
     show_lyrics: bool,
     lyrics_scroll_id: iced::widget::scrollable::Id,
 ) -> Element<'a, Message> {
+    // Toggle row is placed first in ALL branches so the outer column has a
+    // stable skeleton regardless of current_song state. This prevents iced's
+    // positional widget-state diffing from reusing the centered "None" layout
+    // on the "Some" branches after a momentary None blip.
+    let toggle_row = row![
+        Space::with_width(Length::Fill),
+        lyrics_toggle(show_lyrics),
+    ]
+    .align_y(Alignment::Center);
+
     let content: Element<'a, Message> = match current_song {
         Some(song) => {
             let art_widget: Element<'a, Message> = match art_data {
@@ -153,13 +163,6 @@ pub fn view<'a>(
                 .into()
             };
 
-            // Show/Hide lyrics toggle, pinned top-right.
-            let toggle_row = row![
-                Space::with_width(Length::Fill),
-                lyrics_toggle(show_lyrics),
-            ]
-            .align_y(Alignment::Center);
-
             if show_lyrics {
                 // Two-column: left = art/info/recents (left-aligned), right = lyrics.
                 let elapsed = status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
@@ -199,19 +202,33 @@ pub fn view<'a>(
                 .into()
             }
         }
-        None => column![
-            Space::with_height(100),
-            text("Nothing playing")
-                .size(24)
-                .color(AppColors::TEXT_MUTED),
-            Space::with_height(8),
-            text("Add songs to the queue and press play")
-                .size(16)
-                .color(AppColors::TEXT_MUTED),
-        ]
-        .align_x(Alignment::Center)
-        .width(Length::Fill)
-        .into(),
+        None => {
+            // Same column skeleton as the Some branches; "Nothing playing"
+            // is centered via a nested container rather than align_x on the
+            // outer column, avoiding stale positional state after a None blip.
+            let placeholder: Element<'a, Message> = container(
+                column![
+                    text("Nothing playing")
+                        .size(24)
+                        .color(AppColors::TEXT_MUTED),
+                    Space::with_height(8),
+                    text("Add songs to the queue and press play")
+                        .size(16)
+                        .color(AppColors::TEXT_MUTED),
+                ]
+                .align_x(Alignment::Center),
+            )
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+
+            column![toggle_row, Space::with_height(8), placeholder]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        }
     };
 
     container(content)
