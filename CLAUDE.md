@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
-Windows MPD (Music Player Daemon) client built in **Rust** with **Iced 0.14** (GUI) and **Tokio** (async runtime). Connects to a remote MPD server over TCP. Target: Windows desktop, MPD server typically on Linux.
+Windows MPD (Music Player Daemon) client built in **Rust** with **Iced 0.13** (GUI) and **Tokio** (async runtime). Connects to a remote MPD server over TCP. Target: Windows desktop, MPD server typically on Linux.
 
 ## Commands
 Run all of these from the repo root (`C:\Users\mikae\winrmpc`), **not** from `src/`.
@@ -29,7 +29,7 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 
 ## Tech Stack
 - Rust 2021 edition
-- `iced 0.14` — Elm-style GUI (Model / Message / Update / View)
+- `iced 0.13` — Elm-style GUI (Model / Message / Update / View)
 - `tokio` — async runtime
 - `serde` / `toml` — config serialization
 - `directories` — platform config/cache paths
@@ -201,4 +201,4 @@ Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer fo
 Build dependency: `winres = "0.1"` in `[build-dependencies]`.
 
 ## Current Version
-`0.3.0` — see `Cargo.toml`
+`0.3.1` — see `Cargo.toml`

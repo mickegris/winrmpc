@@ -57,7 +57,7 @@ pub fn view<'a>(
             button(text("Play All").size(12))
                 .on_press(Message::QueueAddAndPlay(dir_path.clone()))
                 .padding([4, 12]),
-            Space::new().width(4),
+            Space::with_width(4),
             button(text("Queue All").size(12))
                 .on_press(Message::QueueAddOnly(dir_path))
                 .padding([4, 12]),
@@ -149,9 +149,9 @@ pub fn view<'a>(
             container(
                 column![
                     text("Browse").size(24).color(AppColors::TEXT_PRIMARY),
-                    Space::new().height(8),
+                    Space::with_height(8),
                     breadcrumb,
-                    Space::new().height(8),
+                    Space::with_height(8),
                     action_buttons,
                 ]
             )

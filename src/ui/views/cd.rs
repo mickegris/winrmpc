@@ -90,9 +90,9 @@ pub fn view<'a>(tracks: &'a [(String, Option<f64>)], probing: bool) -> Element<'
 
     let content = column![
         title,
-        Space::new().height(16),
+        Space::with_height(16),
         action_row,
-        Space::new().height(16),
+        Space::with_height(16),
         track_section,
     ]
     .spacing(4)

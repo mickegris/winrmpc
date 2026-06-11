@@ -36,9 +36,9 @@ pub fn view<'a>(artists: &'a [String]) -> Element<'a, Message> {
                 button(text("<- Back").size(14).color(AppColors::ACCENT))
                     .on_press(Message::GoBack)
                     .padding([4, 8]),
-                Space::new().width(12),
+                Space::with_width(12),
                 text("Artists").size(24).color(AppColors::TEXT_PRIMARY),
-                Space::new().width(12),
+                Space::with_width(12),
                 text(format!("{} artists", artists.len()))
                     .size(14)
                     .color(AppColors::TEXT_MUTED),

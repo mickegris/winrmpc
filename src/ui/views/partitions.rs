@@ -64,17 +64,17 @@ pub fn view<'a>(
     container(
         column![
             text("Partitions").size(24).color(AppColors::TEXT_PRIMARY),
-            Space::new().height(8),
+            Space::with_height(8),
             text("Manage MPD partitions. Each partition has its own queue, player, and outputs.")
                 .size(13)
                 .color(AppColors::TEXT_SECONDARY),
-            Space::new().height(16),
+            Space::with_height(16),
             partition_list,
-            Space::new().height(20),
+            Space::with_height(20),
             text("Create New Partition")
                 .size(16)
                 .color(AppColors::TEXT_PRIMARY),
-            Space::new().height(8),
+            Space::with_height(8),
             new_partition_row,
         ]
         .spacing(4)

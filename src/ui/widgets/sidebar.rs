@@ -16,9 +16,9 @@ pub fn view<'a>(current_view: &View, connected: bool, mpd_addr: &str) -> Element
 
     container(
         column![
-            Space::new().height(12),
+            Space::with_height(12),
             container(status_text).center_x(Length::Fill),
-            Space::new().height(16),
+            Space::with_height(16),
             nav_button("Now Playing", View::NowPlaying, current_view),
             nav_button("Queue", View::Queue, current_view),
             nav_button("Artists", View::Artists, current_view),
@@ -28,12 +28,12 @@ pub fn view<'a>(current_view: &View, connected: bool, mpd_addr: &str) -> Element
             nav_button("Search", View::Search, current_view),
             nav_button("Radio", View::Radio, current_view),
             nav_button("CD", View::CD, current_view),
-            Space::new().height(Length::Fill),
+            Space::with_height(Length::Fill),
             nav_button("Outputs", View::Outputs, current_view),
             nav_button("Partitions", View::Partitions, current_view),
             nav_button("Settings", View::Settings, current_view),
             nav_button("Log", View::Log, current_view),
-            Space::new().height(8),
+            Space::with_height(8),
         ]
         .spacing(1)
         .align_x(Alignment::Center)

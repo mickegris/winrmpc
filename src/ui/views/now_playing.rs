@@ -11,10 +11,6 @@ use std::collections::HashMap;
 /// hold each line a touch longer before advancing.
 pub(crate) const LYRIC_SYNC_OFFSET: f64 = 0.5;
 
-/// Standard Windows UI font for lyric text — the iced 0.14 bundled default
-/// renders lyric lines oddly.
-const LYRIC_FONT: iced::Font = iced::Font::with_name("Segoe UI");
-
 pub fn view<'a>(
     current_song: &'a Option<Song>,
     status: &'a Status,
@@ -24,7 +20,7 @@ pub fn view<'a>(
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     lyrics: Option<Option<&'a crate::lyrics::Lyrics>>,
     show_lyrics: bool,
-    lyrics_scroll_id: iced::widget::Id,
+    lyrics_scroll_id: iced::widget::scrollable::Id,
 ) -> Element<'a, Message> {
     let content: Element<'a, Message> = match current_song {
         Some(song) => {
@@ -56,21 +52,21 @@ pub fn view<'a>(
                     .size(28)
                     .color(AppColors::TEXT_PRIMARY)
                     .into(),
-                Space::new().height(8).into(),
+                Space::with_height(8).into(),
                 // Clickable artist
                 link_accent(
                     song.display_artist().to_string(),
                     20,
                     Message::ArtistSelected(song.display_artist().to_string()),
                 ),
-                Space::new().height(4).into(),
+                Space::with_height(4).into(),
                 // Clickable album
                 link(
                     song.display_album().to_string(),
                     18,
                     Message::AlbumSelected(song.display_album().to_string()),
                 ),
-                Space::new().height(12).into(),
+                Space::with_height(12).into(),
             ];
             if !tech_line.is_empty() {
                 info_items.push(
@@ -79,7 +75,7 @@ pub fn view<'a>(
                         .color(AppColors::TEXT_MUTED)
                         .into(),
                 );
-                info_items.push(Space::new().height(3).into());
+                info_items.push(Space::with_height(3).into());
             }
             if !meta_line.is_empty() {
                 info_items.push(
@@ -93,11 +89,11 @@ pub fn view<'a>(
             // --- Up Next, nested at the bottom of the info column ---
             if let Some(next) = next_song {
                 if let Some(pos) = next.pos {
-                    info_items.push(Space::new().height(24).into());
+                    info_items.push(Space::with_height(24).into());
                     info_items.push(
                         text("Up Next").size(12).color(AppColors::TEXT_MUTED).into(),
                     );
-                    info_items.push(Space::new().height(5).into());
+                    info_items.push(Space::with_height(5).into());
                     info_items.push(
                         button(
                             row![
@@ -118,7 +114,7 @@ pub fn view<'a>(
                             background: None,
                             text_color: AppColors::TEXT_PRIMARY,
                             border: iced::Border::default(),
-                            ..Default::default()
+                            shadow: iced::Shadow::default(),
                         })
                         .into(),
                     );
@@ -128,7 +124,7 @@ pub fn view<'a>(
             let info = column(info_items).spacing(2);
 
             // art + info side by side
-            let top_row = row![art_widget, Space::new().width(30), info]
+            let top_row = row![art_widget, Space::with_width(30), info]
                 .align_y(Alignment::Start);
 
             // --- Recently Played: bottom-left, bigger, last 5 ---
@@ -140,7 +136,7 @@ pub fn view<'a>(
                 .collect();
 
             let recents_section: Element<'a, Message> = if visible_recents.is_empty() {
-                Space::new().height(0).into()
+                Space::with_height(0).into()
             } else {
                 let thumbs: Vec<Element<'a, Message>> = visible_recents
                     .into_iter()
@@ -151,7 +147,7 @@ pub fn view<'a>(
                     text("Recently Played")
                         .size(14)
                         .color(AppColors::TEXT_SECONDARY),
-                    Space::new().height(10),
+                    Space::with_height(10),
                     row(thumbs).spacing(14),
                 ]
                 .into()
@@ -159,7 +155,7 @@ pub fn view<'a>(
 
             // Show/Hide lyrics toggle, pinned top-right.
             let toggle_row = row![
-                Space::new().width(Length::Fill),
+                Space::with_width(Length::Fill),
                 lyrics_toggle(show_lyrics),
             ]
             .align_y(Alignment::Center);
@@ -169,7 +165,7 @@ pub fn view<'a>(
                 let elapsed = status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
                 let left_col = column![
                     top_row,
-                    Space::new().height(Length::Fill),
+                    Space::with_height(Length::Fill),
                     recents_section,
                 ]
                 .width(Length::FillPortion(3))
@@ -179,8 +175,8 @@ pub fn view<'a>(
 
                 column![
                     toggle_row,
-                    Space::new().height(8),
-                    row![left_col, Space::new().width(24), right_col]
+                    Space::with_height(8),
+                    row![left_col, Space::with_width(24), right_col]
                         .width(Length::Fill)
                         .height(Length::Fill),
                 ]
@@ -193,9 +189,9 @@ pub fn view<'a>(
                 // recents pinned bottom.
                 column![
                     toggle_row,
-                    Space::new().height(8),
+                    Space::with_height(8),
                     top_row,
-                    Space::new().height(Length::Fill),
+                    Space::with_height(Length::Fill),
                     recents_section,
                 ]
                 .width(Length::Fill)
@@ -204,11 +200,11 @@ pub fn view<'a>(
             }
         }
         None => column![
-            Space::new().height(100),
+            Space::with_height(100),
             text("Nothing playing")
                 .size(24)
                 .color(AppColors::TEXT_MUTED),
-            Space::new().height(8),
+            Space::with_height(8),
             text("Add songs to the queue and press play")
                 .size(16)
                 .color(AppColors::TEXT_MUTED),
@@ -253,7 +249,7 @@ fn recent_thumb<'a>(
     button(
         column![
             thumb_art,
-            Space::new().height(6),
+            Space::with_height(6),
             text(label).size(13).color(AppColors::TEXT_SECONDARY),
         ]
         .align_x(Alignment::Center)
@@ -275,7 +271,7 @@ fn recent_thumb<'a>(
                 radius: 4.0.into(),
                 ..Default::default()
             },
-            ..Default::default()
+            shadow: iced::Shadow::default(),
         }
     })
     .into()
@@ -301,7 +297,7 @@ fn lyrics_toggle<'a>(show: bool) -> Element<'a, Message> {
                     radius: 4.0.into(),
                     ..Default::default()
                 },
-                ..Default::default()
+                shadow: iced::Shadow::default(),
             }
         })
         .into()
@@ -320,7 +316,7 @@ fn lyrics_toggle<'a>(show: bool) -> Element<'a, Message> {
 fn lyrics_column<'a>(
     lyrics: Option<Option<&'a crate::lyrics::Lyrics>>,
     elapsed: f64,
-    scroll_id: iced::widget::Id,
+    scroll_id: iced::widget::scrollable::Id,
 ) -> Element<'a, Message> {
     let inner: Element<'a, Message> = match lyrics {
         None => centered_note("Loading lyrics…"),
@@ -340,7 +336,7 @@ fn lyrics_column<'a>(
                 for (i, line) in synced.iter().enumerate() {
                     // Blank lines act as spacers between verses.
                     if line.text.is_empty() {
-                        col = col.push(Space::new().height(6));
+                        col = col.push(Space::with_height(6));
                         continue;
                     }
                     let is_active = Some(i) == active;
@@ -349,9 +345,7 @@ fn lyrics_column<'a>(
                     } else {
                         (AppColors::TEXT_MUTED, 15)
                     };
-                    col = col.push(
-                        text(&line.text).size(size).color(color).font(LYRIC_FONT),
-                    );
+                    col = col.push(text(&line.text).size(size).color(color));
                 }
                 scrollable(col)
                     .id(scroll_id)
@@ -359,18 +353,10 @@ fn lyrics_column<'a>(
                     .height(Length::Fill)
                     .into()
             } else if let Some(ref plain) = l.plain {
-                // Same id as the synced branch (only one renders at a time) so
-                // the on-view-enter scroll reset can find this pane too.
-                scrollable(
-                    text(plain)
-                        .size(15)
-                        .color(AppColors::TEXT_SECONDARY)
-                        .font(LYRIC_FONT),
-                )
-                .id(scroll_id)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+                scrollable(text(plain).size(15).color(AppColors::TEXT_SECONDARY))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
             } else {
                 centered_note("No lyrics available")
             }
@@ -397,7 +383,7 @@ fn lyrics_column<'a>(
 
 /// A short note centered in the lyrics pane (loading / not found / instrumental).
 fn centered_note<'a>(msg: &'a str) -> Element<'a, Message> {
-    container(text(msg).size(14).color(AppColors::TEXT_MUTED).font(LYRIC_FONT))
+    container(text(msg).size(14).color(AppColors::TEXT_MUTED))
         .center_x(Length::Fill)
         .center_y(Length::Fill)
         .width(Length::Fill)

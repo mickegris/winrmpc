@@ -12,7 +12,7 @@ pub fn view<'a>(
         text(format!("{} tracks", queue.len()))
             .size(13)
             .color(AppColors::TEXT_MUTED),
-        Space::new().width(Length::Fill),
+        Space::with_width(Length::Fill),
         button(text("Shuffle").size(12))
             .on_press(Message::QueueShuffle)
             .padding([4, 12]),
@@ -85,7 +85,7 @@ pub fn view<'a>(
             background: None,
             text_color: AppColors::TEXT_PRIMARY,
             border: iced::Border::default(),
-            ..Default::default()
+            shadow: iced::Shadow::default(),
         });
 
         let artist_btn = button(
@@ -101,7 +101,7 @@ pub fn view<'a>(
                 _ => AppColors::TEXT_SECONDARY,
             },
             border: iced::Border::default(),
-            ..Default::default()
+            shadow: iced::Shadow::default(),
         });
 
         let album_btn = button(
@@ -117,7 +117,7 @@ pub fn view<'a>(
                 _ => AppColors::TEXT_SECONDARY,
             },
             border: iced::Border::default(),
-            ..Default::default()
+            shadow: iced::Shadow::default(),
         });
 
         items = items.push(
