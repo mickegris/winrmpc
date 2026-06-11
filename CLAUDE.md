@@ -201,4 +201,4 @@ Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer fo
 Build dependency: `winres = "0.1"` in `[build-dependencies]`.
 
 ## Current Version
-`0.3.0` — see `Cargo.toml`
+`0.3.1` — see `Cargo.toml`
