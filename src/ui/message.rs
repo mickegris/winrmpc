@@ -113,11 +113,23 @@ pub enum Message {
     LyricsLoaded(String, Option<crate::lyrics::Lyrics>),
     ToggleLyrics,
 
-    // === Settings ===
+    // === Settings / Servers ===
     HostChanged(String),
     PortChanged(String),
     PasswordChanged(String),
+    ServerNameChanged(String),
     SaveSettings,
+    SwitchServer(String),
+    SetDefaultServer(String),
+    AddServer,
+    RemoveServer(String),
+    StartRename(String),
+    RenameInputChanged(String),
+    ConfirmRename,
+    CancelRename,
+
+    // === CD device ===
+    SaveCdDevice,
 
     // === Misc ===
     ErrorOccurred(String),

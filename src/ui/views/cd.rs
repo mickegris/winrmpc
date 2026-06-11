@@ -2,7 +2,7 @@
 
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Element, Length};
 
 fn fmt_dur(secs: f64) -> String {
@@ -10,10 +10,30 @@ fn fmt_dur(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-pub fn view<'a>(tracks: &'a [(String, Option<f64>)], probing: bool) -> Element<'a, Message> {
-    let title = text("Audio CD")
-        .size(24)
-        .color(AppColors::TEXT_PRIMARY);
+pub fn view<'a>(
+    tracks: &'a [(String, Option<f64>)],
+    probing: bool,
+    cd_device: &'a str,
+) -> Element<'a, Message> {
+    let title = text("Audio CD").size(24).color(AppColors::TEXT_PRIMARY);
+
+    // CD device configuration row
+    let device_row = row![
+        text("Device (e.g. /dev/sr0):")
+            .size(12)
+            .color(AppColors::TEXT_SECONDARY),
+        Space::with_width(8),
+        text_input("/dev/sr0", cd_device)
+            .on_input(Message::CdDeviceChanged)
+            .size(12)
+            .padding([4, 8])
+            .width(180),
+        Space::with_width(6),
+        button(text("Save").size(12))
+            .on_press(Message::SaveCdDevice)
+            .padding([4, 10]),
+    ]
+    .align_y(iced::Alignment::Center);
 
     // Top action row
     let play_whole_btn = button(text("Play Whole CD").size(13))
@@ -53,7 +73,7 @@ pub fn view<'a>(tracks: &'a [(String, Option<f64>)], probing: bool) -> Element<'
                 .width(Length::Fill);
 
             let dur_label = text(
-                dur.map(fmt_dur).unwrap_or_else(|| "--:--".to_string())
+                dur.map(fmt_dur).unwrap_or_else(|| "--:--".to_string()),
             )
             .size(12)
             .color(AppColors::TEXT_MUTED);
@@ -90,7 +110,9 @@ pub fn view<'a>(tracks: &'a [(String, Option<f64>)], probing: bool) -> Element<'
 
     let content = column![
         title,
-        Space::with_height(16),
+        Space::with_height(12),
+        device_row,
+        Space::with_height(12),
         action_row,
         Space::with_height(16),
         track_section,

@@ -1,3 +1,3 @@
 pub mod settings;
 
-pub use settings::AppConfig;
+pub use settings::{AppConfig, MpdServer};

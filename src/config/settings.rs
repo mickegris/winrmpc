@@ -3,24 +3,48 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MpdServer {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Per-server saved partition — restored on reconnect.
+    #[serde(default)]
+    pub default_partition: Option<String>,
+}
+
+impl MpdServer {
+    pub fn addr(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    // Legacy single-server fields — kept so old config files still load.
+    // Mirrored from the active server after migration.
     pub mpd_host: String,
     pub mpd_port: u16,
     pub mpd_password: Option<String>,
+    #[serde(default)]
     pub default_partition: Option<String>,
+
     pub art_cache_size_mb: u32,
     pub theme: ThemeConfig,
     #[serde(default = "default_radio_stations")]
     pub radio_stations: Vec<RadioStation>,
-    /// Optional CD device path on the MPD server, e.g. `/dev/sr0`.
-    /// When set, track listing uses `lsinfo cdda://{device}` instead of
-    /// the add/delete probe loop.
     #[serde(default)]
     pub cd_device: Option<String>,
-    /// Recently played albums, most recent first; capped at 8.
     #[serde(default)]
     pub recent_albums: Vec<RecentAlbum>,
+
+    // Multi-server
+    #[serde(default)]
+    pub servers: Vec<MpdServer>,
+    #[serde(default)]
+    pub default_server: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +88,13 @@ fn default_radio_stations() -> Vec<RadioStation> {
 
 impl Default for AppConfig {
     fn default() -> Self {
+        let server = MpdServer {
+            name: "Default".into(),
+            host: "127.0.0.1".into(),
+            port: 6600,
+            password: None,
+            default_partition: None,
+        };
         Self {
             mpd_host: "127.0.0.1".into(),
             mpd_port: 6600,
@@ -77,13 +108,32 @@ impl Default for AppConfig {
             radio_stations: default_radio_stations(),
             cd_device: None,
             recent_albums: Vec::new(),
+            servers: vec![server],
+            default_server: Some("Default".into()),
         }
     }
 }
 
 impl AppConfig {
+    /// Legacy addr — used as fallback only. Prefer `server_addr`.
     pub fn mpd_addr(&self) -> String {
         format!("{}:{}", self.mpd_host, self.mpd_port)
+    }
+
+    pub fn server(&self, name: &str) -> Option<&MpdServer> {
+        self.servers.iter().find(|s| s.name == name)
+    }
+
+    pub fn server_mut(&mut self, name: &str) -> Option<&mut MpdServer> {
+        self.servers.iter_mut().find(|s| s.name == name)
+    }
+
+    /// Address for the named server, falling back to first server then legacy fields.
+    pub fn server_addr(&self, name: &str) -> String {
+        self.server(name)
+            .map(|s| s.addr())
+            .or_else(|| self.servers.first().map(|s| s.addr()))
+            .unwrap_or_else(|| self.mpd_addr())
     }
 
     pub fn config_dir() -> Option<PathBuf> {
@@ -103,7 +153,20 @@ impl AppConfig {
     pub fn load() -> Self {
         if let Some(path) = Self::config_path() {
             if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(config) = toml::from_str(&content) {
+                if let Ok(mut config) = toml::from_str::<Self>(&content) {
+                    // One-time migration: synthesise a server entry from legacy fields.
+                    if config.servers.is_empty() {
+                        let server = MpdServer {
+                            name: "Default".into(),
+                            host: config.mpd_host.clone(),
+                            port: config.mpd_port,
+                            password: config.mpd_password.clone(),
+                            default_partition: config.default_partition.clone(),
+                        };
+                        config.servers.push(server);
+                        config.default_server = Some("Default".into());
+                        config.save().ok();
+                    }
                     return config;
                 }
             }
@@ -122,8 +185,7 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Ensure all built-in stations are present (in case config was saved
-    /// before a new built-in was added).
+    /// Ensure all built-in stations are present.
     pub fn ensure_builtin_stations(&mut self) {
         let builtins = default_radio_stations();
         for builtin in &builtins {
