@@ -150,6 +150,7 @@ pub fn view<'a>(
                 row![
                     icon_btn("▶", Message::PlaySong(song.file.clone())),
                     icon_btn("+", Message::QueueAddOnly(song.file.clone())),
+                    icon_btn("☰", Message::OpenAddToPlaylist(vec![song.file.clone()])),
                     text(track_num.to_string())
                         .size(13)
                         .width(30)

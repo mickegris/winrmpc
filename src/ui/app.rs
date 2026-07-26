@@ -48,6 +48,21 @@ pub struct App {
     search_query: String,
     search_results: Vec<Song>,
 
+    // Playlists
+    playlists: Vec<PlaylistInfo>,
+    playlist_songs: HashMap<String, Vec<Song>>,
+    selected_playlist: Option<String>,
+    /// Ephemeral client-side guess at "the queue was loaded from this stored
+    /// playlist" — MPD has no native concept of this. Set when a playlist is
+    /// loaded/played; cleared by any queue mutation that isn't a playlist
+    /// load (see the Message handlers below). Not persisted.
+    playing_from_playlist: Option<String>,
+    new_playlist_name: String,
+    playlist_renaming: Option<String>,
+    playlist_rename_input: String,
+    /// URIs staged for the shared "Add to Playlist" picker; `Some` while it's open.
+    add_to_playlist_uris: Option<Vec<String>>,
+
     // Cache store (album art + lyrics, redb-backed)
     store: Store,
 
@@ -142,6 +157,15 @@ impl App {
 
             search_query: String::new(),
             search_results: Vec::new(),
+
+            playlists: Vec::new(),
+            playlist_songs: HashMap::new(),
+            selected_playlist: None,
+            playing_from_playlist: None,
+            new_playlist_name: String::new(),
+            playlist_renaming: None,
+            playlist_rename_input: String::new(),
+            add_to_playlist_uris: None,
 
             store: store.clone(),
             art_cache: ArtCache::new(store, config.art_cache_size_mb),
@@ -450,6 +474,7 @@ impl App {
                 )
             }
             Message::QueueClear => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -468,6 +493,7 @@ impl App {
                 )
             } 
             Message::QueueAddUri(uri) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -483,6 +509,7 @@ impl App {
                 )
             }
             Message::QueueAddAndPlay(uri) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -495,6 +522,7 @@ impl App {
                 )
             }
             Message::QueueAddOnly(uri) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -505,6 +533,7 @@ impl App {
             }
             Message::PlaySong(uri) => {
                 // Insert at end of queue and immediately play — non-destructive.
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -516,6 +545,7 @@ impl App {
                 )
             }
             Message::PlayAlbum(album) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -527,6 +557,7 @@ impl App {
                 )
             }
             Message::QueueAlbum(album) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -734,6 +765,266 @@ impl App {
             }
 
             // =================================================================
+            // Playlists
+            // =================================================================
+            Message::PlaylistsLoaded(list) => {
+                self.playlists = list;
+                Task::none()
+            }
+            Message::PlaylistSelected(name) => {
+                self.selected_playlist = Some(name.clone());
+                self.view_history.push(self.current_view.clone());
+                self.current_view = View::PlaylistDetail(name.clone());
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        let songs = client.list_playlist(&name).await.unwrap_or_default();
+                        (name, songs)
+                    },
+                    |(name, songs)| Message::PlaylistSongsLoaded(name, songs),
+                )
+            }
+            Message::PlaylistSongsLoaded(name, songs) => {
+                if let Some(first) = songs.first() {
+                    let key = first.art_key();
+                    if !self.art_handles.contains_key(&key) {
+                        let task = self.fetch_art(first.file.clone(), key);
+                        self.playlist_songs.insert(name, songs);
+                        return task;
+                    }
+                }
+                self.playlist_songs.insert(name, songs);
+                Task::none()
+            }
+            Message::PlaylistPlay(name) => {
+                self.playing_from_playlist = Some(name.clone());
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.clear().await.ok();
+                        client.load_playlist(&name).await.ok();
+                        client.play_pos(0).await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::PlaylistAppend(name) => {
+                self.playing_from_playlist = None;
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.load_playlist(&name).await.ok();
+                        if let Ok(status) = client.status().await {
+                            if status.state == PlayState::Stop {
+                                client.play().await.ok();
+                            }
+                        }
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::PlaylistPlayAt(name, pos) => {
+                self.playing_from_playlist = Some(name.clone());
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.clear().await.ok();
+                        client.load_playlist(&name).await.ok();
+                        client.play_pos(pos).await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::PlaylistDelete(name) => {
+                self.playlist_songs.remove(&name);
+                if self.current_view == View::PlaylistDetail(name.clone()) {
+                    self.current_view = View::Playlists;
+                }
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.delete_playlist(&name).await.ok();
+                        client.list_playlists().await.unwrap_or_default()
+                    },
+                    Message::PlaylistsLoaded,
+                )
+            }
+            Message::PlaylistRemoveSong(name, pos) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.playlist_delete(&name, pos).await.ok();
+                        let songs = client.list_playlist(&name).await.unwrap_or_default();
+                        (name, songs)
+                    },
+                    |(name, songs)| Message::PlaylistSongsLoaded(name, songs),
+                )
+            }
+            Message::PlaylistMoveSongUp(name, pos) => {
+                if pos == 0 {
+                    return Task::none();
+                }
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.playlist_move(&name, pos, pos - 1).await.ok();
+                        let songs = client.list_playlist(&name).await.unwrap_or_default();
+                        (name, songs)
+                    },
+                    |(name, songs)| Message::PlaylistSongsLoaded(name, songs),
+                )
+            }
+            Message::PlaylistMoveSongDown(name, pos) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.playlist_move(&name, pos, pos + 1).await.ok();
+                        let songs = client.list_playlist(&name).await.unwrap_or_default();
+                        (name, songs)
+                    },
+                    |(name, songs)| Message::PlaylistSongsLoaded(name, songs),
+                )
+            }
+            Message::SaveQueueAsPlaylist => {
+                let name_input = self.new_playlist_name.clone();
+                match validate_playlist_name(&name_input) {
+                    Some(name) if !self.queue.is_empty() => {
+                        self.new_playlist_name.clear();
+                        let client = self.client.clone();
+                        Task::perform(
+                            async move {
+                                client.save_playlist(&name).await.ok();
+                                client.list_playlists().await.unwrap_or_default()
+                            },
+                            Message::PlaylistsLoaded,
+                        )
+                    }
+                    Some(_) => Task::none(),
+                    None => {
+                        self.last_error = Some(
+                            "Playlist names must not be empty or contain slashes.".to_string(),
+                        );
+                        Task::none()
+                    }
+                }
+            }
+            Message::NewPlaylistNameChanged(s) => {
+                self.new_playlist_name = s;
+                Task::none()
+            }
+            Message::StartRenamePlaylist(name) => {
+                self.playlist_rename_input = name.clone();
+                self.playlist_renaming = Some(name);
+                Task::none()
+            }
+            Message::RenamePlaylistInput(s) => {
+                self.playlist_rename_input = s;
+                Task::none()
+            }
+            Message::ConfirmRenamePlaylist => {
+                let mut task = Task::none();
+                if let Some(old_name) = self.playlist_renaming.take() {
+                    match validate_playlist_name(&self.playlist_rename_input) {
+                        Some(new_name) if new_name != old_name => {
+                            let client = self.client.clone();
+                            task = Task::perform(
+                                async move {
+                                    client.rename_playlist(&old_name, &new_name).await.ok();
+                                    client.list_playlists().await.unwrap_or_default()
+                                },
+                                Message::PlaylistsLoaded,
+                            );
+                        }
+                        Some(_) => {}
+                        None => {
+                            self.last_error = Some(
+                                "Playlist names must not be empty or contain slashes.".to_string(),
+                            );
+                        }
+                    }
+                }
+                self.playlist_rename_input.clear();
+                task
+            }
+            Message::CancelRenamePlaylist => {
+                self.playlist_renaming = None;
+                self.playlist_rename_input.clear();
+                Task::none()
+            }
+
+            // =================================================================
+            // Shared "Add to Playlist" picker
+            // =================================================================
+            Message::OpenAddToPlaylist(uris) => {
+                self.add_to_playlist_uris = Some(uris);
+                self.view_history.push(self.current_view.clone());
+                self.current_view = View::AddToPlaylist;
+                let client = self.client.clone();
+                Task::perform(
+                    async move { client.list_playlists().await.unwrap_or_default() },
+                    Message::PlaylistsLoaded,
+                )
+            }
+            Message::AddToPlaylistConfirm(name) => {
+                let task = if let Some(uris) = self.add_to_playlist_uris.take() {
+                    let client = self.client.clone();
+                    Task::perform(
+                        async move {
+                            for uri in uris {
+                                client.playlist_add(&name, &uri).await.ok();
+                            }
+                            client.list_playlists().await.unwrap_or_default()
+                        },
+                        Message::PlaylistsLoaded,
+                    )
+                } else {
+                    Task::none()
+                };
+                if let Some(prev) = self.view_history.pop() {
+                    self.current_view = prev;
+                }
+                task
+            }
+            Message::AddToNewPlaylist => {
+                let name_input = self.new_playlist_name.clone();
+                match validate_playlist_name(&name_input) {
+                    Some(name) => {
+                        if let Some(uris) = self.add_to_playlist_uris.take() {
+                            self.new_playlist_name.clear();
+                            if let Some(prev) = self.view_history.pop() {
+                                self.current_view = prev;
+                            }
+                            let client = self.client.clone();
+                            Task::perform(
+                                async move {
+                                    for uri in uris {
+                                        client.playlist_add(&name, &uri).await.ok();
+                                    }
+                                    client.list_playlists().await.unwrap_or_default()
+                                },
+                                Message::PlaylistsLoaded,
+                            )
+                        } else {
+                            Task::none()
+                        }
+                    }
+                    None => {
+                        self.last_error = Some(
+                            "Playlist names must not be empty or contain slashes.".to_string(),
+                        );
+                        Task::none()
+                    }
+                }
+            }
+            Message::CloseAddToPlaylist => {
+                self.add_to_playlist_uris = None;
+                if let Some(prev) = self.view_history.pop() {
+                    self.current_view = prev;
+                }
+                Task::none()
+            }
+
+            // =================================================================
             // Browser
             // =================================================================
             Message::BrowsePath(path) => {
@@ -754,6 +1045,7 @@ impl App {
                 Task::none()
             }
             Message::BrowseAddToQueue(uri) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -785,6 +1077,7 @@ impl App {
                 Task::none()
             }
             Message::SearchAddToQueue(uri) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -921,6 +1214,7 @@ impl App {
             // =================================================================
             Message::RadioPlay(url) => {
                 // Clear the queue, add the stream URL, and play
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -960,6 +1254,7 @@ impl App {
             // CD
             // =================================================================
             Message::CdPlayWhole => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 let device = self.config.cd_device.clone();
                 Task::perform(
@@ -1045,6 +1340,7 @@ impl App {
                 Task::none()
             }
             Message::CdPlayTrack(uri) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -1056,6 +1352,7 @@ impl App {
                 )
             }
             Message::CdAddTrack(uri) => {
+                self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -1323,6 +1620,7 @@ impl App {
                     lyrics,
                     self.show_lyrics,
                     self.lyrics_scroll_id.clone(),
+                    self.playing_from_playlist.as_deref(),
                 )
             }
             View::Queue => {
@@ -1409,6 +1707,34 @@ impl App {
             }
             View::Settings => self.settings_view(),
             View::Log => views::log::view(&self.log_entries, self.log_show_mpd_only),
+            View::Playlists => views::playlists_list::view(
+                &self.playlists,
+                &self.new_playlist_name,
+                self.playlist_renaming.as_deref(),
+                &self.playlist_rename_input,
+                self.queue.is_empty(),
+            ),
+            View::PlaylistDetail(name) => {
+                let songs = self
+                    .playlist_songs
+                    .get(name)
+                    .map(|s| s.as_slice())
+                    .unwrap_or(&[]);
+                let art_key = songs
+                    .first()
+                    .map(|s| s.art_key())
+                    .unwrap_or_default();
+                let art = self.art_handles.get(&art_key);
+                views::playlist_detail::view(name, songs, art)
+            }
+            View::AddToPlaylist => {
+                let count = self
+                    .add_to_playlist_uris
+                    .as_ref()
+                    .map(|u| u.len())
+                    .unwrap_or(0);
+                views::add_to_playlist::view(&self.playlists, &self.new_playlist_name, count)
+            }
         };
 
         let player_bar =
@@ -1738,6 +2064,13 @@ impl App {
             View::Radio => {
                 // No async loading needed — stations come from config
                 Task::none()
+            }
+            View::Playlists => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move { client.list_playlists().await.unwrap_or_default() },
+                    Message::PlaylistsLoaded,
+                )
             }
             _ => Task::none(),
         }

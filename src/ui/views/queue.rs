@@ -1,6 +1,7 @@
 use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::link::icon_btn;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -134,6 +135,7 @@ pub fn view<'a>(
                         .size(11)
                         .width(55)
                         .color(AppColors::TEXT_MUTED),
+                    icon_btn("☰", Message::OpenAddToPlaylist(vec![song.file.clone()])),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),

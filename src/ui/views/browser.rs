@@ -113,7 +113,7 @@ pub fn view<'a>(
                         ("[dir]", name.to_string(), Message::BrowsePath(d.path.clone()))
                     }
                     DirectoryEntry::Playlist(p) => {
-                        ("[list]", p.name.clone(), Message::QueueAddUri(p.name.clone()))
+                        ("[list]", p.name.clone(), Message::PlaylistSelected(p.name.clone()))
                     }
                     DirectoryEntry::File(_) => unreachable!(),
                 };

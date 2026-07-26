@@ -319,7 +319,16 @@ impl MpdClient {
         let pairs = self
             .cmd(&format!("listplaylistinfo \"{}\"", Self::escape(name)))
             .await?;
-        Ok(commands::parse_songs(&pairs))
+        let mut songs = commands::parse_songs(&pairs);
+        // Some MPD versions omit "Pos" from listplaylistinfo; assign it from
+        // the record index so duplicate files in a playlist still resolve to
+        // a unique, correct position for play-at/remove/move.
+        for (i, song) in songs.iter_mut().enumerate() {
+            if song.pos.is_none() {
+                song.pos = Some(i as u32);
+            }
+        }
+        Ok(songs)
     }
 
     pub async fn save_playlist(&self, name: &str) -> MpdResult<()> {
@@ -332,6 +341,37 @@ impl MpdClient {
 
     pub async fn load_playlist(&self, name: &str) -> MpdResult<()> {
         self.cmd_ok(&format!("load \"{}\"", Self::escape(name))).await
+    }
+
+    pub async fn playlist_add(&self, name: &str, uri: &str) -> MpdResult<()> {
+        self.cmd_ok(&format!(
+            "playlistadd \"{}\" \"{}\"",
+            Self::escape(name),
+            Self::escape(uri)
+        ))
+        .await
+    }
+
+    pub async fn playlist_delete(&self, name: &str, pos: u32) -> MpdResult<()> {
+        self.cmd_ok(&format!("playlistdelete \"{}\" {pos}", Self::escape(name)))
+            .await
+    }
+
+    pub async fn playlist_move(&self, name: &str, from: u32, to: u32) -> MpdResult<()> {
+        self.cmd_ok(&format!(
+            "playlistmove \"{}\" {from} {to}",
+            Self::escape(name)
+        ))
+        .await
+    }
+
+    pub async fn rename_playlist(&self, old: &str, new: &str) -> MpdResult<()> {
+        self.cmd_ok(&format!(
+            "rename \"{}\" \"{}\"",
+            Self::escape(old),
+            Self::escape(new)
+        ))
+        .await
     }
 
     // ========================================================================

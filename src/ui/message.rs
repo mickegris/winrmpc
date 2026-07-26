@@ -95,6 +95,33 @@ pub enum Message {
     /// Insert song at end of queue and immediately play it (non-destructive).
     PlaySong(String),
 
+    // === Playlists ===
+    PlaylistsLoaded(Vec<PlaylistInfo>),
+    PlaylistSelected(String),
+    PlaylistSongsLoaded(String, Vec<Song>),
+    /// Replace the queue with the playlist and play from the start.
+    PlaylistPlay(String),
+    /// Append the playlist to the queue (does not set the "playing from" context).
+    PlaylistAppend(String),
+    /// Replace the queue with the playlist and play the track at `pos`.
+    PlaylistPlayAt(String, u32),
+    PlaylistDelete(String),
+    PlaylistRemoveSong(String, u32),
+    PlaylistMoveSongUp(String, u32),
+    PlaylistMoveSongDown(String, u32),
+    SaveQueueAsPlaylist,
+    NewPlaylistNameChanged(String),
+    StartRenamePlaylist(String),
+    RenamePlaylistInput(String),
+    ConfirmRenamePlaylist,
+    CancelRenamePlaylist,
+
+    // === Shared "Add to Playlist" picker ===
+    OpenAddToPlaylist(Vec<String>),
+    AddToPlaylistConfirm(String),
+    AddToNewPlaylist,
+    CloseAddToPlaylist,
+
     // === CD ===
     CdProbe,
     /// (uri, optional_duration_secs)
@@ -159,6 +186,9 @@ pub enum View {
     Partitions,
     Settings,
     Log,
+    Playlists,
+    PlaylistDetail(String),
+    AddToPlaylist,
 }
 
 impl Default for View {

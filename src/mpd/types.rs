@@ -203,6 +203,23 @@ pub struct PlaylistInfo {
     pub last_modified: Option<String>,
 }
 
+/// MPD stored-playlist names are file names (`NAME.m3u` on disk): returns the
+/// trimmed name, or `None` for empty names or names containing path
+/// separators/newlines.
+pub fn validate_playlist_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains('\n')
+        || trimmed.contains('\r')
+    {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Stats {
     pub uptime: Duration,
@@ -442,5 +459,35 @@ mod tests {
         assert_eq!(v.len(), 8);
         // Most recent is at front
         assert_eq!(v[0].album, "9");
+    }
+
+    // --- validate_playlist_name ------------------------------------------
+
+    #[test]
+    fn validate_playlist_name_trims_whitespace() {
+        assert_eq!(validate_playlist_name("  My Mix  "), Some("My Mix".to_string()));
+    }
+
+    #[test]
+    fn validate_playlist_name_rejects_empty() {
+        assert_eq!(validate_playlist_name(""), None);
+        assert_eq!(validate_playlist_name("   "), None);
+    }
+
+    #[test]
+    fn validate_playlist_name_rejects_path_separators() {
+        assert_eq!(validate_playlist_name("a/b"), None);
+        assert_eq!(validate_playlist_name("a\\b"), None);
+    }
+
+    #[test]
+    fn validate_playlist_name_rejects_newlines() {
+        assert_eq!(validate_playlist_name("a\nb"), None);
+        assert_eq!(validate_playlist_name("a\rb"), None);
+    }
+
+    #[test]
+    fn validate_playlist_name_accepts_plain_name() {
+        assert_eq!(validate_playlist_name("Road Trip"), Some("Road Trip".to_string()));
     }
 }

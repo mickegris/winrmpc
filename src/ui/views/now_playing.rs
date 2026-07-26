@@ -21,6 +21,7 @@ pub fn view<'a>(
     lyrics: Option<Option<&'a crate::lyrics::Lyrics>>,
     show_lyrics: bool,
     lyrics_scroll_id: iced::widget::scrollable::Id,
+    playing_from: Option<&'a str>,
 ) -> Element<'a, Message> {
     // Toggle row is placed first in ALL branches so the outer column has a
     // stable skeleton regardless of current_song state. This prevents iced's
@@ -78,6 +79,21 @@ pub fn view<'a>(
                 ),
                 Space::with_height(12).into(),
             ];
+
+            if let Some(name) = playing_from {
+                info_items.push(link(
+                    format!("▤ Playing from {name}"),
+                    13,
+                    Message::PlaylistSelected(name.to_string()),
+                ));
+                info_items.push(Space::with_height(6).into());
+            }
+            info_items.push(link(
+                "+ Add to Playlist",
+                12,
+                Message::OpenAddToPlaylist(vec![song.file.clone()]),
+            ));
+            info_items.push(Space::with_height(10).into());
             if !tech_line.is_empty() {
                 info_items.push(
                     text(tech_line)
