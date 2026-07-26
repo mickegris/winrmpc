@@ -29,11 +29,15 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 
 ## Tech Stack
 - Rust 2021 edition
-- `iced 0.13` — Elm-style GUI (Model / Message / Update / View)
+- `iced 0.13` — Elm-style GUI (Model / Message / Update / View). NB: an attempted 0.14 migration was reverted (see commits `61024b2`/`31c7dba`); stay on 0.13.
 - `tokio` — async runtime
-- `serde` / `toml` — config serialization
+- `redb 4` — embedded key-value DB backing the art + lyrics cache (`src/store/mod.rs`)
+- `image 0.25` — decode/downscale album art
+- `reqwest 0.12` — HTTP for MusicBrainz / Wikipedia / LRCLIB
+- `serde` / `serde_json` / `toml` — config + cache serialization
 - `directories` — platform config/cache paths
-- `anyhow`, `tracing`
+- `fuzzy-matcher` — search ranking; `flume` — channels; `open` — launch URLs; `urlencoding`; `chrono`
+- `anyhow`, `thiserror`, `tracing`
 
 ## Project Structure
 
@@ -53,10 +57,15 @@ src/
     client.rs                High-level async API (one method per MPD command)
     types.rs                 All domain types: Song, Status, Output, Partition, …
     error.rs                 MpdError enum
+  store/
+    mod.rs                   redb-backed cache DB (winrmpc.redb): art blobs + LRU meta + lyrics; sync API, call inside spawn_blocking
   art/
     mod.rs                   Re-exports ArtCache, MusicBrainzClient
-    cache.rs                 Disk-backed art cache (Arc<Inner>, keyed by string)
+    cache.rs                 In-memory hot layer (HashMap) over the redb Store; downscales art to 500px JPEG on store
     musicbrainz.rs           MusicBrainz + Wikipedia fetch (artist bio, album bio, cover art)
+  lyrics/
+    mod.rs                   Re-exports Lyrics, fetch_lyrics
+    lrclib.rs                LRCLIB fetch + parse_lrc ([mm:ss.xx] synced lyrics)
   ui/
     mod.rs
     message.rs               Message enum + View enum
@@ -85,20 +94,21 @@ src/
       player_bar.rs          Transport controls bar (play/pause/stop/prev/next, seek, volume)
       sidebar.rs             Navigation sidebar
       art_image.rs           Bytes → iced ImageHandle helper
+      link.rs                Clickable hyperlink widget (opens URLs via `open`)
       mod.rs
 ```
 
 ## AppConfig (`src/config/settings.rs`)
 Fields saved to TOML via `directories` (Windows: `%APPDATA%\winrmpc\winrmpc\config\config.toml`):
-- `mpd_host`, `mpd_port`, `mpd_password: Option<String>`
-- `default_partition: Option<String>` — restored on startup
-- `art_cache_size_mb: u32`
+- **Multi-server** (v0.4.0): `servers: Vec<MpdServer>` + `default_server: Option<String>` (name). `MpdServer { name, host, port, password, default_partition }` — partition is **per-server** (partitions live on one MPD instance). Helpers: `server(name)`, `server_mut(name)`, `server_addr(name)` (falls back to first server, then legacy `mpd_addr()`).
+- **Legacy single-server fields** kept for back-compat: `mpd_host`, `mpd_port`, `mpd_password`, `default_partition`. Mirror the active server; drop in a future release.
+- `art_cache_size_mb: u32` — enforced via LRU eviction in the redb store (not just advisory)
 - `theme: ThemeConfig`
-- `radio_stations: Vec<RadioStation>` — built-ins + user customs
-- `cd_device: Option<String>` — e.g. `/dev/sr0`; used for CD lsinfo, `#[serde(default)]`
+- `radio_stations: Vec<RadioStation>` — built-ins + user customs; `ensure_builtin_stations()` re-adds missing built-ins on load
+- `cd_device: Option<String>` — e.g. `/dev/sr0`; edited in the **CD view** (moved out of Settings), `#[serde(default)]`
 - `recent_albums: Vec<RecentAlbum>` — most-recent-first, capped at 8, `#[serde(default)]`; updated on `CurrentSongUpdated` when the album changes
 
-All new optional fields must carry `#[serde(default)]` so existing config files still load.
+**Migration** (`AppConfig::load`): if `servers` is empty after deserialize, synthesize `MpdServer { name: "Default", … }` from the legacy fields, set `default_server`, and `save()` once so the file upgrades. All new optional fields must carry `#[serde(default)]` so existing config files still load.
 
 ## MpdClient (`src/mpd/client.rs`)
 - `Arc<Mutex<Option<MpdConnection>>>` — clone-cheap, shared across async tasks
@@ -159,6 +169,17 @@ Uses `find_add("Album", &album_name)` — tag-exact match. `PlayAlbum` clears qu
 ### Protocol EOF guard (`src/mpd/protocol.rs`)
 All three read loops (`read_pairs`, `command_list`, `read_binary`) check `if line.is_empty()` and return `MpdError::Connection("Connection closed unexpectedly")` to prevent infinite hang on server drop.
 
+## Cache Store (`src/store/mod.rs`)
+Single `winrmpc.redb` file under the platform cache dir. Tables: `art` (blobs), `art_meta` (`ArtMeta { size, last_access, is_empty }`), `lyrics` (serde_json `Option<Lyrics>`), `meta` (migration markers).
+- **redb is synchronous** — every `Store` method must be called inside `spawn_blocking`; never hold a transaction across `.await`. Writes commit (fsync) immediately — there is **no flush-on-close**; a crash after a fetch loses nothing.
+- `ArtCache` (`art/cache.rs`) is an in-memory `HashMap` hot layer over `Store`; `Store` is the source of truth. `store()` downscales to a 500px JPEG before persisting.
+- **LRU eviction**: `art_put` calls `art_evict(limit_bytes)` — removes oldest `last_access` entries until under `art_cache_size_mb`. Negative entries (`is_empty`, no blob) are exempt.
+- **Negative caching**: `art_put_empty` / `store_empty` records "known missing" so art isn't refetched every launch. `art_known` / `is_known` gate whether to fetch. Lyrics use `Some(None)` for "cached: no lyrics exist".
+- **Startup housekeeping** (`open`): recreates tables; `purge_poisoned_negatives` (one-time, `neg_purge_v1` marker) clears stale negatives that blocked embedded-art lookups; `cleanup_legacy` deletes the pre-DB flat `*.jpg` + `lyrics/` caches. On DB-open failure it wipes+rebuilds, falling back to an in-memory backend so the app still runs.
+
+## Server switching (`src/ui/app.rs`, `src/ui/message.rs`)
+`active_server: String` tracks the current server by name. `SwitchServer(name)` rebuilds `MpdClient`, sets `connected = false`, emits `Connect`, and restores that server's `default_partition` on `Connected`. `SetDefaultServer` / `AddServer` / `RemoveServer` manage the list from the Settings view; startup connects to `default_server`.
+
 ## Wikipedia / MusicBrainz (`src/art/musicbrainz.rs`)
 - **Artist bio**: 1) MusicBrainz Wikipedia URL relation; 2) suffix fallback `["(band)", "(musician)", …]`
 - **Album bio**: 1) MusicBrainz release-group Wikipedia URL relation; 2) `"(album)"` fallback
@@ -201,4 +222,4 @@ Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer fo
 Build dependency: `winres = "0.1"` in `[build-dependencies]`.
 
 ## Current Version
-`0.3.1` — see `Cargo.toml`
+`0.4.0` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
