@@ -132,21 +132,55 @@ the existing 500ms `Tick` poll (`src/ui/app.rs`, `Message::Tick` →
 - **Skip CD/radio** the same way the existing `recent_albums` push already
   does (`app.rs:406` comment: "Skip CD tracks") — extend that same guard.
 
-### Persistence — per server
+### Persistence — per server, in redb (not `AppConfig`/TOML)
 
-Mirrors mikMPD's per-server-profile storage. `AppConfig` currently has one
-global `recent_albums: Vec<RecentAlbum>`; the new list should **not** follow
-that pattern, since it's meaningless across servers. Two options:
-1. Add `recently_played: HashMap<String, Vec<RecentlyPlayedEntry>>` keyed by
-   server name to `AppConfig` (simplest, consistent with existing
-   single-TOML-file storage — no new file format).
-2. A dedicated file per server under the cache dir.
+Mirrors mikMPD's per-server-profile storage, but **not** mikMPD's storage
+*mechanism* — mikMPD uses `UserDefaults` (cheap, OS-managed incremental
+key-value storage); winrmpc's closest analogue to that is the redb store
+(`src/store/mod.rs`), not `AppConfig`'s single TOML file.
 
-**Recommendation: option 1** — smaller diff, and `AppConfig` already has the
-precedent of per-server data (`MpdServer.default_partition`). Load/save the
-active server's slice on `SwitchServer`, matching how `default_partition`
-restore already happens on server switch (`CLAUDE.md`'s "Server switching"
-section).
+**Do not add this to `AppConfig`.** `AppConfig::save()` (`config/settings.rs:177-183`)
+serializes the **entire config struct** with `toml::to_string_pretty` and
+rewrites the whole file on every call — that's the existing, correct choice
+for config-sized data (a handful of servers, theme settings, 8-item
+`recent_albums`) that changes rarely. `recently_played` is a different shape
+of data entirely: up to 100 entries **per server**, appended roughly every
+30 seconds during continuous playback (per the commit rule above), for
+potentially every server the user has configured. Bolting that onto
+`AppConfig` means every single commit — several times an hour during normal
+listening — triggers a full-file TOML serialize-and-write of *everything*
+(servers, passwords, theme, radio stations, the works), just to append one
+history entry. That's the write-amplification problem redb was already
+brought into this project specifically to avoid for art/lyrics (see
+`store/mod.rs`'s own doc comment: "Replaces the previous flat-file caches...
+tracks each art entry's byte size and last-access time"); the same reasoning
+applies here even though history isn't a "cache" of re-fetchable data — it's
+about matching the storage engine to the write pattern, not about what the
+data conceptually is.
+
+Add a `recently_played` table to `src/store/mod.rs`, keyed by server name:
+
+```rust
+const RECENTLY_PLAYED: TableDefinition<&str, &[u8]> = TableDefinition::new("recently_played");
+// key = server name; value = serde_json::to_vec(&Vec<RecentlyPlayedEntry>)
+pub fn recently_played_get(&self, server: &str) -> Vec<RecentlyPlayedEntry>;
+pub fn recently_played_put(&self, server: &str, entries: &[RecentlyPlayedEntry]);
+```
+
+Called through `spawn_blocking` on every commit, same as every other
+`Store` method (per this project's own concurrency rule) — a single
+targeted key write, not a whole-file rewrite. Load the active server's
+history on `SwitchServer` (mirrors how `default_partition` restore already
+happens there) and on startup for the initial `default_server`. Deleting a
+server profile (`RemoveServer`) should also delete its `recently_played`
+key, same lifecycle mikMPD ties to profile deletion.
+
+This is a **new table**, not an extension of the `art-wikipedia-fetch-order-and-caching.md`
+cache audit's scope — that plan's redb additions (`bios`, `mb_ids`) are
+genuine caches of re-fetchable remote data; this one is app-generated state
+that simply belongs in redb for write-pattern reasons. Land both plans'
+table additions together if convenient (same `store/mod.rs` diff region),
+but keep the reasoning distinct when reviewing.
 
 ### UI
 
@@ -190,6 +224,18 @@ section).
 - `PlayRecorder`: commits at 30s; half-duration rule for a short track; no
   double-commit while the same file keeps playing; file-change resets;
   pause freezes accumulation; delta capped at 5s.
+- `recently_played_get`/`recently_played_put` round-trip on a temp redb
+  store: empty-server returns `Vec::new()`, not an error; two different
+  server keys don't leak into each other; overwriting a server's entry
+  replaces rather than appends (the store method takes the full pruned
+  `Vec`, caller-truncated, so a stale on-disk tail can't reappear).
 - Manual QA: play a track past 30s, open Recently Played, confirm it
-  appears; switch servers, confirm history is server-scoped; Recently Added
-  reflects a freshly-imported album within the 30-day window.
+  appears; switch servers, confirm history is server-scoped; remove a
+  server profile and confirm its `recently_played` key is gone (check via
+  the Server Statistics/diagnostics view or a direct redb inspection, not
+  just the UI, to confirm the deletion actually reached the store and
+  isn't just a UI-level filter); confirm no full-`AppConfig` TOML rewrite
+  happens on every commit (watch `config.toml`'s mtime during a long
+  playback session — it should stay untouched by recently-played activity);
+  Recently Added reflects a freshly-imported album within the 30-day
+  window.

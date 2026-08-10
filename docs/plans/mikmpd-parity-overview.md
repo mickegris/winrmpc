@@ -42,15 +42,25 @@ excluded below. Everything else in mikMPD's feature list is a fair target.
 | 11 | **No replay gain control** | replay gain mode picker | [`now-playing-quick-controls.md`](now-playing-quick-controls.md) | XS |
 | 12 | **No quick Outputs/Partition access from Now Playing** | buttons on the Now Playing screen | [`now-playing-quick-controls.md`](now-playing-quick-controls.md) | XS |
 | 13 | **Album art fetch order is cover-file → tag, not tag → cover-file** | `readpicture` (tag) tried first, `albumart` (cover file) second — winrmpc has this backwards today | [`art-wikipedia-fetch-order-and-caching.md`](art-wikipedia-fetch-order-and-caching.md) | S |
-| 14 | **Wikipedia bios never persist; no shared MusicBrainz throttle/concurrency cap; weaker title-match than mikMPD** | disk-cached bios, `ArtFetchGate` (4 concurrent), global `MusicBrainzThrottle`, title-token-overlap match preferred over extract-substring | [`art-wikipedia-fetch-order-and-caching.md`](art-wikipedia-fetch-order-and-caching.md) | M |
+| 14 | **Wikipedia bios never persist; no shared MusicBrainz throttle/concurrency cap (already causes bursts today — `ArtistAlbumsLoaded` fires one uncapped task per album); weaker title-match than mikMPD** | disk-cached bios, `ArtFetchGate` (4 concurrent), global `MusicBrainzThrottle`, title-token-overlap match preferred over extract-substring | [`art-wikipedia-fetch-order-and-caching.md`](art-wikipedia-fetch-order-and-caching.md) | M |
+| 15 | **MusicBrainz artist/release-group IDs are re-searched every time, never cached — art and bio fetches each search independently for the same entity** | none directly (this is winrmpc-only wasted work; mikMPD's own store caches the equivalent) | [`art-wikipedia-fetch-order-and-caching.md`](art-wikipedia-fetch-order-and-caching.md) §6 | S |
 
-Gaps #13/#14 aren't missing *features* — winrmpc already has tag art, cover-file
-art, internet fallback, and Wikipedia bios, same as mikMPD. They're
-**performance and correctness gaps in how those existing sources are
+Gaps #13-#15 aren't missing *features* — winrmpc already has tag art,
+cover-file art, internet fallback, and Wikipedia bios, same as mikMPD.
+They're **performance and correctness gaps in how those existing sources are
 fetched, ordered, and cached**, found by reading the actual fetch code
 (`src/mpd/client.rs`, `src/art/musicbrainz.rs`, `src/ui/app.rs`) rather than
 comparing feature lists — see that plan for the concrete evidence (line
-numbers, current vs. desired order).
+numbers, current vs. desired order) and its **cache audit table**, which
+checks every kind of remote/expensive data the app fetches against redb's
+four existing tables (`art`, `art_meta`, `lyrics`, `meta`) and closes the two
+gaps it finds (`bios`, `mb_ids`). Separately,
+[`recently-added-and-played-history.md`](recently-added-and-played-history.md)'s
+persistence section was revised to store the new listening-history data in
+redb rather than `AppConfig`/TOML — not because it's a cache, but because
+redb is the right storage engine for frequently-mutated, growing data in
+this codebase (see that plan's "Persistence" section for the
+write-amplification argument).
 
 ## Deliberately not planned (mobile-only, energy-focused, or already covered elsewhere)
 

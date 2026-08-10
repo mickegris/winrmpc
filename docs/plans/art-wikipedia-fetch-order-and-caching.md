@@ -12,6 +12,36 @@ priority for this app: **no item below is about saving energy/CPU wakes**
 overview doc) — every item here reduces network round trips, wasted
 allocations, or wrong/missing results.
 
+## Cache audit: what's in redb today, what isn't, and what should be
+
+`src/store/mod.rs` currently has four tables: `art`, `art_meta`, `lyrics`,
+`meta` (`store/mod.rs:20-26`). Everything expensive or remote that the app
+fetches, checked against those four tables:
+
+| Data | Source | Cached in redb today? | Action |
+|---|---|---|---|
+| Album/artist art bytes | MPD tag/cover-file, MusicBrainz+CAA | ✅ `art` table, incl. negative caching | none |
+| Synced/plain lyrics | LRCLIB | ✅ `lyrics` table, incl. negative caching | none |
+| Server statistics | MPD `stats` | N/A — must stay live, this is current server state, not a fetch result | none (do **not** cache) |
+| Recently-added query results | MPD `find modified-since` | N/A — must stay live for the same reason | none |
+| CD track probe | MPD `cdda://` | N/A — physical disc contents change per insert | none |
+| **Wikipedia bios (artist + album)** | MusicBrainz + Wikipedia | ❌ in-memory only (`self.artist_bios`/`self.album_bios`, lost on restart) | **§4 below — add `bios` table** |
+| **MusicBrainz IDs (artist MBID, release-group MBID)** | MusicBrainz search | ❌ not cached at all — re-searched on every art fetch *and* every bio fetch for the same entity | **§6 below (new) — add `mb_ids` table** |
+
+Two gaps, both closed by this plan. Everything else the app fetches from a
+remote or expensive source already goes through redb — this audit is the
+"make sure redb is used fully" check, and after §4+§6 land, it is.
+
+Recently-played listening history (planned in
+[`recently-added-and-played-history.md`](recently-added-and-played-history.md))
+is deliberately **not** in this table — it isn't a cache of anything
+re-fetchable, it's a record the app itself generates. See that plan's
+Persistence section (updated alongside this plan) for why it's moving from
+the originally-proposed `AppConfig`/TOML storage to redb anyway: not because
+it's a "cache," but because redb is the better storage engine for
+frequently-mutated, growing data in this codebase, for the same
+write-amplification reason detailed in §6 below.
+
 ## 1. Album art fetch order is backwards
 
 ### Today (`src/mpd/client.rs:429-503`)
@@ -106,7 +136,7 @@ clone: `#[derive(Clone)]` on `MusicBrainzClient` costs nothing extra). One
 shared client across the app's lifetime means connection pooling actually
 works.
 
-## 3. No shared concurrency/rate-say limit across fetch tasks
+## 3. No shared concurrency/rate limit across fetch tasks — this is already an active bug, not just a future risk
 
 ### Today
 
@@ -114,17 +144,25 @@ Each MusicBrainz-touching method sleeps `1100ms` **locally**, inside that
 one call chain (`musicbrainz.rs:115,151,176,196,248`, "Respect rate limit").
 This bounds the rate of *sequential* requests within one `fetch_album_art`/
 `fetch_artist_bio` call, but does **not** bound how many such call chains run
-**concurrently** — `Task::batch` already fires several art/bio fetches in
-parallel today (e.g. `ArtistSelected`'s `Task::batch([albums_task,
-artist_art_task, bio_task])`, `app.rs:651`), and the planned Albums **grid
-view** (`library-album-identity-and-multidisc.md`, Part C) will make this
-much worse: a grid of N tiles queues N independent `fetch_art` tasks, each
-with its own local 1100ms sleep, all racing to hit MusicBrainz at roughly
-the same time. MusicBrainz's usage policy (already the reason for the
-1100ms constant) is a *global* ~1 req/s courtesy limit, not "1 req/s per
-in-flight task" — the current design can violate it under exactly the
-condition the grid view is about to create, risking throttling/bans that
-degrade art loading for the whole session.
+**concurrently**.
+
+**This already happens today, not just hypothetically with a future grid
+view.** `Message::ArtistAlbumsLoaded` (`app.rs:710-748`) fires **one
+independent `Task::perform` per album** in the artist's list — for an artist
+with, say, 20 albums whose art isn't already cached, that's 20 concurrent
+closures each doing its own `find` + `album_art` + (on miss) its own ad-hoc
+`MusicBrainzClient::new().fetch_album_art(...)`, each with its own local
+1100ms sleep, all firing at once. Separately, `ArtistSelected` itself
+(`app.rs:651`) already runs `Task::batch([albums_task, artist_art_task,
+bio_task])`, so an artist-art fetch and a bio fetch race in parallel too.
+MusicBrainz's usage policy (already the reason for the 1100ms constant) is a
+*global* ~1 req/s courtesy limit, not "1 req/s per in-flight task" — opening
+almost any artist with more than a couple of uncached albums can already
+burst well past that limit today. The planned Albums **grid view**
+(`library-album-identity-and-multidisc.md`, Part C) would make the *scale*
+of the same existing bug worse (potentially 50+ concurrent tasks instead of
+a handful), but it does not introduce the bug — fixing this is corrective,
+not preventative.
 
 mikMPD hit this exact scaling problem building its own grid view and fixed
 it on two axes (`CLAUDE.md`, "Art fetching is throttled on three axes"):
@@ -269,16 +307,72 @@ Wikipedia/MusicBrainz query candidates, never for the art cache key
 (same "lookup-only, never grouping/art keys" rule mikMPD documents and this
 codebase's own `art_key` design already follows for the 0x1f separator).
 
+## 6. MusicBrainz IDs are resolved repeatedly, never cached
+
+### Today
+
+Both the art path and the bio path independently resolve the **same**
+MusicBrainz entity ID for the same artist/album, and neither remembers the
+answer:
+
+- **Artist**: `fetch_artist_art` calls `search_artist(artist)` →
+  `artist_id` (`musicbrainz.rs:112`). `fetch_artist_bio` calls
+  `search_artist(artist)` again (`musicbrainz.rs:300`) — a second, fully
+  independent search for the identical MBID. `ArtistSelected`
+  (`app.rs:633-651`) fires both in the same `Task::batch`, so this isn't a
+  rare double-lookup — it happens on **every single artist page visit**
+  whose bio and art aren't both already in memory.
+- **Album/release-group**: `fetch_album_art` calls `search_release_group`
+  (`musicbrainz.rs:91`); `fetch_album_bio` calls `search_release_group`
+  again (`musicbrainz.rs:335`) for the same artist+album. Additionally, the
+  per-album loop in `ArtistAlbumsLoaded` (`app.rs:722-737`) does its own
+  `search_release_group`-driven `fetch_album_art` call for **every album in
+  an artist's list**, each of which gets searched *again* later if/when the
+  user opens that album's detail page and `AlbumSelected`'s bio fetch runs.
+
+Each of these is a full MusicBrainz search API round trip (subject to the
+~1 req/s throttle from §3) purely to re-derive an ID the app already
+resolved minutes or seconds earlier — and, since nothing persists it, an ID
+the app will resolve identically again on the next visit or the next
+session.
+
+### Fix
+
+Add a small `mb_ids` redb table, same shape and same negative-caching
+convention as the planned `bios` table (§4) and the existing `lyrics` table:
+
+```rust
+const MB_IDS: TableDefinition<&str, &[u8]> = TableDefinition::new("mb_ids");
+// key: "artist:{name}" -> artist MBID, or "{artist}\x1f{album}" -> release-group MBID
+// value: serde_json::to_vec(&Option<String>) — None = "searched, confirmed no match"
+pub fn mb_id_get(&self, key: &str) -> Option<Option<String>>;
+pub fn mb_id_put(&self, key: &str, value: &Option<String>);
+```
+
+`search_artist`/`search_release_group` become cache-checking wrappers: look
+up the store first (via `spawn_blocking`, same rule as every other `Store`
+call), only hit the network on a miss, then persist the result — including
+the negative case, so a confirmed "no MusicBrainz match" for an obscure or
+mistagged artist/album doesn't get re-searched on every visit either (same
+reasoning as `art_put_empty`/the planned `bio_put(key, &None)`).
+
+This is a strict win layered on top of §1-§4: it removes the *art-vs-bio*
+duplicate lookup immediately, and once §6 lands, the `ArtistAlbumsLoaded`
+per-album loop's MusicBrainz calls (still gated by §3's throttle/semaphore)
+become one-time-ever costs per album instead of a recurring cost on every
+uncached-art page load.
+
 ## Implementation order
 
 | # | Item | Size | Why this order |
 |---|------|------|---|
 | 1 | Split `tag_art`/`cover_file_art`, reorder in `fetch_art` | S | Immediate correctness fix, zero new dependencies |
 | 2 | `self.mb_client` reuse (`#[derive(Clone)]`, delete inline `::new()` calls) | XS | Trivial, unblocks nothing else but should ship early |
-| 3 | `MusicBrainzThrottle` (global) + `ArtFetchGate` (semaphore) | S | Needed *before* the grid view work in the library plan lands, not after |
+| 3 | `MusicBrainzThrottle` (global) + `ArtFetchGate` (semaphore) | S | Fixes an active bug (§3) present today in `ArtistAlbumsLoaded` — not just prep for the future grid view |
 | 4 | `bios` redb table + store/load wiring | S | Independent of 1-3 |
 | 5 | Wikipedia title-match helper + search fallback | M | Independent, can slot in anytime |
 | 6 | `strip_edition_qualifier` | XS | Small, pairs naturally with #5 |
+| 7 | `mb_ids` redb table + cache-checking `search_artist`/`search_release_group` | S | Do after #4 (same table-adding pattern, easy to review together); eliminates the art-vs-bio duplicate lookup this section documents |
 
 Items 1-3 are pure performance/correctness fixes to *existing* behavior and
 should land **before** or **alongside** the grid view work in
@@ -315,6 +409,11 @@ the concurrency gate would ship a regression, not just miss an optimization.
     pattern; if the lyrics store methods aren't unit-tested either, this is
     a good moment to add coverage for both, since neither currently appears
     in `CLAUDE.md`'s enumerated test list).
+  - `mb_id_get`/`mb_id_put` round-trip on a temp redb store, both key forms
+    (`"artist:{name}"` and `"{artist}\x1f{album}"`); negative case
+    (`Some(None)` stored/retrieved distinctly from "never looked up" —
+    matches the same three-state convention `lyrics_get`/`bio_get` already
+    use: absent key vs. `Some(None)` vs. `Some(Some(v))`).
 - **Manual QA**:
   - On a well-tagged library (embedded covers, no `cover.jpg` files),
     confirm art loads with **no** ACK-error log line for a missing
@@ -325,10 +424,18 @@ the concurrency gate would ship a regression, not just miss an optimization.
     the same ones again — bios should appear instantly (from the redb
     store) instead of re-triggering visible "loading" states and MusicBrainz
     log entries.
-  - With the future grid view (once built): scroll through a 50+ album grid
-    and confirm the MPD/HTTP log (per `server-stats-and-diagnostics.md`)
-    never shows more than 4 concurrent art fetches or a burst of
-    MusicBrainz calls tighter than ~1s apart.
+  - Open a single artist page (with art not yet cached) and watch the
+    MPD/HTTP log (per `server-stats-and-diagnostics.md`): confirm **one**
+    `search_artist` call, not two — the concrete case §6 exists to fix.
+    Re-open the same artist in a later session: confirm **zero**
+    `search_artist`/`search_release_group` calls (served entirely from
+    `mb_ids`).
+  - Open an artist with 15+ uncached albums and watch the same log: confirm
+    no more than 4 concurrent art-fetch tasks in flight and no burst of
+    MusicBrainz calls tighter than ~1s apart — this is the *existing* bug
+    from §3, reproducible today, not a hypothetical.
+  - With the future grid view (once built): repeat the same concurrency
+    check at grid scale (50+ tiles).
   - Pick an artist/album whose Wikipedia article title doesn't exactly match
     any of the three guessed candidates but is findable via search (e.g. an
     album with a colon or subtitle Wikipedia normalizes differently) —
