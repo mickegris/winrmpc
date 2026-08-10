@@ -24,6 +24,11 @@ const ART_META: TableDefinition<&str, &[u8]> = TableDefinition::new("art_meta");
 const LYRICS: TableDefinition<&str, &[u8]> = TableDefinition::new("lyrics");
 // key = server name; value = serde_json(Vec<RecentlyPlayedEntry>), newest-first
 const RECENTLY_PLAYED: TableDefinition<&str, &[u8]> = TableDefinition::new("recently_played");
+// key = "artist:<name>" or "artist\x1falbum"; value = serde_json(Option<String>)
+const BIOS: TableDefinition<&str, &[u8]> = TableDefinition::new("bios");
+// key = "artist:<name>" (artist MBID) or "artist\x1falbum" (release-group MBID);
+// value = serde_json(Option<String>) — None = "searched, confirmed no match"
+const MB_IDS: TableDefinition<&str, &[u8]> = TableDefinition::new("mb_ids");
 // Schema/migration markers; key = marker name, value = ignored
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
@@ -91,6 +96,8 @@ impl Store {
             let _ = wtx.open_table(ART_META);
             let _ = wtx.open_table(LYRICS);
             let _ = wtx.open_table(RECENTLY_PLAYED);
+            let _ = wtx.open_table(BIOS);
+            let _ = wtx.open_table(MB_IDS);
             let _ = wtx.open_table(META);
             let _ = wtx.commit();
         }
@@ -400,6 +407,58 @@ impl Store {
             let _ = wtx.commit();
         }
     }
+
+    // ===================================================================
+    // Wikipedia bios (genuine cache of re-fetchable remote data — same
+    // three-state convention as `lyrics_get`/`lyrics_put`: absent key =
+    // never fetched, `Some(None)` = fetched, confirmed no bio exists,
+    // `Some(Some(text))` = have a bio.)
+    // ===================================================================
+
+    pub fn bio_get(&self, key: &str) -> Option<Option<String>> {
+        let rtx = self.db.begin_read().ok()?;
+        let table = rtx.open_table(BIOS).ok()?;
+        let guard = table.get(key).ok()??;
+        serde_json::from_slice::<Option<String>>(guard.value()).ok()
+    }
+
+    pub fn bio_put(&self, key: &str, value: &Option<String>) {
+        if let Ok(bytes) = serde_json::to_vec(value) {
+            if let Ok(wtx) = self.db.begin_write() {
+                {
+                    if let Ok(mut t) = wtx.open_table(BIOS) {
+                        let _ = t.insert(key, bytes.as_slice());
+                    }
+                }
+                let _ = wtx.commit();
+            }
+        }
+    }
+
+    // ===================================================================
+    // MusicBrainz ID resolution cache — same three-state convention as
+    // `bio_get`/`bio_put` above.
+    // ===================================================================
+
+    pub fn mb_id_get(&self, key: &str) -> Option<Option<String>> {
+        let rtx = self.db.begin_read().ok()?;
+        let table = rtx.open_table(MB_IDS).ok()?;
+        let guard = table.get(key).ok()??;
+        serde_json::from_slice::<Option<String>>(guard.value()).ok()
+    }
+
+    pub fn mb_id_put(&self, key: &str, value: &Option<String>) {
+        if let Ok(bytes) = serde_json::to_vec(value) {
+            if let Ok(wtx) = self.db.begin_write() {
+                {
+                    if let Ok(mut t) = wtx.open_table(MB_IDS) {
+                        let _ = t.insert(key, bytes.as_slice());
+                    }
+                }
+                let _ = wtx.commit();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -467,5 +526,55 @@ mod tests {
         store.recently_played_put("server1", &[entry("a.mp3", 100)]);
         store.recently_played_delete("server1");
         assert!(store.recently_played_get("server1").is_empty());
+    }
+
+    // --- bios ---------------------------------------------------------
+
+    #[test]
+    fn bio_get_absent_key_returns_none() {
+        let store = temp_store();
+        assert_eq!(store.bio_get("artist:Nobody"), None);
+    }
+
+    #[test]
+    fn bio_round_trips_positive_result() {
+        let store = temp_store();
+        store.bio_put("artist:Tool", &Some("A band.".to_string()));
+        assert_eq!(store.bio_get("artist:Tool"), Some(Some("A band.".to_string())));
+    }
+
+    #[test]
+    fn bio_round_trips_negative_result_distinct_from_absent() {
+        let store = temp_store();
+        store.bio_put("artist:Obscure", &None);
+        // Some(None) = "looked, found nothing" — distinct from an absent
+        // key, which is `None` (never looked up).
+        assert_eq!(store.bio_get("artist:Obscure"), Some(None));
+        assert_eq!(store.bio_get("artist:NeverLookedUp"), None);
+    }
+
+    // --- mb_ids ---------------------------------------------------------
+
+    #[test]
+    fn mb_id_get_absent_key_returns_none() {
+        let store = temp_store();
+        assert_eq!(store.mb_id_get("artist:Nobody"), None);
+    }
+
+    #[test]
+    fn mb_id_round_trips_both_key_forms() {
+        let store = temp_store();
+        store.mb_id_put("artist:Tool", &Some("mbid-artist-123".to_string()));
+        store.mb_id_put("Tool\x1fLateralus", &Some("mbid-rg-456".to_string()));
+        assert_eq!(store.mb_id_get("artist:Tool"), Some(Some("mbid-artist-123".to_string())));
+        assert_eq!(store.mb_id_get("Tool\x1fLateralus"), Some(Some("mbid-rg-456".to_string())));
+    }
+
+    #[test]
+    fn mb_id_round_trips_negative_result_distinct_from_absent() {
+        let store = temp_store();
+        store.mb_id_put("artist:Obscure", &None);
+        assert_eq!(store.mb_id_get("artist:Obscure"), Some(None));
+        assert_eq!(store.mb_id_get("artist:NeverLookedUp"), None);
     }
 }

@@ -1,6 +1,6 @@
 # Plan: Album art fetch order, Wikipedia match quality, and network-call performance
 
-Status: proposed — no code changes yet. Part of the mikMPD parity set (see
+Status: **implemented** (all 7 items). Part of the mikMPD parity set (see
 [`mikmpd-parity-overview.md`](mikmpd-parity-overview.md)). Unlike the other
 plans in this set, this one is not about a missing *feature* — both apps
 already have tag art, cover-file art, and internet fallback, and both already
@@ -11,6 +11,28 @@ priority for this app: **no item below is about saving energy/CPU wakes**
 (that's mikMPD's `energy-optimization.md`, deliberately excluded — see the
 overview doc) — every item here reduces network round trips, wasted
 allocations, or wrong/missing results.
+
+**Implementation notes / deviations**:
+- `ArtFetchGate` ended up as a plain `Arc<tokio::sync::Semaphore>` field on
+  `App` rather than a named wrapper struct — `Semaphore` already has exactly
+  the needed `.acquire()` API, so a wrapper would have added a type with no
+  behavior of its own.
+- `strip_edition_qualifier` is applied to **both** MusicBrainz and Wikipedia
+  query candidates in `fetch_album_art`/`fetch_album_bio` (not just
+  Wikipedia) — edition suffixes are equally irrelevant noise for a
+  MusicBrainz release-group search, and applying it there means
+  `"Album [24-bit Remaster]"` and `"Album"` now share one cached MBID in
+  `mb_ids` too, a good side effect.
+- The Wikipedia search fallback (`search_wikipedia`) and `try_bio_candidate`'s
+  title-match-first logic are applied uniformly to **both** `fetch_artist_bio`
+  and `fetch_album_bio`, not just albums — the plan's evidence section
+  focused on the album case, but nothing in the fix is album-specific and
+  symmetry keeps the two functions' matching behavior consistent.
+- `search_release` (the individual-release fallback inside `fetch_album_art`,
+  used only when the release-group search comes up empty) was **not** added
+  to the `mb_ids` cache — out of the plan's explicitly scoped "artist MBID,
+  release-group MBID" — kept that way to avoid growing the cache-key surface
+  further in this round.
 
 ## Cache audit: what's in redb today, what isn't, and what should be
 

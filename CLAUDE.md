@@ -180,7 +180,7 @@ Crossfade (`Status.crossfade`, already parsed) and replay gain mode (`MpdClient:
 All three read loops (`read_pairs`, `command_list`, `read_binary`) check `if line.is_empty()` and return `MpdError::Connection("Connection closed unexpectedly")` to prevent infinite hang on server drop.
 
 ## Cache Store (`src/store/mod.rs`)
-Single `winrmpc.redb` file under the platform cache dir. Tables: `art` (blobs), `art_meta` (`ArtMeta { size, last_access, is_empty }`), `lyrics` (serde_json `Option<Lyrics>`), `recently_played` (serde_json `Vec<RecentlyPlayedEntry>`, keyed by server name — see "Recently Added / Recently Played" below; app-generated state, not a cache of re-fetchable data, but stored here rather than `AppConfig`/TOML for the same write-amplification reason art/lyrics moved out of flat files: frequent small writes need a targeted key update, not a whole-file rewrite), `meta` (migration markers).
+Single `winrmpc.redb` file under the platform cache dir. Tables: `art` (blobs), `art_meta` (`ArtMeta { size, last_access, is_empty }`), `lyrics` (serde_json `Option<Lyrics>`), `bios` (serde_json `Option<String>`, keyed `"artist:{name}"` / `"{artist}\x1falbum"` — see "Wikipedia / MusicBrainz" below), `mb_ids` (serde_json `Option<String>` MBIDs, same key shape as `bios`), `recently_played` (serde_json `Vec<RecentlyPlayedEntry>`, keyed by server name — see "Recently Added / Recently Played" below; app-generated state, not a cache of re-fetchable data, but stored here rather than `AppConfig`/TOML for the same write-amplification reason art/lyrics moved out of flat files: frequent small writes need a targeted key update, not a whole-file rewrite), `meta` (migration markers). `bios`/`mb_ids`/`lyrics` all share the same three-state convention: absent key = never fetched, `Some(None)` = fetched, confirmed nothing found, `Some(Some(v))` = have a value.
 - **redb is synchronous** — every `Store` method must be called inside `spawn_blocking`; never hold a transaction across `.await`. Writes commit (fsync) immediately — there is **no flush-on-close**; a crash after a fetch loses nothing.
 - `ArtCache` (`art/cache.rs`) is an in-memory `HashMap` hot layer over `Store`; `Store` is the source of truth. `store()` downscales to a 500px JPEG before persisting.
 - **LRU eviction**: `art_put` calls `art_evict(limit_bytes)` — removes oldest `last_access` entries until under `art_cache_size_mb`. Negative entries (`is_empty`, no blob) are exempt.
@@ -208,11 +208,18 @@ Mirrors mikMPD's setup. `PlaylistInfo` (`src/mpd/types.rs`) backs `View::Playlis
 - **Now Playing layout**: when `show_lyrics`, the view splits into a left column (art/info/recents) and a right `FillPortion(2)` lyrics panel; synced lines highlight the one matching `elapsed - LYRIC_SYNC_OFFSET` (0.5s, since LRCLIB timestamps tend to lead slightly) and auto-scroll via `lyrics_scroll_id`.
 - `fetch_lyrics(song)` (`app.rs`) skips the request if the key is already in `self.lyrics`.
 
+## Album Art Fetch Order (`src/mpd/client.rs`, `App::fetch_art`)
+**Tag → cover file → internet.** `MpdClient::tag_art(uri)` (`readpicture`) is tried before `cover_file_art(uri)` (`albumart`) — tag art is probed first because on a tagged library it's the one that actually exists; probing the separate-cover-file path first would cost a wasted round trip per album on every well-tagged library. Both share one private `fetch_binary_art(verb, uri)` chunked-read loop. `App::fetch_art` sequences them, falling through to `MusicBrainzClient::fetch_album_art` only if both MPD paths miss.
+- **`art_fetch_gate: Arc<Semaphore>`** (size 4, on `App`) bounds peak concurrent art fetches — acquired in `fetch_art`/`fetch_artist_art`/the `ArtistAlbumsLoaded` per-album loop before touching MPD or MusicBrainz. Without it, opening an artist with many uncached albums fires one unbounded fetch task per album.
+
 ## Wikipedia / MusicBrainz (`src/art/musicbrainz.rs`)
-- **Artist bio**: 1) MusicBrainz Wikipedia URL relation; 2) suffix fallback `["(band)", "(musician)", …]`
-- **Album bio**: 1) MusicBrainz release-group Wikipedia URL relation; 2) `"(album)"` fallback
-- `is_music_article(text, name)` validates the article is music-related before storing
-- Rate-limit: 1 req/s to MusicBrainz API (User-Agent required)
+- **`MusicBrainzClient`** is `Clone` and holds a `Store` (for MBID/negative caching) plus a `MusicBrainzThrottle`; `App` constructs **one** instance (`self.mb_client`) and every fetch site clones it — do not `MusicBrainzClient::new(...)` ad hoc, it defeats connection pooling.
+- **`MusicBrainzThrottle`**: an `Arc<Mutex<Option<Instant>>>`-backed rate limiter serializing MusicBrainz calls to ~1 req/s **globally** across every clone/task, not per-call-chain like a local `sleep` would. Replaces the old per-method `sleep(1100ms)`.
+- **MusicBrainz ID caching**: `search_artist`/`search_release_group` check the redb `mb_ids` table (`"artist:{name}"` / `"{artist}\x1falbum"` → MBID, `Some(None)` = confirmed no match) before hitting the network — both the art path and the bio path resolve the same entity's MBID, so this cache removes a duplicate search per artist/album visit.
+- **Artist bio**: 1) MusicBrainz Wikipedia URL relation; 2) suffix fallback `["(band)", "(musician)", …]`; 3) Wikipedia's own search API (`search_wikipedia`) as a last resort.
+- **Album bio**: same three-step shape, keyed on the release-group. Album lookup titles go through `strip_edition_qualifier` first (strips a trailing `[24-bit Remaster]`/`(Deluxe Edition)`-style bracket) — lookup-only, never touches the art cache key.
+- **`try_bio_candidate(title, target)`**: fetches the summary, then accepts it if `title_matches(title, target)` (word-token overlap ≥2/3, mirrors mikMPD's `titleTokensMatch`) wins immediately, else falls back to the weaker `is_music_article(text, name)` keyword check. Applied uniformly at every candidate stage (MB canonical link, suffix guesses, search fallback).
+- **Bios persist** in the redb `bios` table (`App::fetch_artist_bio`/`fetch_album_bio`, mirroring `fetch_lyrics`'s cache-then-network shape exactly) — `artist_bios`/`album_bios` in-memory maps are `HashMap<String, Option<String>>` (tri-state, like `lyrics`), so a confirmed "no bio" is remembered too, not just a hit.
 
 ## Common Pitfalls
 - **Edit requires prior Read** — always read a file before editing it in a session

@@ -468,16 +468,17 @@ impl MpdClient {
     // Album Art (binary protocol)
     // ========================================================================
 
-    /// Fetch full album art for a song URI.
-    /// Uses "albumart" command with chunked binary reads.
-    pub async fn album_art(&self, uri: &str) -> MpdResult<Option<Vec<u8>>> {
+    /// Shared chunked binary-read loop for `readpicture`/`albumart`, which
+    /// share an identical wire protocol (offset-paginated binary chunks)
+    /// and differ only in which MPD verb is sent.
+    async fn fetch_binary_art(&self, verb: &str, uri: &str) -> MpdResult<Option<Vec<u8>>> {
         let mut offset: usize = 0;
         let mut full_data = Vec::new();
         let mut total_size: usize = 0;
 
         loop {
             let result = self
-                .cmd_binary(&format!("albumart \"{}\" {offset}", Self::escape(uri)))
+                .cmd_binary(&format!("{verb} \"{}\" {offset}", Self::escape(uri)))
                 .await;
 
             match result {
@@ -494,10 +495,6 @@ impl MpdClient {
                     }
                 }
                 Ok(None) => return Ok(None),
-                Err(MpdError::Server { code: 50, .. }) => {
-                    // No album art, try readpicture
-                    return self.read_picture(uri).await;
-                }
                 Err(e) => return Err(e),
             }
         }
@@ -505,45 +502,24 @@ impl MpdClient {
         if full_data.is_empty() {
             Ok(None)
         } else {
-            tracing::info!("→ albumart \"{uri}\" ({} KB)", full_data.len() / 1024);
+            tracing::info!("→ {verb} \"{uri}\" ({} KB)", full_data.len() / 1024);
             Ok(Some(full_data))
         }
     }
 
-    /// Fallback: readpicture command for embedded art
-    pub async fn read_picture(&self, uri: &str) -> MpdResult<Option<Vec<u8>>> {
-        let mut offset: usize = 0;
-        let mut full_data = Vec::new();
-        let mut total_size: usize = 0;
+    /// Art embedded in the song file's own tags ("readpicture"). Tried
+    /// first — on a tagged library this is the art that actually exists,
+    /// so probing it before the separate-cover-file path avoids a wasted
+    /// round trip per album (see
+    /// docs/plans/art-wikipedia-fetch-order-and-caching.md §1).
+    pub async fn tag_art(&self, uri: &str) -> MpdResult<Option<Vec<u8>>> {
+        self.fetch_binary_art("readpicture", uri).await
+    }
 
-        loop {
-            let result = self
-                .cmd_binary(&format!("readpicture \"{}\" {offset}", Self::escape(uri)))
-                .await;
-
-            match result {
-                Ok(Some((chunk, size))) => {
-                    if total_size == 0 {
-                        total_size = size;
-                        full_data.reserve(total_size);
-                    }
-                    offset += chunk.len();
-                    full_data.extend_from_slice(&chunk);
-                    if offset >= total_size {
-                        break;
-                    }
-                }
-                Ok(None) => return Ok(None),
-                Err(e) => return Err(e),
-            }
-        }
-
-        if full_data.is_empty() {
-            Ok(None)
-        } else {
-            tracing::info!("→ readpicture \"{uri}\" ({} KB)", full_data.len() / 1024);
-            Ok(Some(full_data))
-        }
+    /// A separate cover-file image beside the song, e.g. `cover.jpg`
+    /// ("albumart"). Tried after `tag_art`.
+    pub async fn cover_file_art(&self, uri: &str) -> MpdResult<Option<Vec<u8>>> {
+        self.fetch_binary_art("albumart", uri).await
     }
 
     // ========================================================================

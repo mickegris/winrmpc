@@ -12,6 +12,7 @@ use crate::ui::widgets;
 use iced::widget::{column, container, image::Handle as ImageHandle, row, scrollable};
 use iced::{Element, Length, Subscription, Task, Theme};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub struct App {
@@ -70,10 +71,17 @@ pub struct App {
     art_cache: ArtCache,
     mb_client: crate::art::MusicBrainzClient,
     art_handles: HashMap<String, ImageHandle>,
+    /// Bounds peak concurrent art fetches (MPD binary reads + MusicBrainz/CAA
+    /// HTTP) to 4, matching mikMPD's `ArtFetchGate` — without this, opening
+    /// an artist with many uncached albums fires one fetch task per album,
+    /// unboundedly (see docs/plans/art-wikipedia-fetch-order-and-caching.md §3).
+    art_fetch_gate: Arc<tokio::sync::Semaphore>,
 
-    // Wikipedia bios
-    artist_bios: HashMap<String, String>,
-    album_bios: HashMap<String, String>,
+    // Wikipedia bios. In-memory tri-state, mirroring `lyrics`: absent key =
+    // never fetched this session, `Some(None)` = fetched, confirmed no bio,
+    // `Some(Some(text))` = have a bio. Backed by the redb `bios` table.
+    artist_bios: HashMap<String, Option<String>>,
+    album_bios: HashMap<String, Option<String>>,
     show_artist_bio: bool,
     show_album_bio: bool,
 
@@ -185,9 +193,10 @@ impl App {
             add_to_playlist_uris: None,
 
             store: store.clone(),
+            mb_client: crate::art::MusicBrainzClient::new(store.clone()),
             art_cache: ArtCache::new(store, config.art_cache_size_mb),
-            mb_client: crate::art::MusicBrainzClient::new(),
             art_handles: HashMap::new(),
+            art_fetch_gate: Arc::new(tokio::sync::Semaphore::new(4)),
 
             artist_bios: HashMap::new(),
             album_bios: HashMap::new(),
@@ -750,19 +759,7 @@ impl App {
                 let artist_art_task = self.fetch_artist_art(art_name);
 
                 let bio_name = self.selected_artist.clone().unwrap_or_default();
-                let bio_task = if !self.artist_bios.contains_key(&bio_name) {
-                    let bn = bio_name.clone();
-                    Task::perform(
-                        async move {
-                            let mb = crate::art::MusicBrainzClient::new();
-                            let bio = mb.fetch_artist_bio(&bn).await;
-                            (bn, bio)
-                        },
-                        |(name, bio)| Message::ArtistBioLoaded(name, bio),
-                    )
-                } else {
-                    Task::none()
-                };
+                let bio_task = self.fetch_artist_bio(bio_name);
 
                 self.show_artist_bio = false;
                 Task::batch([albums_task, artist_art_task, bio_task])
@@ -786,21 +783,9 @@ impl App {
                     |(name, songs)| Message::AlbumSongsLoaded(name, songs),
                 );
 
-                let bio_task = if !self.album_bios.contains_key(&name) {
-                    let bn = name.clone();
-                    // We need artist name for the search - get it from existing data if possible
-                    let artist = self.selected_artist.clone().unwrap_or_default();
-                    Task::perform(
-                        async move {
-                            let mb = crate::art::MusicBrainzClient::new();
-                            let bio = mb.fetch_album_bio(&artist, &bn).await;
-                            (bn, bio)
-                        },
-                        |(name, bio)| Message::AlbumBioLoaded(name, bio),
-                    )
-                } else {
-                    Task::none()
-                };
+                // We need artist name for the search - get it from existing data if possible
+                let artist = self.selected_artist.clone().unwrap_or_default();
+                let bio_task = self.fetch_album_bio(artist, name);
 
                 Task::batch([songs_task, bio_task])
             }
@@ -835,21 +820,27 @@ impl App {
                         let cache = self.art_cache.clone_inner();
                         let art_key = key.clone();
                         let art_artist = artist.clone();
+                        let mb = self.mb_client.clone();
+                        let gate = self.art_fetch_gate.clone();
                         tasks.push(Task::perform(
                             async move {
                                 if let Some(data) = cache.get(&art_key).await {
                                     return (art_key, Some(data));
                                 }
-                                // Try MPD first
+                                let _permit = gate.acquire().await;
+                                // Try MPD first: tag art, then cover-file art.
                                 let songs = c.find("Album", &a).await.unwrap_or_default();
                                 if let Some(first) = songs.first() {
-                                    if let Ok(Some(data)) = c.album_art(&first.file).await {
+                                    if let Ok(Some(data)) = c.tag_art(&first.file).await {
+                                        let _ = cache.store(&art_key, &data).await;
+                                        return (art_key, Some(data));
+                                    }
+                                    if let Ok(Some(data)) = c.cover_file_art(&first.file).await {
                                         let _ = cache.store(&art_key, &data).await;
                                         return (art_key, Some(data));
                                     }
                                 }
                                 // Fallback to MusicBrainz
-                                let mb = crate::art::MusicBrainzClient::new();
                                 if let Some(data) = mb.fetch_album_art(&art_artist, &a).await {
                                     let _ = cache.store(&art_key, &data).await;
                                     return (art_key, Some(data));
@@ -1268,15 +1259,14 @@ impl App {
             // Wikipedia Bios
             // =================================================================
             Message::ArtistBioLoaded(name, bio) => {
-                if let Some(text) = bio {
-                    self.artist_bios.insert(name, text);
-                }
+                // Record both positive and negative results — a confirmed
+                // "no bio found" must stick in-memory too, or contains_key
+                // guards would refetch every visit.
+                self.artist_bios.insert(name, bio);
                 Task::none()
             }
             Message::AlbumBioLoaded(name, bio) => {
-                if let Some(text) = bio {
-                    self.album_bios.insert(name, text);
-                }
+                self.album_bios.insert(name, bio);
                 Task::none()
             }
             Message::ToggleArtistBio => {
@@ -1849,7 +1839,7 @@ impl App {
                     .get(name)
                     .map(|a| a.as_slice())
                     .unwrap_or(&[]);
-                let bio = self.artist_bios.get(name).map(|s| s.as_str());
+                let bio = self.artist_bios.get(name).and_then(|o| o.as_deref());
                 views::artist::view(
                     name,
                     albums,
@@ -1869,7 +1859,7 @@ impl App {
                     .map(|s| s.art_key())
                     .unwrap_or_default();
                 let art = self.art_handles.get(&art_key);
-                let bio = self.album_bios.get(name).map(|s| s.as_str());
+                let bio = self.album_bios.get(name).and_then(|o| o.as_deref());
                 views::album::view(name, songs, art, bio, self.show_album_bio)
             }
             View::GenreDetail(name) => {
@@ -2081,7 +2071,8 @@ impl App {
 
         let client = self.client.clone();
         let cache = self.art_cache.clone_inner();
-        let mb = crate::art::MusicBrainzClient::new();
+        let mb = self.mb_client.clone();
+        let gate = self.art_fetch_gate.clone();
 
         Task::perform(
             async move {
@@ -2090,12 +2081,22 @@ impl App {
                     return (key, Some(data));
                 }
 
-                // Try MPD embedded art. This runs even when the negative cache
-                // says "missing" — it's a cheap local query, and a stale
-                // negative entry (e.g. written by an empty-URI recents fetch
-                // that could only try MusicBrainz) must not block it forever.
+                let _permit = gate.acquire().await;
+
+                // Try MPD embedded art: tag first, then a separate cover-file
+                // image (e.g. cover.jpg) — tag art is probed first because on
+                // a tagged library it's the one that actually exists (see
+                // docs/plans/art-wikipedia-fetch-order-and-caching.md §1).
+                // This runs even when the negative cache says "missing" —
+                // it's a cheap local query, and a stale negative entry (e.g.
+                // written by an empty-URI recents fetch that could only try
+                // MusicBrainz) must not block it forever.
                 if !uri.is_empty() {
-                    if let Ok(Some(data)) = client.album_art(&uri).await {
+                    if let Ok(Some(data)) = client.tag_art(&uri).await {
+                        let _ = cache.store(&key, &data).await;
+                        return (key, Some(data));
+                    }
+                    if let Ok(Some(data)) = client.cover_file_art(&uri).await {
                         let _ = cache.store(&key, &data).await;
                         return (key, Some(data));
                     }
@@ -2139,6 +2140,8 @@ impl App {
             return Task::none();
         }
 
+        let mb = self.mb_client.clone();
+        let gate = self.art_fetch_gate.clone();
         Task::perform(
             async move {
                 // Check cache
@@ -2146,8 +2149,9 @@ impl App {
                     return (key, Some(data));
                 }
 
+                let _permit = gate.acquire().await;
+
                 // Fetch from MusicBrainz (uses first album cover as artist image)
-                let mb = crate::art::MusicBrainzClient::new();
                 if let Some(data) = mb.fetch_artist_art(&artist_name).await {
                     let _ = cache.store(&key, &data).await;
                     return (key, Some(data));
@@ -2157,6 +2161,75 @@ impl App {
                 (key, None)
             },
             |(key, data)| Message::ArtLoaded(key, data),
+        )
+    }
+
+    /// Fetch an artist's Wikipedia bio: in-memory session cache → redb →
+    /// network (`MusicBrainzClient::fetch_artist_bio`) → persist. Mirrors
+    /// `fetch_lyrics`'s cache-then-network shape.
+    fn fetch_artist_bio(&self, artist: String) -> Task<Message> {
+        if self.artist_bios.contains_key(&artist) {
+            return Task::none();
+        }
+        let mb = self.mb_client.clone();
+        let store = self.store.clone();
+        let key = format!("artist:{artist}");
+        Task::perform(
+            async move {
+                let s = store.clone();
+                let k = key.clone();
+                let cached = tokio::task::spawn_blocking(move || s.bio_get(&k))
+                    .await
+                    .ok()
+                    .flatten();
+                let bio = if let Some(cached) = cached {
+                    cached
+                } else {
+                    let fetched = mb.fetch_artist_bio(&artist).await;
+                    let s = store.clone();
+                    let k = key.clone();
+                    let v = fetched.clone();
+                    let _ = tokio::task::spawn_blocking(move || s.bio_put(&k, &v)).await;
+                    fetched
+                };
+                (artist, bio)
+            },
+            |(name, bio)| Message::ArtistBioLoaded(name, bio),
+        )
+    }
+
+    /// Fetch an album's Wikipedia bio — same shape as `fetch_artist_bio`.
+    /// The in-memory `album_bios` map stays keyed by album name alone
+    /// (existing convention); the redb key is the fuller
+    /// `"{artist}\x1falbum"` for precision across same-named albums.
+    fn fetch_album_bio(&self, artist: String, album: String) -> Task<Message> {
+        if self.album_bios.contains_key(&album) {
+            return Task::none();
+        }
+        let mb = self.mb_client.clone();
+        let store = self.store.clone();
+        let key = format!("{artist}\x1f{album}");
+        Task::perform(
+            async move {
+                let s = store.clone();
+                let k = key.clone();
+                let cached = tokio::task::spawn_blocking(move || s.bio_get(&k))
+                    .await
+                    .ok()
+                    .flatten();
+                let bio = if let Some(cached) = cached {
+                    cached
+                } else {
+                    let fetched = mb.fetch_album_bio(&artist, &album).await;
+                    let s = store.clone();
+                    let k = key.clone();
+                    let v = fetched.clone();
+                    let _ = tokio::task::spawn_blocking(move || s.bio_put(&k, &v)).await;
+                    fetched
+                };
+                (album, bio)
+            },
+            |(name, bio)| Message::AlbumBioLoaded(name, bio),
         )
     }
 
