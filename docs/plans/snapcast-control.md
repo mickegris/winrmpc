@@ -1,8 +1,38 @@
 # Plan: Snapcast multiroom control
 
-Status: proposed — no code changes yet. Part of the mikMPD parity set (see
+Status: **implemented** (Phases 1+2: read-only status + volume/mute/stream
+controls). Part of the mikMPD parity set (see
 [`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gap #8). Net-new
 subsystem, independent of the rest of the app's MPD connection.
+
+**Implementation notes / deviations**:
+- Connection lifecycle simplified from "connect on enter, disconnect on
+  leave" to "connect lazily on first enter, keep alive across later
+  visits" — the 2s poll `Subscription` is already gated on `View::Snapcast`
+  being active, so an idle-but-connected client between visits costs
+  nothing extra, and it means re-opening the view doesn't pay a
+  reconnect round trip every time.
+- No drag-lock on the volume slider (poll-skip-while-dragging from the
+  plan's UI section) — each control handler optimistically mutates local
+  state before firing the RPC, same as this codebase's *existing* MPD
+  volume slider (`player_bar.rs`), which also has no drag-lock. Matching
+  the established pattern rather than introducing a new one; the only
+  failure mode is a rare mid-drag poll overwrite.
+- `set_client_name`/`set_client_latency`/`move_client`/`delete_client`
+  were **not** implemented — the plan's own Phasing section already marks
+  rename/latency/move/delete as "later, explicitly out of scope for v1."
+  `set_group_stream` (the group source picker) *was* included since it's
+  a one-line addition to the same request-shaped client.
+- No Settings UI for editing `snapcast_host`/`snapcast_port` per server —
+  the config fields exist (`MpdServer::snapcast_addr()` falls back to the
+  MPD host + port 1705), but there's no form field yet. The common
+  deployment (Snapcast colocated with MPD) needs no configuration at all;
+  a custom-host UI is a small, clearly-scoped follow-up.
+- Response/notification discrimination, volume clamping, and status
+  decoding are unit-tested via fixtures per the plan's own Testing
+  section; the live "point at a real Snapcast server" pass isn't possible
+  in this environment (no reachable Snapcast instance) and remains
+  manual-QA work.
 
 Direct port of `../mikMPD/plans/snapcast-control.md`'s protocol research,
 adapted from mikMPD's raw-POSIX-socket/actor design to winrmpc's

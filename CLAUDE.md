@@ -38,6 +38,7 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 - `directories` — platform config/cache paths
 - `fuzzy-matcher` — search ranking; `flume` — channels; `open` — launch URLs; `urlencoding`; `chrono`
 - `anyhow`, `thiserror`, `tracing`
+- `mdns-sd` — pure-Rust mDNS/Zeroconf, used only for LAN MPD server discovery (`src/discovery/`); no OS-level Bonjour dependency, so it works the same on Windows/Linux/macOS
 
 ## Project Structure
 
@@ -66,6 +67,14 @@ src/
   lyrics/
     mod.rs                   Re-exports LyricsClient, Lyrics, LyricLine, cache_path
     lrclib.rs                LRCLIB fetch + parse_lrc ([mm:ss.xx] synced lyrics)
+  discovery/
+    mod.rs                   mDNS LAN server discovery (_mpd._tcp.local.); iced Stream via mdns-sd
+  snapcast/
+    mod.rs                   Re-exports SnapcastClient, SnapClient, SnapGroup, SnapStream
+    protocol.rs              Raw TCP, newline-delimited JSON-RPC 2.0, request/notification split
+    client.rs                SnapcastClient — get_status, set_volume, set_group_mute, set_group_stream
+    types.rs                 SnapClient/SnapGroup/SnapStream + decode_snap_groups/decode_snap_streams
+    error.rs                 SnapcastError enum
   ui/
     mod.rs
     message.rs               Message enum + View enum
@@ -90,6 +99,7 @@ src/
       server_stats.rs
       outputs.rs
       partitions.rs
+      snapcast.rs
       playlists_list.rs
       playlist_detail.rs
       add_to_playlist.rs
@@ -104,7 +114,7 @@ src/
 
 ## AppConfig (`src/config/settings.rs`)
 Fields saved to TOML via `directories` (Windows: `%APPDATA%\winrmpc\winrmpc\config\config.toml`):
-- **Multi-server** (v0.4.0): `servers: Vec<MpdServer>` + `default_server: Option<String>` (name). `MpdServer { name, host, port, password, default_partition }` — partition is **per-server** (partitions live on one MPD instance). Helpers: `server(name)`, `server_mut(name)`, `server_addr(name)` (falls back to first server, then legacy `mpd_addr()`).
+- **Multi-server** (v0.4.0): `servers: Vec<MpdServer>` + `default_server: Option<String>` (name). `MpdServer { name, host, port, password, default_partition, snapcast_host, snapcast_port }` — partition is **per-server** (partitions live on one MPD instance). Helpers: `server(name)`, `server_mut(name)`, `server_addr(name)` (falls back to first server, then legacy `mpd_addr()`); `MpdServer::snapcast_addr()` falls back to the MPD `host` and port `1705` when `snapcast_host`/`snapcast_port` are unset (the common deployment: Snapcast colocated with MPD). There's no Settings UI yet for editing `snapcast_host`/`snapcast_port` directly — only the config fields and the fallback exist; a per-server form field is a deliberate follow-up, not an oversight.
 - **Legacy single-server fields** kept for back-compat: `mpd_host`, `mpd_port`, `mpd_password`, `default_partition`. Mirror the active server; drop in a future release.
 - `art_cache_size_mb: u32` — enforced via LRU eviction in the redb store (not just advisory)
 - `theme: ThemeConfig`
@@ -118,7 +128,7 @@ Fields saved to TOML via `directories` (Windows: `%APPDATA%\winrmpc\winrmpc\conf
 - `Arc<Mutex<Option<MpdConnection>>>` — clone-cheap, shared across async tasks
 - `fn escape(s: &str)` — **always** use this when interpolating user strings into MPD commands (prevents injection of `"` and `\`)
 - Binary protocol via `cmd_binary` (album art chunks)
-- Key methods: `status()`, `current_song()`, `queue()`, `add()`, `add_id()`, `find()`, `find_add()`, `lsinfo()`, `album_art()`, `switch_partition()`, etc.
+- Key methods: `status()`, `current_song()`, `queue()`, `add()`, `add_id()`, `find()`, `find_add()`, `lsinfo()`, `tag_art()`/`cover_file_art()`, `switch_partition()`, etc.
 
 ## Iced App Architecture (`src/ui/app.rs`)
 ### Subscription
@@ -199,6 +209,15 @@ Single `winrmpc.redb` file under the platform cache dir. Tables: `art` (blobs), 
 
 ## Server switching (`src/ui/app.rs`, `src/ui/message.rs`)
 `active_server: String` tracks the current server by name. `SwitchServer(name)` rebuilds `MpdClient`, sets `connected = false`, emits `Connect`, and restores that server's `default_partition` on `Connected`. It also reloads `recently_played` history for the new server (`recently_played_get`, via `spawn_blocking`) and clears the in-memory list first so a slow load can't briefly show the old server's history. `SetDefaultServer` / `AddServer` / `RemoveServer` manage the list from the Settings view; `RemoveServer` also deletes the removed server's `recently_played` key. Startup connects to `default_server`.
+
+## LAN Server Discovery (`src/discovery/mod.rs`, Settings view)
+`discovery::discover()` returns an `impl Stream<Item = DiscoveredServer>` (built with `iced::stream::channel`, wrapped into a `Subscription` via `Subscription::run_with_id("server-discovery", ...)`) that browses `_mpd._tcp.local.` via `mdns_sd::ServiceDaemon` for a fixed 10s window, then stops itself (`stop_browse`/`shutdown`) — re-scan is the "Rescan" button in Settings' new "Nearby Servers" section, not automatic. `Message::StartDiscovery` sets `discovery_scanning = true` (which is what puts the subscription in the batch) and fires a companion `Task::perform(sleep(11s), |_| Message::DiscoveryFinished)` — 1s past the stream's own deadline — to flip it back off; the stream has no separate "I'm done" event of its own. `Message::ServerDiscovered` de-dupes by name. Clicking a discovered row (`UseDiscoveredServer`) **pre-fills** the manual add-server form fields (`settings_server_name`/`settings_host`/`settings_port`) — it never silently saves a profile; password stays manual, matching mikMPD's exact behavior. `instance_name_from_fullname` (pure, tested) strips the `._mpd._tcp.local.` suffix from the raw mDNS fullname.
+
+## Snapcast Multiroom Control (`src/snapcast/`, `src/ui/views/snapcast.rs`)
+Sibling module to `mpd/`, not bolted onto `MpdClient` — Snapcast is a fully independent JSON-RPC-2.0-over-raw-TCP connection (port 1705 by default) that may be absent/unreachable while MPD is fine. `SnapcastConnection::request()` (`protocol.rs`) sends one line, then reads lines until one carries the matching `"id"`, silently skipping anything else (interleaved push notifications, or a stale response) — this app doesn't consume notifications, polling only (`Message::SnapcastPollTick` every 2s, subscribed only while `View::Snapcast` is the active view). `SnapClient`/`SnapGroup`/`SnapStream` (`types.rs`) are decoded straight from `Server.GetStatus`'s `result.server` JSON via `serde_json` (no hand-rolled parser needed — Snapcast's wire format is already JSON, unlike MPD's).
+- **Connection lifecycle**: `self.snapcast_client: Option<SnapcastClient>` is created lazily on the **first** `View::Snapcast` visit (`on_view_enter`, now `&mut self`) and kept alive across later visits rather than torn down on every navigation-away — a deliberate simplification vs. the original plan's "connect on enter, disconnect on leave," since a live-but-idle client costs nothing while the poll subscription itself is already view-gated.
+- **Controls** (`Client.SetVolume`, `Group.SetMute`, `Group.SetStream`): each handler optimistically mutates `self.snapcast_groups` in place first (so the UI reflects the change immediately, e.g. a dragged slider), then fires the RPC. No drag-lock against the 2s poll — the existing MPD volume slider (`player_bar.rs`) doesn't have one either, so this matches the codebase's established pattern rather than adding new complexity; the only failure mode is a rare mid-drag poll overwrite, acceptable for a v1.
+- **Not implemented** (explicitly deferred in the plan's own phasing): notification-driven live updates, client rename/latency editing, moving clients between groups, deleting disconnected clients, and a Settings UI for editing `snapcast_host`/`snapcast_port` per server (the fields exist and default to "same host as MPD, port 1705").
 
 ## Recently Added / Recently Played (`src/mpd/types.rs`, `src/ui/views/{albums_list,recently_played}.rs`)
 Two distinct features sharing one plan (`docs/plans/recently-added-and-played-history.md`) because both extend history-adjacent state — **not to be confused with `RecentAlbum`/`recent_albums`**, the pre-existing 8-item "what's been playing this session" strip shown inline in Now Playing, which is untouched by this section.

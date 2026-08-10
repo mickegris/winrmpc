@@ -97,6 +97,19 @@ pub struct App {
     // Partitions UI
     new_partition_name: String,
 
+    // Snapcast — view-scoped connection (lazily created/connected on first
+    // View::Snapcast enter, kept alive across subsequent visits rather than
+    // torn down on every navigation-away, since Snapcast may be absent/down
+    // independently of MPD and reconnecting on every visit isn't free).
+    snapcast_client: Option<crate::snapcast::SnapcastClient>,
+    snapcast_groups: Vec<crate::snapcast::SnapGroup>,
+    snapcast_streams: Vec<crate::snapcast::SnapStream>,
+    snapcast_error: Option<String>,
+
+    // LAN server discovery (Settings view)
+    discovered_servers: Vec<crate::discovery::DiscoveredServer>,
+    discovery_scanning: bool,
+
     // Settings UI
     settings_host: String,
     settings_port: String,
@@ -214,6 +227,14 @@ impl App {
 
             new_partition_name: String::new(),
 
+            snapcast_client: None,
+            snapcast_groups: Vec::new(),
+            snapcast_streams: Vec::new(),
+            snapcast_error: None,
+
+            discovered_servers: Vec::new(),
+            discovery_scanning: false,
+
             settings_host: String::new(),
             settings_port: String::new(),
             settings_password: String::new(),
@@ -252,11 +273,28 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        if self.connected {
+        let mut subs = vec![if self.connected {
             iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick)
         } else {
             iced::time::every(Duration::from_secs(3)).map(|_| Message::ConnectionTick)
+        }];
+
+        // Snapcast: only poll while its view is open — a background poll
+        // for a subsystem the user isn't looking at is pure waste.
+        if self.current_view == View::Snapcast {
+            subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Message::SnapcastPollTick));
         }
+
+        // LAN discovery: only while a scan is active (started from Settings,
+        // self-timed — see Message::StartDiscovery/DiscoveryFinished).
+        if self.discovery_scanning {
+            subs.push(
+                Subscription::run_with_id("server-discovery", crate::discovery::discover())
+                    .map(Message::ServerDiscovered),
+            );
+        }
+
+        Subscription::batch(subs)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -1632,6 +1670,126 @@ impl App {
                 self.config.save().ok();
                 Task::none()
             }
+
+            // =================================================================
+            // Snapcast
+            // =================================================================
+            Message::SnapcastPollTick => self.fetch_snapcast_status(),
+            Message::SnapcastStatusLoaded(groups, streams) => {
+                self.snapcast_groups = groups;
+                self.snapcast_streams = streams;
+                self.snapcast_error = None;
+                Task::none()
+            }
+            Message::SnapcastUnreachable(msg) => {
+                self.snapcast_error = Some(msg);
+                Task::none()
+            }
+            Message::SnapcastSetVolume(client_id, percent) => {
+                let mut muted = false;
+                for g in &mut self.snapcast_groups {
+                    for c in &mut g.clients {
+                        if c.id == client_id {
+                            c.volume = percent;
+                            muted = c.muted;
+                        }
+                    }
+                }
+                match self.snapcast_client.clone() {
+                    Some(client) => Task::perform(
+                        async move {
+                            let _ = client.set_volume(&client_id, percent, muted).await;
+                        },
+                        |_| Message::Noop,
+                    ),
+                    None => Task::none(),
+                }
+            }
+            Message::SnapcastToggleClientMute(client_id, was_muted) => {
+                let new_muted = !was_muted;
+                let mut percent = 0u8;
+                for g in &mut self.snapcast_groups {
+                    for c in &mut g.clients {
+                        if c.id == client_id {
+                            c.muted = new_muted;
+                            percent = c.volume;
+                        }
+                    }
+                }
+                match self.snapcast_client.clone() {
+                    Some(client) => Task::perform(
+                        async move {
+                            let _ = client.set_volume(&client_id, percent, new_muted).await;
+                        },
+                        |_| Message::Noop,
+                    ),
+                    None => Task::none(),
+                }
+            }
+            Message::SnapcastToggleGroupMute(group_id, was_muted) => {
+                let new_muted = !was_muted;
+                for g in &mut self.snapcast_groups {
+                    if g.id == group_id {
+                        g.muted = new_muted;
+                    }
+                }
+                match self.snapcast_client.clone() {
+                    Some(client) => Task::perform(
+                        async move {
+                            let _ = client.set_group_mute(&group_id, new_muted).await;
+                        },
+                        |_| Message::Noop,
+                    ),
+                    None => Task::none(),
+                }
+            }
+            Message::SnapcastSetGroupStream(group_id, stream_id) => {
+                for g in &mut self.snapcast_groups {
+                    if g.id == group_id {
+                        g.stream_id = stream_id.clone();
+                    }
+                }
+                match self.snapcast_client.clone() {
+                    Some(client) => Task::perform(
+                        async move {
+                            let _ = client.set_group_stream(&group_id, &stream_id).await;
+                        },
+                        |_| Message::Noop,
+                    ),
+                    None => Task::none(),
+                }
+            }
+
+            // =================================================================
+            // LAN server discovery
+            // =================================================================
+            Message::StartDiscovery => {
+                self.discovered_servers.clear();
+                self.discovery_scanning = true;
+                // The discovery stream itself has no "finished" event; stop
+                // showing "Searching..." shortly after its own scan window
+                // (a small margin so in-flight events aren't cut off).
+                Task::perform(
+                    tokio::time::sleep(Duration::from_secs(11)),
+                    |_| Message::DiscoveryFinished,
+                )
+            }
+            Message::ServerDiscovered(server) => {
+                if !self.discovered_servers.iter().any(|s| s.name == server.name) {
+                    self.discovered_servers.push(server);
+                }
+                Task::none()
+            }
+            Message::DiscoveryFinished => {
+                self.discovery_scanning = false;
+                Task::none()
+            }
+            Message::UseDiscoveredServer(server) => {
+                self.settings_server_name = server.name;
+                self.settings_host = server.host;
+                self.settings_port = server.port.to_string();
+                Task::none()
+            }
             // Legacy — no longer in the UI; kept for compatibility.
             Message::SaveSettings => Task::none(),
             Message::ServerNameChanged(s) => {
@@ -1699,6 +1857,8 @@ impl App {
                         port,
                         password,
                         default_partition: None,
+                        snapcast_host: None,
+                        snapcast_port: None,
                     });
                     self.config.save().ok();
                     self.settings_server_name.clear();
@@ -1950,6 +2110,11 @@ impl App {
                 views::cd::view(&self.cd_tracks, self.cd_probing, &self.settings_cd_device)
             }
             View::Outputs => views::outputs::view(&self.outputs, &self.partitions),
+            View::Snapcast => views::snapcast::view(
+                &self.snapcast_groups,
+                &self.snapcast_streams,
+                self.snapcast_error.as_deref(),
+            ),
             View::Partitions => {
                 let current = self
                     .status
@@ -2316,7 +2481,7 @@ impl App {
         Task::batch(tasks)
     }
 
-    fn on_view_enter(&self, view: View) -> Task<Message> {
+    fn on_view_enter(&mut self, view: View) -> Task<Message> {
         match view {
             View::Artists => {
                 let client = self.client.clone();
@@ -2443,6 +2608,34 @@ impl App {
                     Message::RecentlyAddedLoaded,
                 )
             }
+            View::Snapcast => {
+                let addr = self
+                    .config
+                    .server(&self.active_server)
+                    .map(|s| s.snapcast_addr());
+                let Some(addr) = addr else {
+                    return Task::none();
+                };
+                if self.snapcast_client.is_none() {
+                    self.snapcast_client = Some(crate::snapcast::SnapcastClient::new(&addr));
+                }
+                let client = self.snapcast_client.clone().unwrap();
+                Task::perform(
+                    async move {
+                        // connect() is a no-op-ish cheap call if a prior
+                        // connection attempt already succeeded — the
+                        // client's internal Option is simply overwritten;
+                        // this keeps re-entering the view working even
+                        // after a stale/dropped connection.
+                        client.connect().await?;
+                        client.get_status().await
+                    },
+                    |result: Result<_, crate::snapcast::error::SnapcastError>| match result {
+                        Ok((groups, streams)) => Message::SnapcastStatusLoaded(groups, streams),
+                        Err(e) => Message::SnapcastUnreachable(e.to_string()),
+                    },
+                )
+            }
             _ => Task::none(),
         }
     }
@@ -2454,6 +2647,19 @@ impl App {
             |stats| match stats {
                 Some(s) => Message::StatsLoaded(s),
                 None => Message::Tick,
+            },
+        )
+    }
+
+    fn fetch_snapcast_status(&self) -> Task<Message> {
+        let Some(client) = self.snapcast_client.clone() else {
+            return Task::none();
+        };
+        Task::perform(
+            async move { client.get_status().await },
+            |result: Result<_, crate::snapcast::error::SnapcastError>| match result {
+                Ok((groups, streams)) => Message::SnapcastStatusLoaded(groups, streams),
+                Err(e) => Message::SnapcastUnreachable(e.to_string()),
             },
         )
     }
@@ -2763,6 +2969,52 @@ fn settings_view(&self) -> Element<'_, Message> {
         ]
         .spacing(4);
 
+        let nearby_section: Element<'_, Message> = {
+            let mut list = column![].spacing(4);
+            if self.discovery_scanning && self.discovered_servers.is_empty() {
+                list = list.push(text("Searching...").size(12).color(AppColors::TEXT_MUTED));
+            } else if self.discovered_servers.is_empty() {
+                list = list.push(text("No servers found yet.").size(12).color(AppColors::TEXT_MUTED));
+            }
+            for server in &self.discovered_servers {
+                list = list.push(
+                    button(
+                        row![
+                            text(server.name.clone()).size(13).color(AppColors::TEXT_PRIMARY),
+                            Space::with_width(Length::Fill),
+                            text(format!("{}:{}", server.host, server.port))
+                                .size(11)
+                                .color(AppColors::TEXT_MUTED),
+                        ]
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .on_press(Message::UseDiscoveredServer(server.clone()))
+                    .padding([6, 10])
+                    .width(Length::Fill),
+                );
+            }
+
+            let scan_label = if self.discovery_scanning { "Searching..." } else { "Rescan" };
+            column![
+                row![
+                    text("Nearby Servers").size(14).color(AppColors::TEXT_SECONDARY),
+                    Space::with_width(Length::Fill),
+                    button(text(scan_label).size(12))
+                        .on_press_maybe((!self.discovery_scanning).then_some(Message::StartDiscovery))
+                        .padding([4, 12]),
+                ]
+                .align_y(iced::Alignment::Center),
+                Space::with_height(6),
+                list,
+                Space::with_height(4),
+                text("Servers appear here if MPD has Zeroconf enabled. Manual entry always works.")
+                    .size(10)
+                    .color(AppColors::TEXT_MUTED),
+            ]
+            .spacing(2)
+            .into()
+        };
+
         let content = column![
             row![
                 text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
@@ -2775,6 +3027,8 @@ fn settings_view(&self) -> Element<'_, Message> {
             text("Servers").size(16).color(AppColors::TEXT_PRIMARY),
             Space::with_height(8),
             server_list,
+            Space::with_height(12),
+            nearby_section,
             Space::with_height(12),
             add_form,
         ]

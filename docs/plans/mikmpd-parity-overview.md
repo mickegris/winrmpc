@@ -1,9 +1,18 @@
 # Plan: mikMPD feature-parity gap analysis
 
-Status: proposed — no code changes yet. This is the index; each substantial gap
-has its own plan file in this directory. Comparison is against
-`../mikMPD` (`/root/mikMPD` in this environment, `C:\Users\mikae\mikMPD` on the
-dev machine) as of its `CLAUDE.md`/`README.md` on 2026-08-10.
+Status: **all 7 linked plans implemented** (queue management, server stats
+& diagnostics, Now Playing quick controls, recently added/played history,
+art/Wikipedia fetch order & caching, library album identity & multi-disc,
+server discovery + Snapcast). Two pieces of the library plan were
+deliberately scoped out as a documented follow-up rather than crammed in —
+grid view and Search sections/batch-select — see
+[`library-album-identity-and-multidisc.md`](library-album-identity-and-multidisc.md)'s
+status note. This is the index; each substantial gap has its own plan file
+in this directory, each with its own "Implementation notes / deviations"
+section documenting where the shipped code diverged from the plan and why.
+Comparison is against `../mikMPD` (`/root/mikMPD` in this environment,
+`C:\Users\mikae\mikMPD` on the dev machine) as of its `CLAUDE.md`/`README.md`
+on 2026-08-10.
 
 winrmpc is desktop/iced, mikMPD is iOS/SwiftUI — features that are inherently
 mobile (lock-screen `MPRemoteCommandCenter`, `AVAudioSession` background audio,
@@ -12,20 +21,37 @@ excluded below. Everything else in mikMPD's feature list is a fair target.
 
 ## Already at parity (verified in code, not just docs)
 
-- Now Playing transport, volume, mode toggles, progress bar, art
-- Artist/Album/Genre browsing, File browser, Search (song-only — see gap below)
-- MusicBrainz + Cover Art Archive art, Wikipedia artist/album bios
+- Now Playing transport, volume, mode toggles, progress bar, art, crossfade,
+  replay gain, quick Outputs/Partitions/History links (gaps #10-12)
+- Artist/Album/Genre browsing (artist-aware grouping + multi-disc collapsing,
+  gap #2), File browser, Search (still song-only — Search sections/batch
+  select, ex-gap #3, deliberately deferred, see the library plan's status note)
+- Queue editing: remove, reorder, "Add Next", shuffle-in-place (gap #1)
+- MusicBrainz + Cover Art Archive art (tag → cover-file → internet order,
+  shared client, throttled/gated, MBID-cached — gaps #13-#15) + Wikipedia
+  artist/album bios (persisted, better-matched — also #14)
 - CD playback (`cdda://`)
 - Radio (built-in Swedish stations + custom)
 - Partitions + Outputs, multi-server (`servers: Vec<MpdServer>`)
 - Stored playlists (`docs/plans/playlists.md`, shipped in `a776999`)
 - Synced lyrics via LRCLIB (`docs/plans/enhancements.md` §3, shipped)
-- MPD command activity in the Log view with an MPD-only filter
-  (`docs/plans/enhancements.md` §2, shipped) — though see the diagnostics gap
-  below for the parts of mikMPD's version this one doesn't yet match
-- Queue shuffle-in-place (`Message::QueueShuffle` → `client.shuffle()`)
+- MPD command activity in the Log view with an MPD-only filter, now with
+  per-command timing and a slow-command highlight (gap #7, closing the rest
+  of the diagnostics gap `enhancements.md` §2 left open)
+- Server Statistics screen (gap #6)
+- Recently Added library section + real per-track Recently Played history,
+  distinct from the session-only `recent_albums` strip (gaps #4/#5)
+- LAN server discovery via mDNS in the Settings/Add-Server flow (gap #9)
+- Snapcast multiroom control — read-only status + volume/mute/stream
+  controls (gap #8, Phase 1+2 of its plan; rename/latency/move/delete
+  explicitly deferred by that plan's own phasing)
 
-## Gaps (this plan set)
+## Gaps (this plan set) — all closed; kept as the historical record
+
+Grid view and Search sections/batch-select (originally folded into #2/#3)
+are the one exception — see the note below the table and
+[`library-album-identity-and-multidisc.md`](library-album-identity-and-multidisc.md)'s
+status.
 
 | # | Gap | mikMPD feature | Plan file | Size |
 |---|---|---|---|---|

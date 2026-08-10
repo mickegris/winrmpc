@@ -1,4 +1,6 @@
+use crate::discovery::DiscoveredServer;
 use crate::mpd::types::*;
+use crate::snapcast::{SnapGroup, SnapStream};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -184,6 +186,21 @@ pub enum Message {
     // === CD device ===
     SaveCdDevice,
 
+    // === Snapcast ===
+    SnapcastPollTick,
+    SnapcastStatusLoaded(Vec<SnapGroup>, Vec<SnapStream>),
+    SnapcastUnreachable(String),
+    SnapcastSetVolume(String, u8),
+    SnapcastToggleClientMute(String, bool),
+    SnapcastToggleGroupMute(String, bool),
+    SnapcastSetGroupStream(String, String),
+
+    // === LAN server discovery ===
+    StartDiscovery,
+    ServerDiscovered(DiscoveredServer),
+    DiscoveryFinished,
+    UseDiscoveredServer(DiscoveredServer),
+
     // === Misc ===
     ErrorOccurred(String),
     Tick,
@@ -208,6 +225,7 @@ pub enum View {
     CD,
     Outputs,
     Partitions,
+    Snapcast,
     Settings,
     Log,
     ServerStats,

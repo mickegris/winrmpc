@@ -1,7 +1,25 @@
 # Plan: LAN MPD server discovery (mDNS/Zeroconf)
 
-Status: proposed — no code changes yet. Part of the mikMPD parity set (see
+Status: **implemented**. Part of the mikMPD parity set (see
 [`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gap #9).
+
+**Implementation notes**: `mdns-sd` resolved cleanly (pinned to `"0.20"`,
+the current major at implementation time). Its API is thread-based with a
+`flume::Receiver<ServiceEvent>` supporting `recv_async()`, which made the
+iced `Subscription` bridge straightforward — `iced::stream::channel` wraps
+an async loop calling `receiver.recv_async()` under a `tokio::time::timeout`
+against a 10s deadline, so no manual thread/channel bridging was needed
+beyond what the plan already anticipated. `Subscription::run_with_id` (not
+`run`, which requires a plain `fn` pointer with no captured state) is what
+actually wires a pre-built `Stream` value into the subscription batch. The
+stream has no separate "finished" event of its own, so `Message::StartDiscovery`
+fires a companion 11s timer (`DiscoveryFinished`) to clear the "Searching…"
+state 1s past the stream's own internal deadline.
+Real mDNS discovery against a live MPD instance couldn't be manually tested
+in this environment (no real network/MPD server available) — the pure
+`instance_name_from_fullname` transform is unit-tested, everything else
+here still needs the "point at a real server on the LAN" pass the plan's
+own Testing section calls for.
 
 Adapted from `../mikMPD/plans/server-discovery.md`. MPD advertises itself as
 `_mpd._tcp` over Zeroconf/Bonjour when built with zeroconf support and

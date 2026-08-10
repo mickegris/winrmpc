@@ -13,11 +13,30 @@ pub struct MpdServer {
     /// Per-server saved partition — restored on reconnect.
     #[serde(default)]
     pub default_partition: Option<String>,
+    /// Snapcast server host, if this MPD server has one. Empty/`None` means
+    /// "same host as MPD" (the common deployment).
+    #[serde(default)]
+    pub snapcast_host: Option<String>,
+    /// Snapcast control port. `None` means the default, 1705.
+    #[serde(default)]
+    pub snapcast_port: Option<u16>,
 }
 
 impl MpdServer {
     pub fn addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+
+    /// Snapcast connection address: configured host (or this server's MPD
+    /// host when unset) + configured port (or 1705 when unset).
+    pub fn snapcast_addr(&self) -> String {
+        let host = self
+            .snapcast_host
+            .as_deref()
+            .filter(|h| !h.is_empty())
+            .unwrap_or(&self.host);
+        let port = self.snapcast_port.unwrap_or(1705);
+        format!("{host}:{port}")
     }
 }
 
@@ -94,6 +113,8 @@ impl Default for AppConfig {
             port: 6600,
             password: None,
             default_partition: None,
+            snapcast_host: None,
+            snapcast_port: None,
         };
         Self {
             mpd_host: "127.0.0.1".into(),
@@ -162,6 +183,8 @@ impl AppConfig {
                             port: config.mpd_port,
                             password: config.mpd_password.clone(),
                             default_partition: config.default_partition.clone(),
+                            snapcast_host: None,
+                            snapcast_port: None,
                         };
                         config.servers.push(server);
                         config.default_server = Some("Default".into());

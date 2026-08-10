@@ -60,6 +60,7 @@ pub fn view<'a>(
             Space::with_height(Length::Fill),
             nav_button("Outputs", View::Outputs, current_view),
             nav_button("Partitions", View::Partitions, current_view),
+            nav_button("Snapcast", View::Snapcast, current_view),
             nav_button("Settings", View::Settings, current_view),
             nav_button("Log", View::Log, current_view),
             nav_button("Stats", View::ServerStats, current_view),
