@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
-Windows MPD (Music Player Daemon) client built in **Rust** with **Iced 0.13** (GUI) and **Tokio** (async runtime). Connects to a remote MPD server over TCP. Target: Windows desktop, MPD server typically on Linux.
+MPD (Music Player Daemon) client built in **Rust** with **Iced 0.13** (GUI) and **Tokio** (async runtime). Connects to a remote MPD server over TCP; the MPD server itself typically runs on Linux. Primary dev/build target is Windows desktop (`winrmpc` = **win**dows **r**ust **mpc**), but the codebase is written against cross-platform crates and also builds on Linux/macOS — only icon embedding and console-hiding are Windows-specific, and those are cleanly guarded behind `cfg(target_os = "windows")`.
 
 ## Commands
 Run all of these from the repo root (`C:\Users\mikae\winrmpc`), **not** from `src/`.
@@ -18,7 +18,7 @@ cargo test <name>        # run tests whose name matches <name>
 cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 ```
 
-- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 45 tests cover the pure-logic core, all I/O-free:
+- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 50 tests cover the pure-logic core, all I/O-free:
   - `mpd/client.rs` — `escape` injection safety (quotes, backslashes, ordering)
   - `mpd/protocol.rs` — `pairs_to_map`, `split_groups`, `parse_ack`
   - `mpd/commands.rs` — every response parser (`parse_status`/`song`/`songs`/`outputs`/`partitions`/`directory_listing`/`stats`/`tag_list`); note the `Time`→`duration` fallback rule
@@ -64,7 +64,7 @@ src/
     cache.rs                 In-memory hot layer (HashMap) over the redb Store; downscales art to 500px JPEG on store
     musicbrainz.rs           MusicBrainz + Wikipedia fetch (artist bio, album bio, cover art)
   lyrics/
-    mod.rs                   Re-exports Lyrics, fetch_lyrics
+    mod.rs                   Re-exports LyricsClient, Lyrics, LyricLine, cache_path
     lrclib.rs                LRCLIB fetch + parse_lrc ([mm:ss.xx] synced lyrics)
   ui/
     mod.rs
@@ -89,6 +89,9 @@ src/
       log.rs
       outputs.rs
       partitions.rs
+      playlists_list.rs
+      playlist_detail.rs
+      add_to_playlist.rs
       mod.rs
     widgets/
       player_bar.rs          Transport controls bar (play/pause/stop/prev/next, seek, volume)
@@ -180,6 +183,19 @@ Single `winrmpc.redb` file under the platform cache dir. Tables: `art` (blobs), 
 ## Server switching (`src/ui/app.rs`, `src/ui/message.rs`)
 `active_server: String` tracks the current server by name. `SwitchServer(name)` rebuilds `MpdClient`, sets `connected = false`, emits `Connect`, and restores that server's `default_partition` on `Connected`. `SetDefaultServer` / `AddServer` / `RemoveServer` manage the list from the Settings view; startup connects to `default_server`.
 
+## Stored Playlists (`src/mpd/client.rs`, `src/ui/views/{playlists_list,playlist_detail,add_to_playlist}.rs`)
+Mirrors mikMPD's setup. `PlaylistInfo` (`src/mpd/types.rs`) backs `View::Playlists` / `View::PlaylistDetail(name)` / `View::AddToPlaylist`, driven by `on_view_enter` (`View::Playlists` → `list_playlists`).
+- `MpdClient` playlist commands: `list_playlists`, `list_playlist(name)` (`listplaylistinfo`; MPD sometimes omits `Pos`, so it's assigned from the record index), `save_playlist`, `delete_playlist`, `load_playlist`, `playlist_add`, `playlist_delete(name, pos)`, `playlist_move(name, from, to)`, `rename_playlist`.
+- **Save queue as playlist**: `SaveQueueAsPlaylist` validates the name (`validate_playlist_name`), calls `save_playlist`, then reloads the list via `PlaylistsLoaded`.
+- **Add to Playlist picker**: `OpenAddToPlaylist(Vec<String>)` (song URIs) opens `View::AddToPlaylist` from Now Playing, albums, the queue, or search; `AddToPlaylistConfirm(name)` / `AddToNewPlaylist` add and `CloseAddToPlaylist` dismisses.
+- Rename is inline in the playlist list row (`StartRenamePlaylist` → `RenamePlaylistInput` → `ConfirmRenamePlaylist`/`CancelRenamePlaylist`), not a separate view.
+
+## Lyrics (`src/lyrics/lrclib.rs`, `src/ui/views/now_playing.rs`)
+`LyricsClient` fetches synced/plain lyrics from LRCLIB for the current song; `parse_lrc` parses `[mm:ss.xx]` timestamps. Results cache through the redb `Store` (`lyrics_get`/`lyrics_put`, keyed like art) so they're fetched once per track.
+- **State**: `lyrics: HashMap<String, Option<Lyrics>>` on `App` — `None` entry = loading, `Some(None)` = fetched-but-none-found, `Some(Some(l))` = have lyrics. `show_lyrics: bool` (default `true`) toggled by `Message::ToggleLyrics`.
+- **Now Playing layout**: when `show_lyrics`, the view splits into a left column (art/info/recents) and a right `FillPortion(2)` lyrics panel; synced lines highlight the one matching `elapsed - LYRIC_SYNC_OFFSET` (0.5s, since LRCLIB timestamps tend to lead slightly) and auto-scroll via `lyrics_scroll_id`.
+- `fetch_lyrics(song)` (`app.rs`) skips the request if the key is already in `self.lyrics`.
+
 ## Wikipedia / MusicBrainz (`src/art/musicbrainz.rs`)
 - **Artist bio**: 1) MusicBrainz Wikipedia URL relation; 2) suffix fallback `["(band)", "(musician)", …]`
 - **Album bio**: 1) MusicBrainz release-group Wikipedia URL relation; 2) `"(album)"` fallback
@@ -221,5 +237,8 @@ Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer fo
 `build.rs` — generates the same design as 16×16 + 32×32 BMP-in-ICO and embeds it via `winres`.  
 Build dependency: `winres = "0.1"` in `[build-dependencies]`.
 
+## Planning Docs (`docs/plans/`)
+Design docs written before implementing a feature — read the relevant one before starting related work, and add new ones there for anything non-trivial. `mikmpd-parity-overview.md` tracks the gap between winrmpc and its sibling iOS client [mikMPD](https://github.com/mickegris/mikMPD) (`../mikMPD`), with one linked plan file per gap (queue editing, multi-disc album grouping, recently-added/played history, server stats & diagnostics, Snapcast control, LAN server discovery, Now Playing quick controls). `playlists.md` and `enhancements.md` (playlists, MPD log, lyrics) are earlier plans from this same parity effort — already shipped.
+
 ## Current Version
-`0.4.0` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
+`0.4.1` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
