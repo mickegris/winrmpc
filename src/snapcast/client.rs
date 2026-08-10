@@ -6,7 +6,7 @@
 
 use crate::snapcast::error::{SnapcastError, SnapcastResult};
 use crate::snapcast::protocol::SnapcastConnection;
-use crate::snapcast::types::{decode_snap_groups, decode_snap_streams, SnapGroup, SnapStream};
+use crate::snapcast::types::{decode_snap_status, SnapGroup, SnapStream};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -35,6 +35,17 @@ impl SnapcastClient {
         *self.conn.lock().await = None;
     }
 
+    pub async fn is_connected(&self) -> bool {
+        self.conn.lock().await.is_some()
+    }
+
+    /// The address this client was constructed with — lets a caller detect
+    /// a stale client (e.g. the server's `snapcast_host`/`snapcast_port`
+    /// were edited) and rebuild rather than keep talking to the old one.
+    pub fn addr(&self) -> &str {
+        &self.addr
+    }
+
     async fn request(&self, method: &str, params: Value) -> SnapcastResult<Value> {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(SnapcastError::NotConnected)?;
@@ -43,9 +54,13 @@ impl SnapcastClient {
 
     /// `Server.GetStatus` — the full group/client/stream tree.
     pub async fn get_status(&self) -> SnapcastResult<(Vec<SnapGroup>, Vec<SnapStream>)> {
-        let result = self.request("Server.GetStatus", serde_json::json!({})).await?;
-        let server = result.get("server").cloned().unwrap_or(Value::Null);
-        Ok((decode_snap_groups(&server), decode_snap_streams(&server)))
+        let mut result = self.request("Server.GetStatus", serde_json::json!({})).await?;
+        // Take ownership of the "server" sub-value instead of cloning it,
+        // since `result` isn't needed after this — decode_snap_status then
+        // parses it exactly once instead of the previous two separate
+        // decode calls each cloning + re-parsing the whole tree.
+        let server = result.get_mut("server").map(std::mem::take).unwrap_or(Value::Null);
+        Ok(decode_snap_status(&server))
     }
 
     pub async fn set_volume(&self, client_id: &str, percent: u8, muted: bool) -> SnapcastResult<()> {

@@ -1,13 +1,57 @@
 # Plan: Correctness + panic fixes from the post-parity code review
 
-Status: proposed — no code changes yet. Findings from reviewing the seven
-parity commits landed on `release/v0.4.1` (`b1329b3`..`b820700`). Every item
-below was **verified against the actual code**, not inferred from the plans;
-two were reproduced with a standalone program. Ordered by severity.
+Status: **items 1-5 implemented.** Item 6 (punctuation-folded grouping key)
+remains **deliberately deferred** — it was already marked "follow-up sized,
+not part of the urgent batch" in this plan's own text, and that call still
+stands; it's a genuine parity gap, not a regression, and is sized more like
+a small feature than a bug fix. The "also worth folding in" `push_recent`
+de-dup note under item 1 was likewise left for later — it's a soft
+"consider," not a required fix, and changes `push_recent`'s de-dup
+semantics, which is a separate risk surface from the key-consistency bug
+it was attached to.
 
-These are all small, mostly-independent fixes. They should ship as one
-"review fixes" round before any further feature work, since #1-#3 are
-user-visible wrong behavior and #4 is a reachable panic.
+Findings from reviewing the seven parity commits landed on `release/v0.4.1`
+(`b1329b3`..`b820700`). Every item below was **verified against the actual
+code**, not inferred from the plans; two were reproduced with a standalone
+program. Ordered by severity.
+
+These are all small, mostly-independent fixes, implemented together in one
+commit since none of them touch overlapping code (verified by a clean build
++ full test pass after all five landed).
+
+**Implementation notes / deviations**:
+- Item 1's fix is named `art_key_for(artist, album)` exactly as sketched,
+  added to `types.rs` with `Song::art_key()` now a thin wrapper over it.
+  All four raw-key sites (`fetch_recent_art`, both `now_playing.rs` sites,
+  `recently_played.rs`) plus the two already-correct-but-inconsistent ones
+  (`artist.rs`, the `ArtistAlbumsLoaded` handler) now go through it.
+- Item 2 turned out to need one more layer than the plan's snippet showed:
+  `fetch_album_bio`'s `artist` parameter is used for **two different
+  things** — the cache key (must be the *exact* `Option<String>`
+  `View::AlbumDetail` carries, so render-time lookups agree) and the
+  MusicBrainz query string (fine to substitute a fallback when the real
+  artist is unknown). Conflating them — e.g. resolving the fallback once in
+  `AlbumSelected` and reusing that resolved value for both — would let a
+  stale `self.selected_artist` from browsing a *different* artist earlier
+  in the session enable multi-disc sibling-variant merging for a
+  Genre-detail-originated album selection, which is exactly the unsafe
+  merge mikMPD's rule exists to prevent. So `fetch_album_bio` keeps
+  `artist: Option<String>` for keying and derives a separate
+  `query_artist: String` (with the fallback) only for the MusicBrainz call.
+  New `album_scoped_key(artist: Option<&str>, album: &str)` helper in
+  `types.rs` backs both the `album_bios` and `album_songs` maps (the
+  render arm's lookup key and `AlbumSongsLoaded`'s stored key were both
+  updated to match).
+- Item 4's fix is `rfind_ascii_ci`, not literally `char_indices()` +
+  `eq_ignore_ascii_case` inlined at the call site as sketched — factored
+  into its own function since it's reused by nothing else but reads much
+  more clearly named. One of the plan's own example test cases
+  (`"İİ cd2"`) turned out to be mislabeled during writing — the *correct*
+  panic-free result is a successful strip (`"İİ"`, disc 2), not a
+  passthrough, which the standalone verification in the plan didn't
+  actually compute (it only proved the *old* code panics, not what the
+  *new* code should return). Caught by writing a second, independent
+  verification program before trusting the test assertion.
 
 ---
 

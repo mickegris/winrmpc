@@ -1,4 +1,4 @@
-use crate::mpd::types::AlbumGroup;
+use crate::mpd::types::{art_key_for, AlbumGroup};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, container, row, text, Column, Space};
@@ -119,9 +119,10 @@ pub fn view<'a>(
             AppColors::ROW_ODD
         };
 
-        // 0x1f separator, matching Song::art_key() — a hyphen here would
-        // collide on hyphenated artist/album names.
-        let art_key = format!("{artist_name}\x1f{}", group.base);
+        // group.base is already disc-stripped; art_key_for is a no-op
+        // re-strip here, kept for consistency with every other art-cache
+        // key site (all go through the same helper so they can't drift).
+        let art_key = art_key_for(artist_name, &group.base);
         let art_widget: Element<'a, Message> =
             if let Some(handle) = art_handles.get(&art_key) {
                 iced::widget::image(handle.clone())

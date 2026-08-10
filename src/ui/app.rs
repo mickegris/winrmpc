@@ -488,13 +488,19 @@ impl App {
                 // Recently Played recording: tick the recorder on every poll
                 // (it self-tracks deltas/file changes) and persist on commit.
                 // Skip CD tracks (physical disc, not a "play" worth recording
-                // the way a library file or radio stream is).
+                // the way a library file or radio stream is). Only reads
+                // the two fields the recorder needs rather than cloning the
+                // whole Song (~15 Option<String> fields plus a tags
+                // HashMap) on every 500ms poll.
                 let mut task = Task::none();
-                if let Some(song) = self.current_song.clone() {
-                    if !song.file.starts_with("cdda://") {
-                        let elapsed = self.status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                        let is_playing = self.status.state == PlayState::Play;
-                        if self.play_recorder.tick(&song.file, is_playing, elapsed, song.duration_secs) {
+                let recorder_input = self.current_song.as_ref().and_then(|s| {
+                    (!s.file.starts_with("cdda://")).then(|| (s.file.clone(), s.duration_secs))
+                });
+                if let Some((file, duration_secs)) = recorder_input {
+                    let elapsed = self.status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                    let is_playing = self.status.state == PlayState::Play;
+                    if self.play_recorder.tick(&file, is_playing, elapsed, duration_secs) {
+                        if let Some(song) = self.current_song.as_ref() {
                             let now = chrono::Utc::now().timestamp();
                             let entry = RecentlyPlayedEntry {
                                 file: song.file.clone(),
@@ -625,9 +631,14 @@ impl App {
                         if let Ok(id) = client.add_id(&uri).await {
                             if let Some(pos) = insert_at {
                                 if let Ok(q) = client.queue().await {
-                                    let end = q.len() as u32 - 1;
-                                    if end != pos {
-                                        client.move_pos(end, pos).await.ok();
+                                    // Queue can only have shrunk to empty if
+                                    // our own add above raced with something
+                                    // clearing it — nothing to move in that
+                                    // case, just leave it.
+                                    if let Some(end) = (q.len() as u32).checked_sub(1) {
+                                        if end != pos {
+                                            client.move_pos(end, pos).await.ok();
+                                        }
                                     }
                                 }
                             } else if is_stopped {
@@ -717,9 +728,7 @@ impl App {
                 Task::perform(
                     async move {
                         client.clear().await.ok();
-                        for uri in &uris {
-                            client.add(uri).await.ok();
-                        }
+                        client.add_all(&uris).await.ok();
                         client.play().await.ok();
                     },
                     |_| Message::Tick,
@@ -730,9 +739,7 @@ impl App {
                 let client = self.client.clone();
                 Task::perform(
                     async move {
-                        for uri in &uris {
-                            client.add(uri).await.ok();
-                        }
+                        client.add_all(&uris).await.ok();
                         if let Ok(status) = client.status().await {
                             if status.state == PlayState::Stop {
                                 client.play().await.ok();
@@ -824,6 +831,11 @@ impl App {
                 let client = self.client.clone();
                 let album_name = name.clone();
                 let artist_for_songs = artist.clone();
+                // Scoped the same way View::AlbumDetail's (name, artist)
+                // is, so the render-time lookup in album_songs always
+                // agrees with what gets stored here — see
+                // docs/plans/review-fixes-correctness.md §2.
+                let cache_key = album_scoped_key(artist_for_songs.as_deref(), &album_name);
                 let songs_task = Task::perform(
                     async move {
                         let mut songs = match &artist_for_songs {
@@ -876,15 +888,12 @@ impl App {
                                 .unwrap_or(0);
                             (s.effective_disc(), track)
                         });
-                        (album_name, songs)
+                        (cache_key, songs)
                     },
-                    |(name, songs)| Message::AlbumSongsLoaded(name, songs),
+                    |(key, songs)| Message::AlbumSongsLoaded(key, songs),
                 );
 
-                // Fall back to the currently-viewed artist page's name if
-                // this entry point didn't know the artist directly.
-                let bio_artist = artist.or_else(|| self.selected_artist.clone()).unwrap_or_default();
-                let bio_task = self.fetch_album_bio(bio_artist, name);
+                let bio_task = self.fetch_album_bio(artist, name);
 
                 Task::batch([songs_task, bio_task])
             }
@@ -911,7 +920,10 @@ impl App {
             Message::ArtistAlbumsLoaded(artist, albums) => {
                 let mut tasks = Vec::new();
                 for group in &albums {
-                    let key = format!("{}\x1f{}", group.artist, group.base);
+                    // group.base is already disc-stripped, so this is a
+                    // no-op re-strip — kept as art_key_for for consistency
+                    // with every other art-cache key site.
+                    let key = art_key_for(&group.artist, &group.base);
                     if !self.art_handles.contains_key(&key) {
                         // Use the first disc variant to find a song URI for
                         // MPD art lookup.
@@ -1816,6 +1828,17 @@ impl App {
                     self.config.default_partition = partition;
                 }
                 self.recently_played.clear();
+
+                // Drop the Snapcast client and its cached view state — it
+                // captured the *previous* server's address, and nothing
+                // else would notice the server changed while that view is
+                // closed. on_view_enter's is_none() check then rebuilds it
+                // against the new server on the next Snapcast visit.
+                self.snapcast_client = None;
+                self.snapcast_groups.clear();
+                self.snapcast_streams.clear();
+                self.snapcast_error = None;
+
                 let store = self.store.clone();
                 let server = name.clone();
                 let load_history = Task::perform(
@@ -2071,10 +2094,11 @@ impl App {
                     self.show_artist_bio,
                 )
             }
-            View::AlbumDetail(name, _artist) => {
+            View::AlbumDetail(name, artist) => {
+                let key = album_scoped_key(artist.as_deref(), name);
                 let songs = self
                     .album_songs
-                    .get(name)
+                    .get(&key)
                     .map(|s| s.as_slice())
                     .unwrap_or(&[]);
                 let art_key = songs
@@ -2082,7 +2106,7 @@ impl App {
                     .map(|s| s.art_key())
                     .unwrap_or_default();
                 let art = self.art_handles.get(&art_key);
-                let bio = self.album_bios.get(name).and_then(|o| o.as_deref());
+                let bio = self.album_bios.get(&key).and_then(|o| o.as_deref());
                 views::album::view(name, songs, art, bio, self.show_album_bio)
             }
             View::GenreDetail(name) => {
@@ -2427,16 +2451,29 @@ impl App {
     }
 
     /// Fetch an album's Wikipedia bio — same shape as `fetch_artist_bio`.
-    /// The in-memory `album_bios` map stays keyed by album name alone
-    /// (existing convention); the redb key is the fuller
-    /// `"{artist}\x1falbum"` for precision across same-named albums.
-    fn fetch_album_bio(&self, artist: String, album: String) -> Task<Message> {
-        if self.album_bios.contains_key(&album) {
+    /// Both the in-memory `album_bios` map and the redb key are scoped by
+    /// `album_scoped_key(artist, album)`, matching `View::AlbumDetail`'s own
+    /// `(name, artist)` so storage and render-time lookup always agree
+    /// (previously the in-memory guard was keyed by album name alone, so
+    /// two different artists' same-titled album showed each other's bio
+    /// for the rest of the session — see
+    /// docs/plans/review-fixes-correctness.md §2). `artist` also drives the
+    /// actual MusicBrainz/Wikipedia query; when unknown (e.g. reached from
+    /// Genre detail) it falls back to whichever artist page happens to be
+    /// open as a best-effort search hint — that fallback is *only* for the
+    /// query, never for the cache key, so a stale `selected_artist` can't
+    /// cause a wrong-artist cache hit.
+    fn fetch_album_bio(&self, artist: Option<String>, album: String) -> Task<Message> {
+        let key = album_scoped_key(artist.as_deref(), &album);
+        if self.album_bios.contains_key(&key) {
             return Task::none();
         }
+        let query_artist = artist
+            .clone()
+            .or_else(|| self.selected_artist.clone())
+            .unwrap_or_default();
         let mb = self.mb_client.clone();
         let store = self.store.clone();
-        let key = format!("{artist}\x1f{album}");
         Task::perform(
             async move {
                 let s = store.clone();
@@ -2448,29 +2485,29 @@ impl App {
                 let bio = if let Some(cached) = cached {
                     cached
                 } else {
-                    let fetched = mb.fetch_album_bio(&artist, &album).await;
+                    let fetched = mb.fetch_album_bio(&query_artist, &album).await;
                     let s = store.clone();
                     let k = key.clone();
                     let v = fetched.clone();
                     let _ = tokio::task::spawn_blocking(move || s.bio_put(&k, &v)).await;
                     fetched
                 };
-                (album, bio)
+                (key, bio)
             },
-            |(name, bio)| Message::AlbumBioLoaded(name, bio),
+            |(key, bio)| Message::AlbumBioLoaded(key, bio),
         )
     }
 
     /// Kick off art fetches for any recently-played album not already in
     /// `art_handles`.  Passes an empty URI so the MPD embedded-art step is
     /// skipped (we have no file path), but disk cache and MusicBrainz fallback
-    /// both work via the `"artist\x1falbum"` key alone.
+    /// both work via the `art_key_for` key alone.
     fn fetch_recent_art(&self) -> Task<Message> {
         let tasks: Vec<Task<Message>> = self
             .recent_albums
             .iter()
             .filter_map(|r| {
-                let key = format!("{}\x1f{}", r.artist, r.album);
+                let key = art_key_for(&r.artist, &r.album);
                 if self.art_handles.contains_key(&key) {
                     None
                 } else {
@@ -2616,18 +2653,27 @@ impl App {
                 let Some(addr) = addr else {
                     return Task::none();
                 };
-                if self.snapcast_client.is_none() {
+                // Rebuild if we don't have a client yet, or if the
+                // configured address changed since it was built (e.g.
+                // snapcast_host/port edited in Settings) — SwitchServer
+                // already clears snapcast_client on a server change, but a
+                // same-server address edit wouldn't otherwise be noticed.
+                let needs_new_client = match &self.snapcast_client {
+                    None => true,
+                    Some(c) => c.addr() != addr,
+                };
+                if needs_new_client {
                     self.snapcast_client = Some(crate::snapcast::SnapcastClient::new(&addr));
                 }
                 let client = self.snapcast_client.clone().unwrap();
                 Task::perform(
                     async move {
-                        // connect() is a no-op-ish cheap call if a prior
-                        // connection attempt already succeeded — the
-                        // client's internal Option is simply overwritten;
-                        // this keeps re-entering the view working even
-                        // after a stale/dropped connection.
-                        client.connect().await?;
+                        // Reuse an already-open connection instead of
+                        // tearing down a working socket and reconnecting
+                        // on every single visit to this view.
+                        if !client.is_connected().await {
+                            client.connect().await?;
+                        }
                         client.get_status().await
                     },
                     |result: Result<_, crate::snapcast::error::SnapcastError>| match result {

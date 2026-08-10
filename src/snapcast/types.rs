@@ -137,16 +137,22 @@ struct RawServer {
 /// Decodes the `result.server` value from `Server.GetStatus`. Degrades to
 /// an empty `Vec` (not an error) on unexpected shape, so a transient/odd
 /// response shows "nothing to display" rather than a parse-error toast.
-pub fn decode_snap_groups(server: &Value) -> Vec<SnapGroup> {
+/// Decodes both groups and streams from one `serde_json::from_value` call —
+/// `get_status` uses this instead of calling `decode_snap_groups` and
+/// `decode_snap_streams` separately, which each cloned and fully
+/// re-parsed the whole tree (twice the work, every 2s poll).
+pub fn decode_snap_status(server: &Value) -> (Vec<SnapGroup>, Vec<SnapStream>) {
     serde_json::from_value::<RawServer>(server.clone())
-        .map(|r| r.groups.into_iter().map(SnapGroup::from).collect())
+        .map(|r| (r.groups.into_iter().map(SnapGroup::from).collect(), r.streams))
         .unwrap_or_default()
 }
 
+pub fn decode_snap_groups(server: &Value) -> Vec<SnapGroup> {
+    decode_snap_status(server).0
+}
+
 pub fn decode_snap_streams(server: &Value) -> Vec<SnapStream> {
-    serde_json::from_value::<RawServer>(server.clone())
-        .map(|r| r.streams)
-        .unwrap_or_default()
+    decode_snap_status(server).1
 }
 
 #[cfg(test)]
@@ -230,6 +236,13 @@ mod tests {
     fn decode_snap_streams_from_fixture() {
         let streams = decode_snap_streams(&fixture());
         assert_eq!(streams, vec![SnapStream { id: "stream1".into(), status: "playing".into() }]);
+    }
+
+    #[test]
+    fn decode_snap_status_returns_both_halves_matching_the_individual_decoders() {
+        let (groups, streams) = decode_snap_status(&fixture());
+        assert_eq!(groups, decode_snap_groups(&fixture()));
+        assert_eq!(streams, decode_snap_streams(&fixture()));
     }
 
     #[test]

@@ -190,7 +190,7 @@ pub fn view<'a>(
             let current_key = song.art_key();
             let visible_recents: Vec<&RecentAlbum> = recent_albums
                 .iter()
-                .filter(|r| format!("{}\x1f{}", r.artist, r.album) != current_key)
+                .filter(|r| art_key_for(&r.artist, &r.album) != current_key)
                 .take(5)
                 .collect();
 
@@ -292,7 +292,7 @@ fn recent_thumb<'a>(
     recent: &'a RecentAlbum,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
 ) -> Element<'a, Message> {
-    let key = format!("{}\x1f{}", recent.artist, recent.album);
+    let key = art_key_for(&recent.artist, &recent.album);
     let thumb_art: Element<'a, Message> = match art_handles.get(&key) {
         Some(handle) => image(handle.clone()).width(120).height(120).into(),
         None => container(text("").size(1))

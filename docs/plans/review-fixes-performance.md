@@ -1,13 +1,22 @@
 # Plan: Performance + accuracy fixes from the post-parity code review
 
-Status: proposed — no code changes yet. Companion to
-[`review-fixes-correctness.md`](review-fixes-correctness.md), splitting off
-the items that are about **cost** rather than wrong behavior. Same source:
-review of the seven parity commits on `release/v0.4.1`
-(`b1329b3`..`b820700`). This app's stated priority is performance (not
-energy — see the overview doc's exclusion note), so these are worth doing,
-but none of them produce incorrect results and they can wait behind the
-correctness batch.
+Status: **all 4 items implemented**, in the same commit as
+[`review-fixes-correctness.md`](review-fixes-correctness.md) (items 3-4
+here directly interact with that plan's item 3, and the plan itself said to
+do them together). Same source: review of the seven parity commits on
+`release/v0.4.1` (`b1329b3`..`b820700`). This app's stated priority is
+performance (not energy — see the overview doc's exclusion note).
+
+**Implementation notes**: Item 1's partial-failure question was resolved in
+favor of `command_list`'s native stop-at-first-error behavior (tracks
+already applied before a failure stay queued; nothing after it is
+attempted) rather than adding a fallback to the old per-track loop — the
+plan flagged this as needing a deliberate choice, and a silent
+per-track-swallow-errors loop defeats the entire point of surfacing a
+mid-album problem instead of quietly playing a partial, wrong-order
+selection. `add_all`'s command-string formation was split into a pure
+`build_add_commands` helper so it's unit-testable without a live
+connection, matching this module's existing `escape()`-test convention.
 
 ---
 

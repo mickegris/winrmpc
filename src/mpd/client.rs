@@ -238,6 +238,41 @@ impl MpdClient {
             .ok_or_else(|| MpdError::Parse("No Id in addid response".into()))
     }
 
+    /// Bulk-add multiple URIs in one round trip via `command_list`, instead
+    /// of one `add` per URI (which starves the shared connection mutex —
+    /// and the 500ms status poll that also needs it — for the duration of
+    /// the whole list; see docs/plans/review-fixes-performance.md §1, and
+    /// mikMPD's own "Bulk enqueue is server-side" note for the same lesson
+    /// learned the hard way there). MPD applies the list in order and stops
+    /// at the first failing command — tracks queued before the failure stay
+    /// queued; nothing after it is attempted.
+    pub async fn add_all(&self, uris: &[String]) -> MpdResult<()> {
+        if uris.is_empty() {
+            return Ok(());
+        }
+        let cmds = Self::build_add_commands(uris);
+        let refs: Vec<&str> = cmds.iter().map(|s| s.as_str()).collect();
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
+        let started = std::time::Instant::now();
+        let result = conn.command_list(&refs).await;
+        let elapsed = started.elapsed();
+        match &result {
+            Ok(_) => tracing::info!("→ add_all ({} tracks, {elapsed:?})", uris.len()),
+            Err(e) => tracing::warn!("← ERR add_all: {e} ({elapsed:?})"),
+        }
+        result.map(|_| ())
+    }
+
+    /// Pure command-string formation for `add_all`, split out so it's
+    /// testable without a live connection (mirrors the `escape()` tests'
+    /// style for the rest of this module).
+    fn build_add_commands(uris: &[String]) -> Vec<String> {
+        uris.iter()
+            .map(|u| format!("add \"{}\"", Self::escape(u)))
+            .collect()
+    }
+
     pub async fn delete_pos(&self, pos: u32) -> MpdResult<()> {
         self.cmd_ok(&format!("delete {pos}")).await
     }
@@ -635,5 +670,20 @@ mod tests {
     fn replay_gain_mode_cmd_formats_mode() {
         assert_eq!(MpdClient::replay_gain_mode_cmd("off"), "replaygain_mode off");
         assert_eq!(MpdClient::replay_gain_mode_cmd("auto"), "replaygain_mode auto");
+    }
+
+    #[test]
+    fn build_add_commands_one_add_per_uri_escaped() {
+        let uris = vec!["a.flac".to_string(), "dir/b \"weird\".mp3".to_string()];
+        let cmds = MpdClient::build_add_commands(&uris);
+        assert_eq!(cmds, vec![
+            "add \"a.flac\"".to_string(),
+            "add \"dir/b \\\"weird\\\".mp3\"".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn build_add_commands_empty_input() {
+        assert!(MpdClient::build_add_commands(&[]).is_empty());
     }
 }

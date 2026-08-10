@@ -165,13 +165,10 @@ impl Song {
         }
     }
 
-    /// Runs the album through `album_base_and_disc` first, so all discs of
-    /// a multi-disc set (`"X [Disc 1]"`, `"X [Disc 2]"`) share one art
-    /// cache entry and one fetch instead of each disc re-fetching and
-    /// re-caching the same cover independently.
+    /// See `art_key_for` — this is just that function fed from the song's
+    /// own display-fallback artist/album.
     pub fn art_key(&self) -> String {
-        let base = album_base_and_disc(self.display_album()).0;
-        format!("{}\x1f{}", self.display_album_artist(), base)
+        art_key_for(self.display_album_artist(), self.display_album())
     }
 
     /// The disc number to sort/group by: the `disc` tag if present and
@@ -339,6 +336,33 @@ pub fn album_base_and_disc(album: &str) -> (String, Option<u32>) {
     (album.to_string(), None)
 }
 
+/// The single source of truth for building an album's art-cache key —
+/// every call site that fetches, stores, or looks up cached art must go
+/// through this (or `Song::art_key()`, which just calls it), or a
+/// disc-suffixed album's art silently misses the cache. Folds the album
+/// through `album_base_and_disc` so every disc of a set shares one entry.
+pub fn art_key_for(artist: &str, album: &str) -> String {
+    let base = album_base_and_disc(album).0;
+    format!("{artist}\x1f{base}")
+}
+
+/// Key for the `App`-level `album_songs`/`album_bios` maps (and the redb
+/// `bios` table), scoped by artist so two different artists' same-named
+/// album don't collide — `View::AlbumDetail` already carries this same
+/// `Option<String>`, so storage and render-time lookup always agree as
+/// long as both go through this helper. `artist: None` (only when the
+/// album was reached with no known artist, e.g. from Genre detail) keys
+/// on an empty-string prefix, which can never collide with a real artist
+/// name (`Song::display_album_artist()` always falls back to a non-empty
+/// "Unknown Artist" rather than returning `""`).
+///
+/// Unlike `art_key_for`, this does **not** strip disc markers — the input
+/// here is already the collapsed base name `AlbumSelected` resolved, not a
+/// raw per-track tag.
+pub fn album_scoped_key(artist: Option<&str>, album: &str) -> String {
+    format!("{}\x1f{album}", artist.unwrap_or(""))
+}
+
 fn trim_trailing_separator(s: &str) -> &str {
     s.trim_end()
         .trim_end_matches(DISC_SEPARATORS.as_slice())
@@ -369,9 +393,8 @@ fn is_short_digit_run(s: &str) -> bool {
 /// delimiter (whitespace or one of `DISC_SEPARATORS`) — or start-of-string —
 /// immediately before the marker word, so `"ABCD2"` doesn't match.
 fn parse_bare_trailing_marker(s: &str) -> Option<(String, u32)> {
-    let lower = s.to_lowercase();
     for word in DISC_MARKER_WORDS {
-        let Some(idx) = lower.rfind(word) else { continue };
+        let Some(idx) = rfind_ascii_ci(s, word) else { continue };
         let after = &s[idx + word.len()..];
         let digits = after.trim_start_matches('.').trim_start();
         if !is_short_digit_run(digits) {
@@ -390,6 +413,34 @@ fn parse_bare_trailing_marker(s: &str) -> Option<(String, u32)> {
         }
     }
     None
+}
+
+/// Case-insensitive (ASCII-only) rightmost search for `needle` in
+/// `haystack`, returning a byte index **into `haystack` itself**.
+///
+/// Unlike matching against a `haystack.to_lowercase()` copy and reusing the
+/// resulting index to slice `haystack`, this never drifts out of sync:
+/// `str::to_lowercase` isn't length-preserving for some non-ASCII
+/// characters (e.g. Turkish `'İ'`, U+0130, 2 bytes → `"i̇"`, 3 bytes), which
+/// previously caused an out-of-bounds slice / non-char-boundary panic here.
+/// `needle` is always ASCII (`DISC_MARKER_WORDS`), so ASCII-only case
+/// folding via `eq_ignore_ascii_case` is correct and index-safe.
+fn rfind_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let needle_len = needle.len();
+    if needle_len == 0 || needle_len > haystack.len() {
+        return None;
+    }
+    let mut found = None;
+    for (i, _) in haystack.char_indices() {
+        let end = i + needle_len;
+        if end <= haystack.len()
+            && haystack.is_char_boundary(end)
+            && haystack[i..end].eq_ignore_ascii_case(needle)
+        {
+            found = Some(i); // keep overwriting — char_indices() is ascending, so the last hit is rightmost
+        }
+    }
+    found
 }
 
 #[derive(Debug, Clone)]
@@ -660,6 +711,44 @@ mod tests {
         assert_eq!(a.art_key(), b.art_key());
     }
 
+    // --- art_key_for --------------------------------------------------------
+
+    #[test]
+    fn art_key_for_collapses_disc_suffix() {
+        assert_eq!(
+            art_key_for("Gamma Ray", "Blast from the Past [Disc 1]"),
+            art_key_for("Gamma Ray", "Blast from the Past"),
+        );
+    }
+
+    #[test]
+    fn art_key_for_agrees_with_song_art_key() {
+        let mut s = song();
+        s.album_artist = Some("Gamma Ray".into());
+        s.album = Some("Blast from the Past [Disc 2]".into());
+        assert_eq!(s.art_key(), art_key_for("Gamma Ray", "Blast from the Past [Disc 2]"));
+    }
+
+    // --- album_scoped_key -----------------------------------------------
+
+    #[test]
+    fn album_scoped_key_distinguishes_artists() {
+        let a = album_scoped_key(Some("Artist A"), "Greatest Hits");
+        let b = album_scoped_key(Some("Artist B"), "Greatest Hits");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn album_scoped_key_none_artist_does_not_collide_with_named_artist() {
+        let unknown = album_scoped_key(None, "Greatest Hits");
+        let named = album_scoped_key(Some(""), "Greatest Hits");
+        // Both degrade to the same empty-artist prefix, which is fine —
+        // the guarantee is only that this never matches a *real* artist
+        // name, and display_album_artist() never actually returns "".
+        assert_eq!(unknown, named);
+        assert_ne!(unknown, album_scoped_key(Some("Someone"), "Greatest Hits"));
+    }
+
     // --- effective_disc ---------------------------------------------------
 
     #[test]
@@ -740,6 +829,27 @@ mod tests {
         let (base, disc) = album_base_and_disc("Blast   -   [Disc 1]");
         assert_eq!(base, "Blast");
         assert_eq!(disc, Some(1));
+    }
+
+    #[test]
+    fn album_base_and_disc_non_ascii_lowercase_expansion_does_not_panic() {
+        // 'İ' (U+0130, 2 bytes) lowercases to "i̇" (U+0069 U+0307, 3 bytes) —
+        // matching against a lowercased copy but slicing the original by
+        // that copy's byte offsets used to panic (or, for some inputs,
+        // silently mis-slice) here. These all have a valid marker at the
+        // end, so the panic-free, *correct* result is a successful strip,
+        // not a passthrough — verified against a standalone reproduction
+        // of this exact function, not asserted from a guess.
+        assert_eq!(album_base_and_disc("İİ cd2"), ("İİ".to_string(), Some(2)));
+        assert_eq!(album_base_and_disc("İİİ cd2"), ("İİİ".to_string(), Some(2)));
+        assert_eq!(album_base_and_disc("İ - cd2"), ("İ".to_string(), Some(2)));
+    }
+
+    #[test]
+    fn album_base_and_disc_non_ascii_prefix_still_strips_correctly() {
+        let (base, disc) = album_base_and_disc("Aİ cd12");
+        assert_eq!(base, "Aİ");
+        assert_eq!(disc, Some(12));
     }
 
     // --- group_albums_by_artist ---------------------------------------------

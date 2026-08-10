@@ -2,7 +2,7 @@
 //! history. Albums are derived from track history (not recorded
 //! separately), mirroring mikMPD's `recentAlbumGroups`.
 
-use crate::mpd::types::{recently_played_albums, relative_time, RecentlyPlayedEntry};
+use crate::mpd::types::{art_key_for, recently_played_albums, relative_time, RecentlyPlayedEntry};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, column, container, image, row, scrollable, text, Space};
@@ -127,7 +127,7 @@ fn album_tile<'a>(
     now: i64,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
 ) -> Element<'a, Message> {
-    let key = format!("{}\x1f{}", group.artist, group.album);
+    let key = art_key_for(&group.artist, &group.album);
     let art: Element<'a, Message> = match art_handles.get(&key) {
         Some(handle) => image(handle.clone()).width(TILE_SIZE).height(TILE_SIZE).into(),
         None => container(text("").size(1))

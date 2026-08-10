@@ -14,14 +14,18 @@ Comparison is against `../mikMPD` (`/root/mikMPD` in this environment,
 `C:\Users\mikae\mikMPD` on the dev machine) as of its `CLAUDE.md`/`README.md`
 on 2026-08-10.
 
-> **Follow-up required before further feature work.** A code review of the
-> seven parity commits found six correctness bugs (three user-visible, one a
-> reachable panic in the render path) and four performance issues. They're
-> written up in
+> **Post-parity code review, fixed.** A code review of the seven parity
+> commits found six correctness bugs (three user-visible, one a reachable
+> panic in the render path) and four performance issues, written up in
 > [`review-fixes-correctness.md`](review-fixes-correctness.md) and
-> [`review-fixes-performance.md`](review-fixes-performance.md) — the
-> correctness batch should land first. Most are fallout from round 6's
-> album-identity change not being propagated to every key-building site.
+> [`review-fixes-performance.md`](review-fixes-performance.md). Nine of the
+> ten are fixed (one commit); the tenth — punctuation-folding the album
+> grouping key — is a genuine parity gap rather than a regression and
+> remains a deliberate, separate follow-up. Most of what broke was fallout
+> from round 6's album-identity change not being propagated to every
+> key-building site — worth remembering for the next structural change to
+> a widely-shared key shape (`art_key`/`album_scoped_key` now both have a
+> single builder function specifically to prevent a repeat).
 
 winrmpc is desktop/iced, mikMPD is iOS/SwiftUI — features that are inherently
 mobile (lock-screen `MPRemoteCommandCenter`, `AVAudioSession` background audio,
