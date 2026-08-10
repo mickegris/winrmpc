@@ -20,6 +20,9 @@ pub enum Message {
     ToggleRandom,
     ToggleSingle,
     ToggleConsume,
+    SetCrossfade(u32),
+    SetReplayGainMode(String),
+    ReplayGainModeLoaded(String),
 
     // === Status updates ===
     StatusUpdated(Box<Status>),

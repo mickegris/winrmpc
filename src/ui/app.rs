@@ -108,6 +108,9 @@ pub struct App {
     // Server statistics
     stats: Option<Stats>,
 
+    // Replay gain mode ("off"/"track"/"album"/"auto"); fetched once on connect
+    replay_gain_mode: Option<String>,
+
     // Lyrics
     lyrics_client: crate::lyrics::LyricsClient,
     lyrics: HashMap<String, Option<crate::lyrics::Lyrics>>,
@@ -203,6 +206,7 @@ impl App {
             log_show_mpd_only: true,
 
             stats: None,
+            replay_gain_mode: None,
 
             lyrics_client: crate::lyrics::LyricsClient::new(),
             lyrics: HashMap::new(),
@@ -396,6 +400,17 @@ impl App {
                     },
                     |_| Message::Tick,
                 )
+            }
+            Message::SetCrossfade(secs) => {
+                self.mpd_cmd(move |c| async move { c.set_crossfade(secs).await })
+            }
+            Message::SetReplayGainMode(mode) => {
+                self.replay_gain_mode = Some(mode.clone());
+                self.mpd_cmd(move |c| async move { c.set_replay_gain_mode(&mode).await })
+            }
+            Message::ReplayGainModeLoaded(mode) => {
+                self.replay_gain_mode = Some(mode);
+                Task::none()
             }
 
             // =================================================================
@@ -1683,6 +1698,7 @@ impl App {
                     self.show_lyrics,
                     self.lyrics_scroll_id.clone(),
                     self.playing_from_playlist.as_deref(),
+                    self.replay_gain_mode.as_deref(),
                 )
             }
             View::Queue => {
@@ -1849,6 +1865,7 @@ impl App {
         let c3 = self.client.clone();
         let c4 = self.client.clone();
         let c5 = self.client.clone();
+        let c6 = self.client.clone();
 
         let status_task = Task::perform(
             async move { c1.status().await.ok().map(Box::new) },
@@ -1882,12 +1899,21 @@ impl App {
             Message::PartitionsUpdated,
         );
 
+        let replay_gain_task = Task::perform(
+            async move { c6.replay_gain_status().await.ok() },
+            |mode| match mode {
+                Some(m) => Message::ReplayGainModeLoaded(m),
+                None => Message::Noop,
+            },
+        );
+
         Task::batch([
             status_task,
             song_task,
             queue_task,
             outputs_task,
             partitions_task,
+            replay_gain_task,
         ])
     }
 

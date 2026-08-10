@@ -164,6 +164,9 @@ Uses `find_add("Album", &album_name)` — tag-exact match. `PlayAlbum` clears qu
 ### Queue editing
 `QueueRemove(id)` uses `delete_id` (song id, not position — stable across concurrent queue mutations). `QueueMoveUp`/`QueueMoveDown(pos)` wrap `move_pos(from, to)`; MPD's `move FROM TO` leaves the song at position `TO` in the *final* list (remove-then-insert semantics), so `move(pos, pos-1)`/`move(pos, pos+1)` are simple adjacent swaps with no off-by-one. `QueueAddNext(uri)` composes this: `add_id` appends to the end, then `move_pos(end, current_song_pos + 1)` relocates it to play right after the current track; if nothing is playing (`song_pos` is `None`), it falls back to `play_id` on the newly added song instead of trying to insert "next" of nothing.
 
+### Now Playing quick controls
+Crossfade (`Status.crossfade`, already parsed) and replay gain mode (`MpdClient::replay_gain_status`/`set_replay_gain_mode`, sends `replaygain_mode <mode>`) live in `now_playing.rs`'s top `toggle_row`, alongside `Outputs`/`Partitions` quick-nav links (plain `NavigateTo`, no new state). `replay_gain_mode` is fetched once in `fetch_all()` on connect (not polled — it rarely changes and isn't part of `status`), stored on `App`, and optimistically updated in the `SetReplayGainMode` handler before the command round-trips.
+
 ### CD playback
 - **Play whole disc**: `add("cdda://")` (no device) or `add("cdda://{device}")` when configured
 - **Track probe** (`CdProbe`):

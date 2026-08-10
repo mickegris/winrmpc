@@ -174,6 +174,25 @@ impl MpdClient {
         self.cmd_ok(&format!("crossfade {secs}")).await
     }
 
+    /// Current replay gain mode ("off"/"track"/"album"/"auto"). Defaults to
+    /// "off" if the server omits the field (matches MPD's own default).
+    pub async fn replay_gain_status(&self) -> MpdResult<String> {
+        let pairs = self.cmd("replaygain_status").await?;
+        Ok(pairs
+            .iter()
+            .find(|(k, _)| k == "replay_gain_mode")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "off".to_string()))
+    }
+
+    pub async fn set_replay_gain_mode(&self, mode: &str) -> MpdResult<()> {
+        self.cmd_ok(&Self::replay_gain_mode_cmd(mode)).await
+    }
+
+    fn replay_gain_mode_cmd(mode: &str) -> String {
+        format!("replaygain_mode {mode}")
+    }
+
     // ========================================================================
     // Status / Current Song
     // ========================================================================
@@ -591,5 +610,11 @@ mod tests {
                 assert!(i > 0 && bytes[i - 1] == b'\\', "bare quote at {i}");
             }
         }
+    }
+
+    #[test]
+    fn replay_gain_mode_cmd_formats_mode() {
+        assert_eq!(MpdClient::replay_gain_mode_cmd("off"), "replaygain_mode off");
+        assert_eq!(MpdClient::replay_gain_mode_cmd("auto"), "replaygain_mode auto");
     }
 }

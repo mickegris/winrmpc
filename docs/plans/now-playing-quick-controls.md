@@ -1,10 +1,17 @@
 # Plan: Now Playing quick controls — crossfade, replay gain, outputs/partition shortcuts
 
-Status: proposed — no code changes yet. Part of the mikMPD parity set (see
+Status: **implemented**. Part of the mikMPD parity set (see
 [`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gaps #10-12). Three
 small, independent additions to `views/now_playing.rs`; none require new MPD
 protocol research beyond what's already in the codebase or the standard
 protocol reference.
+
+All three landed in the existing `toggle_row` at the top of
+`now_playing::view` (present in every branch — playing, nothing-playing —
+so it was already the natural home for player-wide, not per-song, controls),
+rather than "near the mode toggles" as originally suggested — those toggles
+(repeat/random/single/consume) live in `player_bar.rs`, a separate widget
+outside `now_playing.rs`'s view function.
 
 mikMPD (`README.md`): "Shows bitrate and audio format info, plus replay gain
 and crossfade controls... Quick buttons reach outputs and partition
