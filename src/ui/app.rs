@@ -473,6 +473,51 @@ impl App {
                     |_| Message::Tick,
                 )
             }
+            Message::QueueMoveUp(pos) => {
+                if pos == 0 {
+                    return Task::none();
+                }
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.move_pos(pos, pos - 1).await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::QueueMoveDown(pos) => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        client.move_pos(pos, pos + 1).await.ok();
+                    },
+                    |_| Message::Tick,
+                )
+            }
+            Message::QueueAddNext(uri) => {
+                let client = self.client.clone();
+                let insert_at = self.status.song_pos.map(|p| p + 1);
+                let is_stopped = self.status.state == PlayState::Stop;
+                Task::perform(
+                    async move {
+                        if let Ok(id) = client.add_id(&uri).await {
+                            if let Some(pos) = insert_at {
+                                if let Ok(q) = client.queue().await {
+                                    let end = q.len() as u32 - 1;
+                                    if end != pos {
+                                        client.move_pos(end, pos).await.ok();
+                                    }
+                                }
+                            } else if is_stopped {
+                                // Nothing currently playing — no "next" position
+                                // to insert before, so just start this song.
+                                client.play_id(id).await.ok();
+                            }
+                        }
+                    },
+                    |_| Message::Tick,
+                )
+            }
             Message::QueueClear => {
                 self.playing_from_playlist = None;
                 let client = self.client.clone();

@@ -1,7 +1,10 @@
 # Plan: Queue editing — remove, reorder, Add Next
 
-Status: proposed — no code changes yet. Part of the mikMPD parity set (see
-[`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gap #1).
+Status: **implemented**. Part of the mikMPD parity set (see
+[`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gap #1). Item 4
+(consume mode toggle) turned out to already exist (`Message::ToggleConsume`,
+wired in `player_bar.rs`/`app.rs`) — confirmed at implementation time, no
+change needed there.
 
 ## Today (`src/ui/views/queue.rs`, `src/ui/app.rs`)
 

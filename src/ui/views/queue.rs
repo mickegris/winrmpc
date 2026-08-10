@@ -121,6 +121,21 @@ pub fn view<'a>(
             shadow: iced::Shadow::default(),
         });
 
+        let mut actions = row![].spacing(2);
+        if i > 0 {
+            actions = actions.push(icon_btn("▲", Message::QueueMoveUp(pos)));
+        }
+        if i + 1 < queue.len() {
+            actions = actions.push(icon_btn("▼", Message::QueueMoveDown(pos)));
+        }
+        actions = actions.push(icon_btn(
+            "☰",
+            Message::OpenAddToPlaylist(vec![song.file.clone()]),
+        ));
+        if let Some(id) = song.id {
+            actions = actions.push(icon_btn("✕", Message::QueueRemove(id)));
+        }
+
         items = items.push(
             container(
                 row![
@@ -135,7 +150,7 @@ pub fn view<'a>(
                         .size(11)
                         .width(55)
                         .color(AppColors::TEXT_MUTED),
-                    icon_btn("☰", Message::OpenAddToPlaylist(vec![song.file.clone()])),
+                    actions,
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),

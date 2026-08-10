@@ -31,6 +31,9 @@ pub enum Message {
     // === Queue ===
     QueuePlay(u32),
     QueueRemove(u32),
+    QueueMoveUp(u32),
+    QueueMoveDown(u32),
+    QueueAddNext(String),
     QueueClear,
     QueueShuffle,
     QueueAddUri(String),

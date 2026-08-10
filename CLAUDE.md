@@ -160,6 +160,9 @@ Artist images: `"artist:{name}"`.
 ### Play All / Queue All (albums)
 Uses `find_add("Album", &album_name)` — tag-exact match. `PlayAlbum` clears queue first; `QueueAlbum` appends and starts playing if stopped.
 
+### Queue editing
+`QueueRemove(id)` uses `delete_id` (song id, not position — stable across concurrent queue mutations). `QueueMoveUp`/`QueueMoveDown(pos)` wrap `move_pos(from, to)`; MPD's `move FROM TO` leaves the song at position `TO` in the *final* list (remove-then-insert semantics), so `move(pos, pos-1)`/`move(pos, pos+1)` are simple adjacent swaps with no off-by-one. `QueueAddNext(uri)` composes this: `add_id` appends to the end, then `move_pos(end, current_song_pos + 1)` relocates it to play right after the current track; if nothing is playing (`song_pos` is `None`), it falls back to `play_id` on the newly added song instead of trying to insert "next" of nothing.
+
 ### CD playback
 - **Play whole disc**: `add("cdda://")` (no device) or `add("cdda://{device}")` when configured
 - **Track probe** (`CdProbe`):

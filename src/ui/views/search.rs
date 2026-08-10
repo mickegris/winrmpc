@@ -87,6 +87,7 @@ pub fn view<'a>(
                         Space::with_width(8),
                         icon_btn("▶", Message::PlaySong(song.file.clone())),
                         icon_btn("+", Message::QueueAddOnly(song.file.clone())),
+                        icon_btn("⏭", Message::QueueAddNext(song.file.clone())),
                         icon_btn("☰", Message::OpenAddToPlaylist(vec![song.file.clone()])),
                         text(track.to_string())
                             .size(12)

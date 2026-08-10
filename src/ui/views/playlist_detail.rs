@@ -96,6 +96,7 @@ pub fn view<'a>(
                         Message::PlaylistPlayAt(playlist_name.to_string(), pos)
                     ),
                     icon_btn("+", Message::QueueAddOnly(song.file.clone())),
+                    icon_btn("⏭", Message::QueueAddNext(song.file.clone())),
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
