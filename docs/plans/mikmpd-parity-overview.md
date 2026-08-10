@@ -14,6 +14,15 @@ Comparison is against `../mikMPD` (`/root/mikMPD` in this environment,
 `C:\Users\mikae\mikMPD` on the dev machine) as of its `CLAUDE.md`/`README.md`
 on 2026-08-10.
 
+> **Follow-up required before further feature work.** A code review of the
+> seven parity commits found six correctness bugs (three user-visible, one a
+> reachable panic in the render path) and four performance issues. They're
+> written up in
+> [`review-fixes-correctness.md`](review-fixes-correctness.md) and
+> [`review-fixes-performance.md`](review-fixes-performance.md) — the
+> correctness batch should land first. Most are fallout from round 6's
+> album-identity change not being propagated to every key-building site.
+
 winrmpc is desktop/iced, mikMPD is iOS/SwiftUI — features that are inherently
 mobile (lock-screen `MPRemoteCommandCenter`, `AVAudioSession` background audio,
 "Listen on Phone" streaming *to the device itself*) are **out of scope** and
