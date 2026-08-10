@@ -61,6 +61,7 @@ pub fn view<'a>(
             nav_button("Partitions", View::Partitions, current_view),
             nav_button("Settings", View::Settings, current_view),
             nav_button("Log", View::Log, current_view),
+            nav_button("Stats", View::ServerStats, current_view),
             Space::with_height(8),
         ]
         .spacing(1)

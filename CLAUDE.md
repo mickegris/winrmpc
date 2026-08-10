@@ -87,6 +87,7 @@ src/
       radio.rs
       cd.rs
       log.rs
+      server_stats.rs
       outputs.rs
       partitions.rs
       playlists_list.rs
@@ -230,6 +231,10 @@ gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
 - `get_entries()` / `clear_entries()` — called from app.rs
 - `App.log_entries` refreshed on every `Tick` (synchronous Mutex read, negligible cost)
 - Log view is `View::Log`, sidebar button beneath Settings
+- **Timed MPD commands**: `MpdClient::cmd()` measures each command's elapsed time and emits it as a structured `duration_ms` tracing field (captured into `LogEntry.duration_ms`) plus in the human-readable message. Commands ≥ `logger::SLOW_COMMAND_MS` (2000ms) are logged even if they're normally in the "quiet"/high-frequency list (`status`/`currentsong`/etc.) — a hung poll is exactly the case worth surfacing despite the quiet rule. `LogEntry::is_slow()` drives a `⚠` prefix + warning color in the Log view.
+
+## Server Statistics (`src/ui/views/server_stats.rs`)
+`View::ServerStats` (sidebar "Stats", beneath Log) renders `MpdClient::stats()` (song/album/artist counts, uptime, playtime, last DB update) and hosts the **Update Database** trigger — moved here from Settings, mirroring how `cd_device` was already moved out of Settings into the CD view. `on_view_enter` fetches `stats()`; while `View::ServerStats` is the active view, `Tick` also re-fetches `stats()` (piggybacking on the existing 500ms poll rather than a dedicated timer) so the figures refresh live once a triggered scan finishes. The Update button is disabled while `Status.updating_db` is `Some` (MPD's own "a scan is running" signal — no client-side flag needed).
 
 ## Windowless Startup
 `#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]` in `main.rs` hides the console.  

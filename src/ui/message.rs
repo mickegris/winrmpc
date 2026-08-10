@@ -139,6 +139,11 @@ pub enum Message {
     LogCopyAll,
     LogToggleMpdOnly,
 
+    // === Server Statistics ===
+    StatsLoaded(Stats),
+    UpdateDatabase,
+    DatabaseUpdating(u32),
+
     // === Lyrics ===
     LyricsLoaded(String, Option<crate::lyrics::Lyrics>),
     ToggleLyrics,
@@ -166,8 +171,6 @@ pub enum Message {
     Tick,
     RefreshAll,
     Noop,
-    UpdateDatabase,
-    DatabaseUpdating(u32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +192,7 @@ pub enum View {
     Partitions,
     Settings,
     Log,
+    ServerStats,
     Playlists,
     PlaylistDetail(String),
     AddToPlaylist,

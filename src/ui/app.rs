@@ -105,6 +105,9 @@ pub struct App {
     log_entries: Vec<crate::logger::LogEntry>,
     log_show_mpd_only: bool,
 
+    // Server statistics
+    stats: Option<Stats>,
+
     // Lyrics
     lyrics_client: crate::lyrics::LyricsClient,
     lyrics: HashMap<String, Option<crate::lyrics::Lyrics>>,
@@ -198,6 +201,8 @@ impl App {
 
             log_entries: Vec::new(),
             log_show_mpd_only: true,
+
+            stats: None,
 
             lyrics_client: crate::lyrics::LyricsClient::new(),
             lyrics: HashMap::new(),
@@ -1590,19 +1595,10 @@ impl App {
             }
 
             // =================================================================
-            // Tick / Error / Noop
+            // Server Statistics
             // =================================================================
-            Message::Tick => {
-                self.log_entries = crate::logger::get_entries();
-                if self.connected {
-                    Task::batch([self.refresh_status(), self.lyrics_autoscroll()])
-                } else {
-                    Task::none()
-                }
-            }
-            Message::ErrorOccurred(e) => {
-                tracing::error!("{e}");
-                self.last_error = Some(e);
+            Message::StatsLoaded(stats) => {
+                self.stats = Some(stats);
                 Task::none()
             }
             Message::UpdateDatabase => {
@@ -1619,6 +1615,27 @@ impl App {
             }
             Message::DatabaseUpdating(_job_id) => {
                 self.last_error = Some("Database update started".to_string());
+                self.fetch_stats()
+            }
+
+            // =================================================================
+            // Tick / Error / Noop
+            // =================================================================
+            Message::Tick => {
+                self.log_entries = crate::logger::get_entries();
+                if self.connected {
+                    let mut tasks = vec![self.refresh_status(), self.lyrics_autoscroll()];
+                    if self.current_view == View::ServerStats {
+                        tasks.push(self.fetch_stats());
+                    }
+                    Task::batch(tasks)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ErrorOccurred(e) => {
+                tracing::error!("{e}");
+                self.last_error = Some(e);
                 Task::none()
             }
             Message::Noop => Task::none(),
@@ -1752,6 +1769,10 @@ impl App {
             }
             View::Settings => self.settings_view(),
             View::Log => views::log::view(&self.log_entries, self.log_show_mpd_only),
+            View::ServerStats => views::server_stats::view(
+                self.stats.as_ref(),
+                self.status.updating_db.is_some(),
+            ),
             View::Playlists => views::playlists_list::view(
                 &self.playlists,
                 &self.new_playlist_name,
@@ -2117,8 +2138,20 @@ impl App {
                     Message::PlaylistsLoaded,
                 )
             }
+            View::ServerStats => self.fetch_stats(),
             _ => Task::none(),
         }
+    }
+
+    fn fetch_stats(&self) -> Task<Message> {
+        let client = self.client.clone();
+        Task::perform(
+            async move { client.stats().await.ok() },
+            |stats| match stats {
+                Some(s) => Message::StatsLoaded(s),
+                None => Message::Tick,
+            },
+        )
     }
 
 fn fetch_lyrics(&self, song: &Song) -> Task<Message> {
@@ -2440,16 +2473,6 @@ fn settings_view(&self) -> Element<'_, Message> {
             server_list,
             Space::with_height(12),
             add_form,
-            Space::with_height(24),
-            text("Database").size(16).color(AppColors::TEXT_PRIMARY),
-            Space::with_height(8),
-            text("Rescan your MPD music directory for new or changed files.")
-                .size(12)
-                .color(AppColors::TEXT_SECONDARY),
-            Space::with_height(8),
-            button(text("Update Database").size(14))
-                .on_press(Message::UpdateDatabase)
-                .padding([8, 20]),
         ]
         .spacing(4)
         .padding(20)

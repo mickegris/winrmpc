@@ -60,11 +60,16 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
         );
     } else {
         for (i, entry) in displayed.iter().rev().enumerate() {
-            let level_color = match entry.level.as_str() {
-                "ERROR" => AppColors::ERROR,
-                "WARN"  => AppColors::WARNING,
-                "INFO"  => AppColors::TEXT_PRIMARY,
-                _       => AppColors::TEXT_MUTED,
+            let slow = entry.is_slow();
+            let level_color = if slow {
+                AppColors::WARNING
+            } else {
+                match entry.level.as_str() {
+                    "ERROR" => AppColors::ERROR,
+                    "WARN"  => AppColors::WARNING,
+                    "INFO"  => AppColors::TEXT_PRIMARY,
+                    _       => AppColors::TEXT_MUTED,
+                }
             };
 
             // Strip the crate prefix so "winrmpc::mpd::client" → "mpd::client"
@@ -72,8 +77,9 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
                 .strip_prefix("winrmpc::")
                 .unwrap_or(&entry.target);
 
+            let prefix = if slow { "⚠ " } else { "" };
             let line = text(format!(
-                "{} {:5} {}  {}",
+                "{prefix}{} {:5} {}  {}",
                 entry.timestamp, entry.level, target, entry.message
             ))
             .size(11)

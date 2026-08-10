@@ -13,6 +13,7 @@ pub mod outputs;
 pub mod radio;
 pub mod cd;
 pub mod log;
+pub mod server_stats;
 pub mod playlists_list;
 pub mod playlist_detail;
 pub mod add_to_playlist;

@@ -1,9 +1,21 @@
 # Plan: Server Statistics view + timed MPD command log
 
-Status: proposed — no code changes yet. Part of the mikMPD parity set (see
+Status: **implemented**. Part of the mikMPD parity set (see
 [`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gaps #6/#7). Two
 small, independent features bundled because both live under a "server info"
 umbrella and both build on existing, already-tested machinery.
+
+**Implementation note**: `Message::UpdateDatabase`/`DatabaseUpdating(u32)`
+already existed (shipped in the multi-server commit, `ff3434e`) with a
+button buried in Settings under a "Database" heading — orphaned scaffolding
+this plan's "Today" section missed because it only checked `stats()` call
+sites, not `update()`'s. That button/handler was moved into the new
+`View::ServerStats` (removed from Settings) rather than duplicated; its
+existing `DatabaseUpdating` handler (which shows a "Database update
+started" banner via `last_error`) was kept as-is and extended to trigger an
+immediate `stats()` refetch. Also used `Status.updating_db` (MPD's own
+"a scan is running" signal, already parsed) instead of adding a new
+client-side flag, per the plan's Part A UI guidance.
 
 ## Part A — Server Statistics view
 

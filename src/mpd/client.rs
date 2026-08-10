@@ -55,18 +55,29 @@ impl MpdClient {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
         let verb = cmd.split_whitespace().next().unwrap_or(cmd);
-        // Suppress high-frequency polling verbs from the in-app log
+        // Suppress high-frequency polling verbs from the in-app log, unless
+        // they turn out to be slow — a hung status/currentsong poll is
+        // exactly the failure mode worth surfacing despite the normal quiet
+        // rule (see docs/plans/server-stats-and-diagnostics.md §Part B).
         let quiet = matches!(
             verb,
             "status" | "currentsong" | "playlistinfo"
                 | "outputs" | "listpartitions"
                 | "idle" | "noidle"
         );
+        let started = std::time::Instant::now();
         let result = conn.command(cmd).await;
+        let elapsed = started.elapsed();
+        let slow = elapsed.as_millis() as u64 >= crate::logger::SLOW_COMMAND_MS;
+        let duration_ms = elapsed.as_millis() as u64;
         match &result {
-            Ok(_) if !quiet => tracing::info!("→ {verb}"),
-            Err(e) if !quiet => tracing::warn!("← ERR {verb}: {e}"),
-            Err(e) => tracing::debug!("← ERR {verb}: {e}"),
+            Ok(_) if !quiet || slow => {
+                tracing::info!(duration_ms, "→ {verb} ({elapsed:?})")
+            }
+            Err(e) if !quiet || slow => {
+                tracing::warn!(duration_ms, "← ERR {verb}: {e} ({elapsed:?})")
+            }
+            Err(e) => tracing::debug!(duration_ms, "← ERR {verb}: {e} ({elapsed:?})"),
             _ => {}
         }
         result
