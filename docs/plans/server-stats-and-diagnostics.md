@@ -57,6 +57,20 @@ None of this is wired to any view — `stats()` has zero call sites in
 No new MPD surface, no new parsing — this is pure UI wiring on top of
 existing, tested code.
 
+### Testing
+
+- **Unit**: none needed beyond what already exists — `Stats` parsing is
+  already covered (`CLAUDE.md`'s `mpd/commands.rs` test bullet lists
+  `parse_stats`), and this section adds no new pure logic, only view
+  wiring around an already-tested parser and an already-existing client
+  method.
+- **Manual QA**: open Server Statistics, confirm counts match a known
+  library (cross-check against MPD's own `mpc stats` or a manual `stats`
+  command over the protocol); trigger Update, confirm `db_update`'s
+  timestamp changes once the scan completes and the view reflects it
+  without a manual refresh; trigger against a server with nothing to
+  update (figures stay stable, no error surfaced).
+
 ## Part B — Timed, copyable MPD command log
 
 mikMPD (`CLAUDE.md`, "Every MPD command is logged"): a 250-entry ring buffer

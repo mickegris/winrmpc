@@ -104,6 +104,17 @@ Port `../mikMPD/plans/multi-disc-albums.md`:
 
 ## Part C — Grid view
 
+> **Prerequisite:** land
+> [`art-wikipedia-fetch-order-and-caching.md`](art-wikipedia-fetch-order-and-caching.md)
+> items 1-3 (fetch-order fix, shared MusicBrainz client, `ArtFetchGate` +
+> `MusicBrainzThrottle`) **before** this part. A grid view queues one art
+> fetch per visible tile — today's per-call-chain `sleep(1100ms)` in
+> `musicbrainz.rs` has no cross-task concurrency cap, so a grid of N tiles
+> would fire N near-simultaneous MusicBrainz/HTTP requests instead of
+> respecting a global ~1 req/s courtesy limit and a bounded number of
+> concurrent connections. Shipping the grid without that gate first would be
+> a performance regression, not just a missed optimization.
+
 Add a list/grid toggle to `Albums` and `Artists`, since album art is already
 fetched and cached (`art/cache.rs`) — the grid just needs a different layout
 for data the app already has:
