@@ -205,6 +205,28 @@ pub fn parse_tag_list(pairs: &[(String, String)], tag: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parses a `list <tag> group <group_tag>` response — MPD interleaves
+/// `group_key`/`value_key` lines with no record-starter key, so
+/// `pairs_to_map`/`split_groups` would collapse it. Walks the ordered pairs,
+/// tracking the current group as `group_key` lines are seen; `value_key`
+/// lines seen before any `group_key` line get `group = ""`.
+pub fn parse_grouped_values(
+    pairs: &[(String, String)],
+    group_key: &str,
+    value_key: &str,
+) -> Vec<(String, String)> {
+    let mut current_group = String::new();
+    let mut out = Vec::new();
+    for (k, v) in pairs {
+        if k == group_key {
+            current_group = v.clone();
+        } else if k == value_key {
+            out.push((current_group.clone(), v.clone()));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +382,38 @@ mod tests {
             ("Artist", "Ignored"),
         ]);
         assert_eq!(parse_tag_list(&p, "Album"), vec!["One", "Two"]);
+    }
+
+    #[test]
+    fn parse_grouped_values_multi_group_input() {
+        let p = pairs(&[
+            ("AlbumArtist", "Gamma Ray"),
+            ("Album", "Blast from the Past [Disc 1]"),
+            ("Album", "Blast from the Past [Disc 2]"),
+            ("AlbumArtist", "The Doors"),
+            ("Album", "The Best of the Doors"),
+        ]);
+        let got = parse_grouped_values(&p, "AlbumArtist", "Album");
+        assert_eq!(
+            got,
+            vec![
+                ("Gamma Ray".to_string(), "Blast from the Past [Disc 1]".to_string()),
+                ("Gamma Ray".to_string(), "Blast from the Past [Disc 2]".to_string()),
+                ("The Doors".to_string(), "The Best of the Doors".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_grouped_values_value_before_first_group_gets_empty_group() {
+        let p = pairs(&[("Album", "Untagged Artist Album"), ("AlbumArtist", "Known")]);
+        let got = parse_grouped_values(&p, "AlbumArtist", "Album");
+        assert_eq!(got, vec![("".to_string(), "Untagged Artist Album".to_string())]);
+    }
+
+    #[test]
+    fn parse_grouped_values_empty_input() {
+        assert!(parse_grouped_values(&[], "AlbumArtist", "Album").is_empty());
     }
 
     #[test]

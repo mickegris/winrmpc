@@ -42,8 +42,12 @@ pub enum Message {
     QueueAddUri(String),
     QueueAddAndPlay(String),
     QueueAddOnly(String),
-    PlayAlbum(String),
-    QueueAlbum(String),
+    /// Song URIs, in order — the already-loaded/variant-expanded track
+    /// list from the album detail page, not a re-query by tag name (which
+    /// would miss tracks on a multi-disc album whose base name isn't any
+    /// single track's literal Album tag).
+    PlayAlbum(Vec<String>),
+    QueueAlbum(Vec<String>),
 
     // === Navigation ===
     NavigateTo(View),
@@ -51,13 +55,18 @@ pub enum Message {
 
     // === Library ===
     ArtistsLoaded(Vec<String>),
-    AlbumsLoaded(Vec<String>),
+    AlbumsLoaded(Vec<AlbumGroup>),
     GenresLoaded(Vec<String>),
     ArtistSelected(String),
-    AlbumSelected(String),
+    /// (album base name, artist) — artist is `Some` whenever the entry
+    /// point already knows it (grouped album lists, artist detail, search,
+    /// song links), enabling artist-scoped, multi-disc-variant-expanded
+    /// track loading. `None` only from artist-less entry points (genre
+    /// detail), which fall back to a plain tag-exact `find`.
+    AlbumSelected(String, Option<String>),
     GenreSelected(String),
     GenreAlbumsLoaded(String, Vec<String>),
-    ArtistAlbumsLoaded(String, Vec<String>),
+    ArtistAlbumsLoaded(String, Vec<AlbumGroup>),
     AlbumSongsLoaded(String, Vec<Song>),
 
     // === Recently Added / Recently Played history ===
@@ -191,7 +200,7 @@ pub enum View {
     Albums,
     Genres,
     ArtistDetail(String),
-    AlbumDetail(String),
+    AlbumDetail(String, Option<String>),
     GenreDetail(String),
     Browser,
     Search,

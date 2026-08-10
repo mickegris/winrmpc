@@ -165,8 +165,30 @@ impl Song {
         }
     }
 
+    /// Runs the album through `album_base_and_disc` first, so all discs of
+    /// a multi-disc set (`"X [Disc 1]"`, `"X [Disc 2]"`) share one art
+    /// cache entry and one fetch instead of each disc re-fetching and
+    /// re-caching the same cover independently.
     pub fn art_key(&self) -> String {
-        format!("{}\x1f{}", self.display_album_artist(), self.display_album())
+        let base = album_base_and_disc(self.display_album()).0;
+        format!("{}\x1f{}", self.display_album_artist(), base)
+    }
+
+    /// The disc number to sort/group by: the `disc` tag if present and
+    /// nonzero (handles both bare `"2"` and `"2/2"` forms), else the
+    /// disc suffix embedded in the album name itself (`"X [Disc 2]"`),
+    /// else `1`. Fixes track-order interleaving on albums that use a
+    /// proper `disc` tag with no name suffix (MPD sorts by track number
+    /// alone, so disc 1 and disc 2 tracks interleave without this).
+    pub fn effective_disc(&self) -> u32 {
+        if let Some(d) = self.disc.as_deref() {
+            if let Some(n) = d.split('/').next().and_then(|s| s.trim().parse::<u32>().ok()) {
+                if n > 0 {
+                    return n;
+                }
+            }
+        }
+        album_base_and_disc(self.display_album()).1.unwrap_or(1)
     }
 }
 
@@ -218,6 +240,156 @@ pub fn validate_playlist_name(name: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+// ============================================================================
+// Album identity: artist-aware grouping + multi-disc collapsing.
+// See docs/plans/library-album-identity-and-multidisc.md.
+// ============================================================================
+
+/// One row in a grouped album list: `variants` holds every raw album tag
+/// that collapsed into this (artist, base-title) group — more than one
+/// means a multi-disc set tagged with a name suffix (`"X [Disc 1]"` /
+/// `"X [Disc 2]"`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlbumGroup {
+    pub artist: String,
+    pub base: String,
+    pub variants: Vec<String>,
+}
+
+/// Groups `(album_artist, album)` pairs (as returned by
+/// `MpdClient::list_albums_by_artist`) into artist-aware, disc-collapsed
+/// rows. Keyed on `(artist.to_lowercase(), base)`, so same-named albums by
+/// different artists stay separate rows while disc-suffixed variants of the
+/// same artist's album collapse into one. Preserves first-seen order.
+pub fn group_albums_by_artist(pairs: &[(String, String)]) -> Vec<AlbumGroup> {
+    let mut index: HashMap<(String, String), usize> = HashMap::new();
+    let mut groups: Vec<AlbumGroup> = Vec::new();
+    for (artist, album) in pairs {
+        let base = album_base_and_disc(album).0;
+        let key = (artist.to_lowercase(), base.clone());
+        match index.get(&key) {
+            Some(&i) => {
+                if !groups[i].variants.contains(album) {
+                    groups[i].variants.push(album.clone());
+                }
+            }
+            None => {
+                index.insert(key, groups.len());
+                groups.push(AlbumGroup {
+                    artist: artist.clone(),
+                    base,
+                    variants: vec![album.clone()],
+                });
+            }
+        }
+    }
+    groups
+}
+
+/// The "N discs" count for a group, combining both signals a real library
+/// needs (mikMPD's hard-won lesson): the name-suffix variant count *and*
+/// the highest `disc` tag value seen among the group's songs. Neither
+/// alone is reliable — a properly tagged multi-disc album (one album name,
+/// `disc: 1..4`) has no name variants; a poorly tagged one has variants but
+/// no disc tag. `max_tag_disc` is the caller-computed max of
+/// `Song::effective_disc()` across the group's songs (0 if unknown/unfetched).
+pub fn album_disc_count(variant_count: usize, max_tag_disc: u32) -> usize {
+    variant_count.max(max_tag_disc as usize)
+}
+
+const DISC_MARKER_WORDS: [&str; 3] = ["disc", "disk", "cd"];
+const DISC_SEPARATORS: [char; 5] = ['-', '\u{2013}', '\u{2014}', ':', ','];
+
+/// Strips a trailing disc marker from an album title — `"X [Disc 1]"`,
+/// `"X (Disk 2)"`, `"X - Disc 1"`, `"X: disc 12"`, bare `"XCD2"` (only when
+/// preceded by a delimiter, so `"ABCD2"` is left alone) — returning
+/// `(base, Some(disc_number))`. Passes the input through unchanged
+/// (`(album, None)`) when there's no marker, when the "marker" has no
+/// digits (`"Live CD"`), or when stripping it would leave an empty base
+/// (`"Disc 1"` alone).
+pub fn album_base_and_disc(album: &str) -> (String, Option<u32>) {
+    let trimmed = album.trim_end();
+    if trimmed.is_empty() {
+        return (album.to_string(), None);
+    }
+
+    // Bracketed form: "... [Disc 1]" / "... (CD 2)".
+    if let Some(&last) = trimmed.as_bytes().last() {
+        if last == b']' || last == b')' {
+            let open = if last == b']' { '[' } else { '(' };
+            if let Some(open_idx) = trimmed.rfind(open) {
+                let inner = &trimmed[open_idx + 1..trimmed.len() - 1];
+                if let Some(n) = parse_disc_marker_whole(inner) {
+                    let base = trim_trailing_separator(&trimmed[..open_idx]);
+                    if !base.is_empty() {
+                        return (base.to_string(), Some(n));
+                    }
+                }
+            }
+        }
+    }
+
+    // Bare trailing form: "... - Disc 1" / "...CD2" (no brackets).
+    if let Some((base, n)) = parse_bare_trailing_marker(trimmed) {
+        return (base, Some(n));
+    }
+
+    (album.to_string(), None)
+}
+
+fn trim_trailing_separator(s: &str) -> &str {
+    s.trim_end()
+        .trim_end_matches(DISC_SEPARATORS.as_slice())
+        .trim_end()
+}
+
+/// Parses e.g. "disc 1", "disk.2", "cd12" when the *entire* (trimmed)
+/// input is exactly that — used for the content of a trailing bracket.
+fn parse_disc_marker_whole(s: &str) -> Option<u32> {
+    let s = s.trim();
+    let lower = s.to_lowercase();
+    for word in DISC_MARKER_WORDS {
+        if let Some(rest) = lower.strip_prefix(word) {
+            let digits = rest.trim_start_matches('.').trim_start();
+            if is_short_digit_run(digits) {
+                return digits.parse().ok();
+            }
+        }
+    }
+    None
+}
+
+fn is_short_digit_run(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 3 && s.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Handles an unbracketed marker at the very end of `s`. Requires a
+/// delimiter (whitespace or one of `DISC_SEPARATORS`) — or start-of-string —
+/// immediately before the marker word, so `"ABCD2"` doesn't match.
+fn parse_bare_trailing_marker(s: &str) -> Option<(String, u32)> {
+    let lower = s.to_lowercase();
+    for word in DISC_MARKER_WORDS {
+        let Some(idx) = lower.rfind(word) else { continue };
+        let after = &s[idx + word.len()..];
+        let digits = after.trim_start_matches('.').trim_start();
+        if !is_short_digit_run(digits) {
+            continue;
+        }
+        let before = &s[..idx];
+        let boundary_ok = before.is_empty()
+            || before.ends_with(|c: char| c.is_whitespace() || DISC_SEPARATORS.contains(&c));
+        if !boundary_ok {
+            continue;
+        }
+        let n: u32 = digits.parse().ok()?;
+        let base = trim_trailing_separator(before);
+        if !base.is_empty() {
+            return Some((base.to_string(), n));
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -475,6 +647,151 @@ mod tests {
     #[test]
     fn art_key_falls_back_for_missing_metadata() {
         assert_eq!(song().art_key(), "Unknown Artist\u{1f}Unknown Album");
+    }
+
+    #[test]
+    fn art_key_collapses_disc_variants_to_one_entry() {
+        let mut a = song();
+        a.album_artist = Some("Gamma Ray".into());
+        a.album = Some("Blast from the Past [Disc 1]".into());
+        let mut b = song();
+        b.album_artist = Some("Gamma Ray".into());
+        b.album = Some("Blast from the Past [Disc 2]".into());
+        assert_eq!(a.art_key(), b.art_key());
+    }
+
+    // --- effective_disc ---------------------------------------------------
+
+    #[test]
+    fn effective_disc_prefers_disc_tag() {
+        let mut s = song();
+        s.album = Some("Album [Disc 1]".into()); // would say 1 if consulted
+        s.disc = Some("2".into());
+        assert_eq!(s.effective_disc(), 2);
+    }
+
+    #[test]
+    fn effective_disc_parses_fraction_form() {
+        let mut s = song();
+        s.disc = Some("2/2".into());
+        assert_eq!(s.effective_disc(), 2);
+    }
+
+    #[test]
+    fn effective_disc_falls_back_to_name_suffix() {
+        let mut s = song();
+        s.album = Some("Blast from the Past [Disc 2]".into());
+        assert_eq!(s.effective_disc(), 2);
+    }
+
+    #[test]
+    fn effective_disc_defaults_to_one() {
+        let mut s = song();
+        s.album = Some("Plain Album".into());
+        assert_eq!(s.effective_disc(), 1);
+    }
+
+    // --- album_base_and_disc -----------------------------------------------
+
+    #[test]
+    fn album_base_and_disc_bracket_forms() {
+        assert_eq!(album_base_and_disc("Blast [Disc 1]"), ("Blast".to_string(), Some(1)));
+        assert_eq!(album_base_and_disc("Blast (Disc 2)"), ("Blast".to_string(), Some(2)));
+        assert_eq!(album_base_and_disc("Blast [Disk 3]"), ("Blast".to_string(), Some(3)));
+        assert_eq!(album_base_and_disc("Blast (CD 1)"), ("Blast".to_string(), Some(1)));
+    }
+
+    #[test]
+    fn album_base_and_disc_bare_trailing_forms() {
+        assert_eq!(album_base_and_disc("Blast CD2"), ("Blast".to_string(), Some(2)));
+        assert_eq!(album_base_and_disc("Blast Disc 2"), ("Blast".to_string(), Some(2)));
+        assert_eq!(album_base_and_disc("Blast - Disc 1"), ("Blast".to_string(), Some(1)));
+        assert_eq!(album_base_and_disc("Blast: disc 12"), ("Blast".to_string(), Some(12)));
+    }
+
+    #[test]
+    fn album_base_and_disc_no_marker_passthrough() {
+        assert_eq!(
+            album_base_and_disc("Plain Album"),
+            ("Plain Album".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn album_base_and_disc_disc_alone_passthrough() {
+        // Stripping would leave an empty base — reject.
+        assert_eq!(album_base_and_disc("Disc 1"), ("Disc 1".to_string(), None));
+    }
+
+    #[test]
+    fn album_base_and_disc_live_cd_no_false_match() {
+        // "CD" with no digits after it is not a disc marker.
+        assert_eq!(album_base_and_disc("Live CD"), ("Live CD".to_string(), None));
+    }
+
+    #[test]
+    fn album_base_and_disc_no_delimiter_no_false_match() {
+        // "cd2" is glued onto "AB" with no delimiter — must not match.
+        assert_eq!(album_base_and_disc("ABCD2"), ("ABCD2".to_string(), None));
+    }
+
+    #[test]
+    fn album_base_and_disc_trims_trailing_space_and_dash() {
+        let (base, disc) = album_base_and_disc("Blast   -   [Disc 1]");
+        assert_eq!(base, "Blast");
+        assert_eq!(disc, Some(1));
+    }
+
+    // --- group_albums_by_artist ---------------------------------------------
+
+    fn gpairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn group_albums_same_name_different_artist_stays_separate() {
+        let pairs = gpairs(&[("Artist A", "Greatest Hits"), ("Artist B", "Greatest Hits")]);
+        let groups = group_albums_by_artist(&pairs);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].artist, "Artist A");
+        assert_eq!(groups[1].artist, "Artist B");
+    }
+
+    #[test]
+    fn group_albums_disc_suffix_variants_merge() {
+        let pairs = gpairs(&[
+            ("Gamma Ray", "Blast from the Past [Disc 1]"),
+            ("Gamma Ray", "Blast from the Past [Disc 2]"),
+        ]);
+        let groups = group_albums_by_artist(&pairs);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].base, "Blast from the Past");
+        assert_eq!(groups[0].variants.len(), 2);
+    }
+
+    #[test]
+    fn group_albums_preserves_first_seen_order() {
+        let pairs = gpairs(&[("B", "Second"), ("A", "First")]);
+        let groups = group_albums_by_artist(&pairs);
+        assert_eq!(groups[0].base, "Second");
+        assert_eq!(groups[1].base, "First");
+    }
+
+    #[test]
+    fn group_albums_empty_input() {
+        assert!(group_albums_by_artist(&[]).is_empty());
+    }
+
+    // --- album_disc_count ---------------------------------------------------
+
+    #[test]
+    fn album_disc_count_takes_max_of_both_signals() {
+        // Properly tagged: one variant, disc tag goes up to 4.
+        assert_eq!(album_disc_count(1, 4), 4);
+        // Poorly tagged: two name variants, no disc tag.
+        assert_eq!(album_disc_count(2, 0), 2);
+        // Agreeing signals must not double-count.
+        assert_eq!(album_disc_count(2, 2), 2);
     }
 
     #[test]

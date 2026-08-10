@@ -146,6 +146,7 @@ fn album_tile<'a>(
 
     let crate::mpd::types::RecentlyPlayedAlbum { artist, album, last_played } = group;
     let relative = relative_time(now - last_played);
+    let select_artist = artist.clone();
 
     button(
         column![
@@ -158,7 +159,7 @@ fn album_tile<'a>(
         .align_x(Alignment::Center)
         .width(TILE_SIZE),
     )
-    .on_press(Message::AlbumSelected(album))
+    .on_press(Message::AlbumSelected(album, Some(select_artist)))
     .padding(4)
     .style(|_t: &iced::Theme, status: button::Status| {
         let bg = match status {

@@ -60,7 +60,7 @@ pub fn view<'a>(
                 ]
                 .align_y(Alignment::Center),
             )
-            .on_press(Message::AlbumSelected(album.clone()))
+            .on_press(Message::AlbumSelected(album.clone(), Some(artist.to_string())))
             .padding([8, 12])
             .width(Length::Fill)
             .style(|_theme: &iced::Theme, _status| button::Style {

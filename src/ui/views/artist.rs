@@ -1,3 +1,4 @@
+use crate::mpd::types::AlbumGroup;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, container, row, text, Column, Space};
@@ -5,7 +6,7 @@ use iced::{Alignment, Element, Length};
 
 pub fn view<'a>(
     artist_name: &'a str,
-    albums: &'a [String],
+    albums: &'a [AlbumGroup],
     art_handles: &'a std::collections::HashMap<String, iced::widget::image::Handle>,
     bio: Option<&'a str>,
     show_bio: bool,
@@ -111,14 +112,16 @@ pub fn view<'a>(
         );
     }
 
-    for (i, album) in albums.iter().enumerate() {
+    for (i, group) in albums.iter().enumerate() {
         let bg = if i % 2 == 0 {
             AppColors::ROW_EVEN
         } else {
             AppColors::ROW_ODD
         };
 
-        let art_key = format!("{artist_name}-{album}");
+        // 0x1f separator, matching Song::art_key() — a hyphen here would
+        // collide on hyphenated artist/album names.
+        let art_key = format!("{artist_name}\x1f{}", group.base);
         let art_widget: Element<'a, Message> =
             if let Some(handle) = art_handles.get(&art_key) {
                 iced::widget::image(handle.clone())
@@ -140,26 +143,38 @@ pub fn view<'a>(
                     .into()
             };
 
+        let mut label = row![
+            art_widget,
+            Space::with_width(10),
+            text(group.base.as_str())
+                .size(14)
+                .color(AppColors::TEXT_PRIMARY),
+        ]
+        .align_y(Alignment::Center);
+
+        if group.variants.len() > 1 {
+            label = label.push(Space::with_width(8));
+            label = label.push(
+                text(format!("{} discs", group.variants.len()))
+                    .size(11)
+                    .color(AppColors::ACCENT),
+            );
+        }
+
         album_list = album_list.push(
-            button(
-                row![
-                    art_widget,
-                    Space::with_width(10),
-                    text(album.as_str())
-                        .size(14)
-                        .color(AppColors::TEXT_PRIMARY),
-                ]
-                .align_y(Alignment::Center),
-            )
-            .on_press(Message::AlbumSelected(album.clone()))
-            .padding([4, 10])
-            .width(Length::Fill)
-            .style(move |_theme: &iced::Theme, _status| button::Style {
-                background: Some(bg.into()),
-                text_color: AppColors::TEXT_PRIMARY,
-                border: iced::Border::default(),
-                ..Default::default()
-            }),
+            button(label)
+                .on_press(Message::AlbumSelected(
+                    group.base.clone(),
+                    Some(artist_name.to_string()),
+                ))
+                .padding([4, 10])
+                .width(Length::Fill)
+                .style(move |_theme: &iced::Theme, _status| button::Style {
+                    background: Some(bg.into()),
+                    text_color: AppColors::TEXT_PRIMARY,
+                    border: iced::Border::default(),
+                    ..Default::default()
+                }),
         );
     }
 

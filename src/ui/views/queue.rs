@@ -108,7 +108,10 @@ pub fn view<'a>(
         let album_btn = button(
             text(song.display_album()).size(11),
         )
-        .on_press(Message::AlbumSelected(song.display_album().to_string()))
+        .on_press(Message::AlbumSelected(
+            song.display_album().to_string(),
+            Some(song.display_album_artist().to_string()),
+        ))
         .padding(0)
         .width(Length::FillPortion(2))
         .style(|_t: &iced::Theme, s: button::Status| button::Style {

@@ -147,7 +147,7 @@ impl MusicBrainzClient {
         artist: &str,
         album: &str,
     ) -> Option<Vec<u8>> {
-        let lookup_album = Self::strip_edition_qualifier(album);
+        let lookup_album = Self::lookup_title(album);
 
         // Try release-group search first (more reliable for cover art)
         let rg_id = self.search_release_group(artist, &lookup_album).await?;
@@ -382,6 +382,17 @@ impl MusicBrainzClient {
         }
     }
 
+    /// Composes both lookup-only transforms for an album query candidate:
+    /// strip the edition qualifier, then the disc-marker suffix (order
+    /// matters for titles carrying both, e.g. `"X [Disc 1] [Remastered]"`).
+    /// Never used for the art cache key — see `Song::art_key`, which folds
+    /// disc markers but not edition qualifiers (a remaster isn't the same
+    /// release as the original for art-lookup purposes, only for grouping).
+    fn lookup_title(album: &str) -> String {
+        let no_edition = Self::strip_edition_qualifier(album);
+        crate::mpd::types::album_base_and_disc(&no_edition).0
+    }
+
     /// Fetch the curated English Wikipedia URL from a MusicBrainz entity's URL relations.
     /// entity_type is "artist" or "release-group".
     async fn get_wikipedia_url(&self, entity_type: &str, id: &str) -> Option<String> {
@@ -535,7 +546,7 @@ impl MusicBrainzClient {
     /// Step 2: fall back to "(album)" suffix guessing.
     /// Step 3: fall back to Wikipedia's own search API.
     pub async fn fetch_album_bio(&self, artist: &str, album: &str) -> Option<String> {
-        let lookup_album = Self::strip_edition_qualifier(album);
+        let lookup_album = Self::lookup_title(album);
 
         // Step 1: MusicBrainz canonical Wikipedia link
         if let Some(rg_id) = self.search_release_group(artist, &lookup_album).await {
@@ -703,5 +714,18 @@ mod tests {
         // running it twice peels one bracket at a time.
         let once = MusicBrainzClient::strip_edition_qualifier("Album [Disc 1] [Remastered]");
         assert_eq!(once, "Album [Disc 1]");
+    }
+
+    #[test]
+    fn lookup_title_strips_both_edition_and_disc_marker() {
+        assert_eq!(
+            MusicBrainzClient::lookup_title("Album [Disc 1] [Remastered]"),
+            "Album"
+        );
+        assert_eq!(MusicBrainzClient::lookup_title("Album [Disc 2]"), "Album");
+        assert_eq!(
+            MusicBrainzClient::lookup_title("Album (Deluxe Edition)"),
+            "Album"
+        );
     }
 }

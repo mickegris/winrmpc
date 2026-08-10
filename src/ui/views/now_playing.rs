@@ -105,7 +105,10 @@ pub fn view<'a>(
                 link(
                     song.display_album().to_string(),
                     18,
-                    Message::AlbumSelected(song.display_album().to_string()),
+                    Message::AlbumSelected(
+                        song.display_album().to_string(),
+                        Some(song.display_album_artist().to_string()),
+                    ),
                 ),
                 Space::with_height(12).into(),
             ];
@@ -318,7 +321,7 @@ fn recent_thumb<'a>(
         .align_x(Alignment::Center)
         .width(120),
     )
-    .on_press(Message::AlbumSelected(album_name))
+    .on_press(Message::AlbumSelected(album_name, Some(recent.artist.clone())))
     .padding(4)
     .style(|_t: &iced::Theme, status: button::Status| {
         let bg = match status {

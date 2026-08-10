@@ -34,9 +34,10 @@ pub struct App {
 
     // Library
     artists: Vec<String>,
-    albums: Vec<String>,
+    albums: Vec<AlbumGroup>,
     genres: Vec<String>,
-    artist_albums: HashMap<String, Vec<String>>,
+    artist_albums: HashMap<String, Vec<AlbumGroup>>,
+    genre_albums: HashMap<String, Vec<String>>,
     album_songs: HashMap<String, Vec<Song>>,
     selected_artist: Option<String>,
     selected_album: Option<String>,
@@ -110,8 +111,9 @@ pub struct App {
     recent_albums: Vec<RecentAlbum>,
 
     // Recently Added (library) — songs modified in the last 30 days,
-    // collapsed to unique album names, newest-first.
-    recently_added_albums: Vec<String>,
+    // grouped artist-aware/disc-collapsed like the main Albums list,
+    // newest-modified-first.
+    recently_added_albums: Vec<AlbumGroup>,
 
     // Recently Played history — per-server, 30 days / 100 entries, distinct
     // from `recent_albums` above. See PlayRecorder.
@@ -173,6 +175,7 @@ impl App {
             albums: Vec::new(),
             genres: Vec::new(),
             artist_albums: HashMap::new(),
+            genre_albums: HashMap::new(),
             album_songs: HashMap::new(),
             selected_artist: None,
             selected_album: None,
@@ -670,24 +673,28 @@ impl App {
                     |_| Message::Tick,
                 )
             }
-            Message::PlayAlbum(album) => {
+            Message::PlayAlbum(uris) => {
                 self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
                         client.clear().await.ok();
-                        client.find_add("Album", &album).await.ok();
+                        for uri in &uris {
+                            client.add(uri).await.ok();
+                        }
                         client.play().await.ok();
                     },
                     |_| Message::Tick,
                 )
             }
-            Message::QueueAlbum(album) => {
+            Message::QueueAlbum(uris) => {
                 self.playing_from_playlist = None;
                 let client = self.client.clone();
                 Task::perform(
                     async move {
-                        client.find_add("Album", &album).await.ok();
+                        for uri in &uris {
+                            client.add(uri).await.ok();
+                        }
                         if let Ok(status) = client.status().await {
                             if status.state == PlayState::Stop {
                                 client.play().await.ok();
@@ -750,7 +757,13 @@ impl App {
                             }
                         }
                         albums.sort();
-                        (name, albums)
+                        // Every entry shares this page's artist, so grouping
+                        // here only does multi-disc collapsing (no
+                        // cross-artist ambiguity is possible on this page).
+                        let pairs: Vec<(String, String)> =
+                            albums.into_iter().map(|a| (name.clone(), a)).collect();
+                        let groups = group_albums_by_artist(&pairs);
+                        (name, groups)
                     },
                     |(name, albums)| Message::ArtistAlbumsLoaded(name, albums),
                 );
@@ -764,28 +777,76 @@ impl App {
                 self.show_artist_bio = false;
                 Task::batch([albums_task, artist_art_task, bio_task])
             }
-            Message::AlbumSelected(name) => {
+            Message::AlbumSelected(name, artist) => {
                 self.selected_album = Some(name.clone());
                 self.view_history.push(self.current_view.clone());
-                self.current_view = View::AlbumDetail(name.clone());
+                self.current_view = View::AlbumDetail(name.clone(), artist.clone());
                 self.show_album_bio = false;
 
                 let client = self.client.clone();
                 let album_name = name.clone();
+                let artist_for_songs = artist.clone();
                 let songs_task = Task::perform(
                     async move {
-                        let songs = client
-                            .find("Album", &album_name)
-                            .await
-                            .unwrap_or_default();
+                        let mut songs = match &artist_for_songs {
+                            Some(art) => {
+                                // Resolve which raw album tags (disc
+                                // variants) belong to this artist-scoped
+                                // base name, then fetch and concatenate all
+                                // of them — a multi-disc album's base name
+                                // isn't any single track's literal Album
+                                // tag, so a plain find("Album", base) would
+                                // find nothing.
+                                let all_albums = client
+                                    .list_tag_filtered("Album", "AlbumArtist", art)
+                                    .await
+                                    .unwrap_or_default();
+                                let pairs: Vec<(String, String)> = all_albums
+                                    .into_iter()
+                                    .map(|a| (art.clone(), a))
+                                    .collect();
+                                let groups = group_albums_by_artist(&pairs);
+                                let variants = groups
+                                    .into_iter()
+                                    .find(|g| {
+                                        g.artist.eq_ignore_ascii_case(art) && g.base == album_name
+                                    })
+                                    .map(|g| g.variants)
+                                    .unwrap_or_else(|| vec![album_name.clone()]);
+
+                                let mut all_songs = Vec::new();
+                                for variant in &variants {
+                                    let mut s = client
+                                        .find_album_by_artist(variant, art)
+                                        .await
+                                        .unwrap_or_default();
+                                    all_songs.append(&mut s);
+                                }
+                                all_songs
+                            }
+                            // Artist unknown (e.g. from Genre detail) — skip
+                            // sibling-variant merging, matching mikMPD's
+                            // "unsafe to merge without an artist" rule.
+                            None => client.find("Album", &album_name).await.unwrap_or_default(),
+                        };
+                        songs.sort_by_key(|s| {
+                            let track: u32 = s
+                                .track
+                                .as_deref()
+                                .and_then(|t| t.split('/').next())
+                                .and_then(|t| t.trim().parse().ok())
+                                .unwrap_or(0);
+                            (s.effective_disc(), track)
+                        });
                         (album_name, songs)
                     },
                     |(name, songs)| Message::AlbumSongsLoaded(name, songs),
                 );
 
-                // We need artist name for the search - get it from existing data if possible
-                let artist = self.selected_artist.clone().unwrap_or_default();
-                let bio_task = self.fetch_album_bio(artist, name);
+                // Fall back to the currently-viewed artist page's name if
+                // this entry point didn't know the artist directly.
+                let bio_artist = artist.or_else(|| self.selected_artist.clone()).unwrap_or_default();
+                let bio_task = self.fetch_album_bio(bio_artist, name);
 
                 Task::batch([songs_task, bio_task])
             }
@@ -806,17 +867,23 @@ impl App {
                 )
             }
             Message::GenreAlbumsLoaded(genre, albums) => {
-                self.artist_albums.insert(format!("genre:{genre}"), albums);
+                self.genre_albums.insert(genre, albums);
                 Task::none()
             }
             Message::ArtistAlbumsLoaded(artist, albums) => {
                 let mut tasks = Vec::new();
-                for album in &albums {
-                    let key = format!("{artist}\x1f{album}");
+                for group in &albums {
+                    let key = format!("{}\x1f{}", group.artist, group.base);
                     if !self.art_handles.contains_key(&key) {
-                        // Find first song of this album to get URI for MPD art
+                        // Use the first disc variant to find a song URI for
+                        // MPD art lookup.
                         let c = self.client.clone();
-                        let a = album.clone();
+                        let variant = group
+                            .variants
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| group.base.clone());
+                        let base = group.base.clone();
                         let cache = self.art_cache.clone_inner();
                         let art_key = key.clone();
                         let art_artist = artist.clone();
@@ -829,7 +896,7 @@ impl App {
                                 }
                                 let _permit = gate.acquire().await;
                                 // Try MPD first: tag art, then cover-file art.
-                                let songs = c.find("Album", &a).await.unwrap_or_default();
+                                let songs = c.find("Album", &variant).await.unwrap_or_default();
                                 if let Some(first) = songs.first() {
                                     if let Ok(Some(data)) = c.tag_art(&first.file).await {
                                         let _ = cache.store(&art_key, &data).await;
@@ -841,7 +908,7 @@ impl App {
                                     }
                                 }
                                 // Fallback to MusicBrainz
-                                if let Some(data) = mb.fetch_album_art(&art_artist, &a).await {
+                                if let Some(data) = mb.fetch_album_art(&art_artist, &base).await {
                                     let _ = cache.store(&art_key, &data).await;
                                     return (art_key, Some(data));
                                 }
@@ -879,15 +946,11 @@ impl App {
                 // Newest-modified first; unknown last_modified sinks to the
                 // bottom rather than the top.
                 songs.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
-                let mut seen = std::collections::HashSet::new();
-                let mut albums = Vec::new();
-                for s in &songs {
-                    let name = s.display_album().to_string();
-                    if seen.insert(name.clone()) {
-                        albums.push(name);
-                    }
-                }
-                self.recently_added_albums = albums;
+                let pairs: Vec<(String, String)> = songs
+                    .iter()
+                    .map(|s| (s.display_album_artist().to_string(), s.display_album().to_string()))
+                    .collect();
+                self.recently_added_albums = group_albums_by_artist(&pairs);
                 Task::none()
             }
             Message::RecentlyPlayedLoaded(entries) => {
@@ -1848,7 +1911,7 @@ impl App {
                     self.show_artist_bio,
                 )
             }
-            View::AlbumDetail(name) => {
+            View::AlbumDetail(name, _artist) => {
                 let songs = self
                     .album_songs
                     .get(name)
@@ -1864,8 +1927,8 @@ impl App {
             }
             View::GenreDetail(name) => {
                 let albums = self
-                    .artist_albums
-                    .get(&format!("genre:{name}"))
+                    .genre_albums
+                    .get(name)
                     .map(|a| a.as_slice())
                     .unwrap_or(&[]);
                 views::genre_detail::view(name, albums)
@@ -2282,7 +2345,8 @@ impl App {
                 let client = self.client.clone();
                 Task::perform(
                     async move {
-                        client.list_tag("Album").await.unwrap_or_default()
+                        let pairs = client.list_albums_by_artist().await.unwrap_or_default();
+                        group_albums_by_artist(&pairs)
                     },
                     Message::AlbumsLoaded,
                 )

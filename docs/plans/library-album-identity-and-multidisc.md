@@ -1,14 +1,52 @@
 # Plan: Album identity, multi-disc collapsing, grid view, richer search
 
-Status: proposed — no code changes yet. Part of the mikMPD parity set (see
-[`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gaps #2/#3). Largest
-item in the set — do it last, after the smaller plans have shipped.
+Status: **Parts A+B implemented** (artist-aware grouping + multi-disc
+collapsing — the plan's namesake). **Parts C (grid view) and D (search
+sections/batch-select) deliberately deferred**, not implemented — Part D's
+own text already flagged it as "bundle in only if the above ships smoothly,"
+and Part C's prerequisite note calls out real scope; landing all four parts
+in one pass risked a much larger, harder-to-review diff for a plan already
+flagged as "largest item in the set." Left as clean follow-up work; nothing
+about Parts A/B blocks them. Part of the mikMPD parity set (see
+[`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gaps #2/#3).
 
 Mirrors three mikMPD plans folded into one winrmpc-shaped piece of work,
 since in this codebase they touch the same view (`albums_list.rs`) and the
 same MPD grouping query: `../mikMPD/plans/album-artist-identity.md`,
 `../mikMPD/plans/multi-disc-albums.md`, and the Search portion of
 `../mikMPD/README.md`.
+
+**Implementation notes / deviations (Parts A+B)**:
+- `View::AlbumDetail`/`Message::AlbumSelected` became `(String, Option<String>)`
+  tuples rather than a named struct variant — smaller diff across the ~10
+  call sites, same clarity at the point of use.
+- Fixed a real bug found while rewriting `artist.rs`: its per-row art-cache
+  key used a bare `"-"` separator (`format!("{artist}-{album}")`) instead of
+  the `\x1f` unit separator every other art key in the codebase uses —
+  meaning that view's art thumbnails could never actually hit the cache
+  `ArtistAlbumsLoaded` populates. Fixed as part of this rewrite.
+- Discovered and fixed a regression risk before it shipped: `PlayAlbum`/
+  `QueueAlbum` used to re-query `find_add("Album", &name)` by tag name. Once
+  `AlbumDetail`'s identity became the *collapsed base name*, that would
+  silently match zero tracks on any multi-disc album (no track's literal
+  `Album` tag equals the base name). Changed both messages to carry the
+  already-loaded, variant-expanded, disc-sorted song URIs instead of
+  re-querying — see CLAUDE.md's "Play All / Queue All" section.
+- List-view "N discs" captions use `variants.len()` alone, not the full
+  `album_disc_count` two-signal max (that needs each song's `disc` tag,
+  which isn't fetched until the detail page loads) — acceptable since it's
+  a hint, refined once the album is opened.
+- `Recently Added` and `Genre Detail` also touched: Recently Added now
+  groups through the same `AlbumGroup`/`group_albums_by_artist` pipeline
+  (gets multi-disc collapsing and correct artists for free, derived from
+  the song data `find_recently_added` already returns). Genre Detail was
+  **not** regrouped — kept as a plain `Vec<String>` list in a new
+  `genre_albums` map (split out of the old dual-purpose `artist_albums`
+  map, which used a `"genre:"`-prefixed key hack) — out of scope, and genre
+  listings don't have the artist-ambiguity problem this plan is centrally
+  about.
+- Known gap carried forward (see CLAUDE.md): `album_songs`/`album_bios`
+  caches are still keyed by base name alone, not artist-scoped.
 
 ## Today (`src/ui/views/albums_list.rs`, `src/mpd/client.rs`)
 

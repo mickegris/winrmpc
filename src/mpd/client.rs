@@ -285,6 +285,35 @@ impl MpdClient {
         Ok(commands::parse_tag_list(&pairs, tag))
     }
 
+    /// `list Album group AlbumArtist` (MPD 0.21+) — returns
+    /// `(album_artist, album)` pairs, so same-named albums by different
+    /// artists can be told apart. Falls back to a flat, artist-less list
+    /// (empty-string artist) on ACK from a pre-0.21 server that doesn't
+    /// support `group`.
+    pub async fn list_albums_by_artist(&self) -> MpdResult<Vec<(String, String)>> {
+        match self.cmd("list Album group AlbumArtist").await {
+            Ok(pairs) => Ok(commands::parse_grouped_values(&pairs, "AlbumArtist", "Album")),
+            Err(_) => {
+                let albums = self.list_tag("Album").await?;
+                Ok(albums.into_iter().map(|a| (String::new(), a)).collect())
+            }
+        }
+    }
+
+    /// `find Album "X" AlbumArtist "Y"` — artist-scoped album lookup, used
+    /// once album identity is artist-aware so same-named albums by
+    /// different artists don't mix tracks.
+    pub async fn find_album_by_artist(&self, album: &str, artist: &str) -> MpdResult<Vec<Song>> {
+        let pairs = self
+            .cmd(&format!(
+                "find Album \"{}\" AlbumArtist \"{}\"",
+                Self::escape(album),
+                Self::escape(artist)
+            ))
+            .await?;
+        Ok(commands::parse_songs(&pairs))
+    }
+
     pub async fn find(&self, tag: &str, value: &str) -> MpdResult<Vec<Song>> {
         let pairs = self
             .cmd(&format!("find {tag} \"{}\"", Self::escape(value)))
