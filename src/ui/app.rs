@@ -101,6 +101,16 @@ pub struct App {
     // Recently played albums (most recent first, capped at 8)
     recent_albums: Vec<RecentAlbum>,
 
+    // Recently Added (library) — songs modified in the last 30 days,
+    // collapsed to unique album names, newest-first.
+    recently_added_albums: Vec<String>,
+
+    // Recently Played history — per-server, 30 days / 100 entries, distinct
+    // from `recent_albums` above. See PlayRecorder.
+    recently_played: Vec<RecentlyPlayedEntry>,
+    play_recorder: PlayRecorder,
+    recently_played_show_albums: bool,
+
     // Log
     log_entries: Vec<crate::logger::LogEntry>,
     log_show_mpd_only: bool,
@@ -135,6 +145,7 @@ impl App {
         let cache_dir = AppConfig::cache_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("./cache"));
         let store = Store::open(&cache_dir);
+        let initial_recently_played = store.recently_played_get(&active_server);
 
         let app = Self {
             client,
@@ -201,6 +212,11 @@ impl App {
             settings_rename_input: String::new(),
 
             recent_albums: config.recent_albums.clone(),
+
+            recently_added_albums: Vec::new(),
+            recently_played: initial_recently_played,
+            play_recorder: PlayRecorder::new(),
+            recently_played_show_albums: true,
 
             log_entries: Vec::new(),
             log_show_mpd_only: true,
@@ -418,7 +434,43 @@ impl App {
             // =================================================================
             Message::StatusUpdated(status) => {
                 self.status = *status;
-                Task::none()
+
+                // Recently Played recording: tick the recorder on every poll
+                // (it self-tracks deltas/file changes) and persist on commit.
+                // Skip CD tracks (physical disc, not a "play" worth recording
+                // the way a library file or radio stream is).
+                let mut task = Task::none();
+                if let Some(song) = self.current_song.clone() {
+                    if !song.file.starts_with("cdda://") {
+                        let elapsed = self.status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                        let is_playing = self.status.state == PlayState::Play;
+                        if self.play_recorder.tick(&song.file, is_playing, elapsed, song.duration_secs) {
+                            let now = chrono::Utc::now().timestamp();
+                            let entry = RecentlyPlayedEntry {
+                                file: song.file.clone(),
+                                title: song.display_title().to_string(),
+                                artist: song.display_artist().to_string(),
+                                album: song.display_album().to_string(),
+                                played_at: now,
+                            };
+                            self.recently_played.insert(0, entry);
+                            prune_recently_played(&mut self.recently_played, now);
+                            let store = self.store.clone();
+                            let server = self.active_server.clone();
+                            let entries = self.recently_played.clone();
+                            task = Task::perform(
+                                async move {
+                                    let _ = tokio::task::spawn_blocking(move || {
+                                        store.recently_played_put(&server, &entries)
+                                    })
+                                    .await;
+                                },
+                                |_| Message::Noop,
+                            );
+                        }
+                    }
+                }
+                task
             }
             Message::CurrentSongUpdated(song) => {
                 // Track recently played: when the album changes, push the NEW
@@ -826,6 +878,47 @@ impl App {
                     }
                 }
                 self.album_songs.insert(album, songs);
+                Task::none()
+            }
+
+            // =================================================================
+            // Recently Added / Recently Played history
+            // =================================================================
+            Message::RecentlyAddedLoaded(mut songs) => {
+                // Newest-modified first; unknown last_modified sinks to the
+                // bottom rather than the top.
+                songs.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+                let mut seen = std::collections::HashSet::new();
+                let mut albums = Vec::new();
+                for s in &songs {
+                    let name = s.display_album().to_string();
+                    if seen.insert(name.clone()) {
+                        albums.push(name);
+                    }
+                }
+                self.recently_added_albums = albums;
+                Task::none()
+            }
+            Message::RecentlyPlayedLoaded(entries) => {
+                self.recently_played = entries;
+                Task::none()
+            }
+            Message::ClearRecentlyPlayed => {
+                self.recently_played.clear();
+                let store = self.store.clone();
+                let server = self.active_server.clone();
+                Task::perform(
+                    async move {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            store.recently_played_put(&server, &[])
+                        })
+                        .await;
+                    },
+                    |_| Message::Noop,
+                )
+            }
+            Message::ToggleRecentlyPlayedMode => {
+                self.recently_played_show_albums = !self.recently_played_show_albums;
                 Task::none()
             }
 
@@ -1511,7 +1604,18 @@ impl App {
                     self.config.mpd_password = password;
                     self.config.default_partition = partition;
                 }
-                Task::perform(async {}, |_| Message::Connect)
+                self.recently_played.clear();
+                let store = self.store.clone();
+                let server = name.clone();
+                let load_history = Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || store.recently_played_get(&server))
+                            .await
+                            .unwrap_or_default()
+                    },
+                    Message::RecentlyPlayedLoaded,
+                );
+                Task::batch([load_history, Task::perform(async {}, |_| Message::Connect)])
             }
             Message::SetDefaultServer(name) => {
                 self.config.default_server = Some(name.clone());
@@ -1562,13 +1666,27 @@ impl App {
                         self.config.servers.first().map(|s| s.name.clone());
                 }
                 self.config.save().ok();
+                let store = self.store.clone();
+                let removed = name.clone();
+                let delete_history = Task::perform(
+                    async move {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            store.recently_played_delete(&removed)
+                        })
+                        .await;
+                    },
+                    |_| Message::Noop,
+                );
                 if switching {
                     if let Some(first) = self.config.servers.first() {
                         let first_name = first.name.clone();
-                        return self.update(Message::SwitchServer(first_name));
+                        return Task::batch([
+                            delete_history,
+                            self.update(Message::SwitchServer(first_name)),
+                        ]);
                     }
                 }
-                Task::none()
+                delete_history
             }
 
             // =================================================================
@@ -1712,11 +1830,19 @@ impl App {
                 views::artists_list::view(&self.artists)
             }
             View::Albums => {
-                views::albums_list::view(&self.albums)
+                views::albums_list::view(&self.albums, "Albums")
             }
             View::Genres => {
                 views::genres_list::view(&self.genres)
             }
+            View::RecentlyAdded => {
+                views::albums_list::view(&self.recently_added_albums, "Recently Added")
+            }
+            View::RecentlyPlayed => views::recently_played::view(
+                &self.recently_played,
+                self.recently_played_show_albums,
+                &self.art_handles,
+            ),
             View::ArtistDetail(name) => {
                 let albums = self
                     .artist_albums
@@ -2165,6 +2291,21 @@ impl App {
                 )
             }
             View::ServerStats => self.fetch_stats(),
+            View::RecentlyAdded => {
+                let client = self.client.clone();
+                Task::perform(
+                    async move {
+                        let since = (chrono::Utc::now() - chrono::Duration::days(30))
+                            .format("%Y-%m-%dT%H:%M:%SZ")
+                            .to_string();
+                        client
+                            .find_recently_added(&since, 2000)
+                            .await
+                            .unwrap_or_default()
+                    },
+                    Message::RecentlyAddedLoaded,
+                )
+            }
             _ => Task::none(),
         }
     }

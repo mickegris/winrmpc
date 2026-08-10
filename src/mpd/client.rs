@@ -292,6 +292,20 @@ impl MpdClient {
         Ok(commands::parse_songs(&pairs))
     }
 
+    /// Songs added/modified since `since` (MPD timestamp format,
+    /// `YYYY-MM-DDTHH:MM:SSZ`), bounded to `limit` results. Unbounded
+    /// `modified-since` queries can outrun the socket's read timeout on a
+    /// large library, so this always uses a `window`.
+    pub async fn find_recently_added(&self, since: &str, limit: u32) -> MpdResult<Vec<Song>> {
+        let pairs = self
+            .cmd(&format!(
+                "find \"(modified-since '{}')\" window 0:{limit}",
+                Self::escape(since)
+            ))
+            .await?;
+        Ok(commands::parse_songs(&pairs))
+    }
+
     pub async fn search(&self, tag: &str, value: &str) -> MpdResult<Vec<Song>> {
         let pairs = self
             .cmd(&format!("search {tag} \"{}\"", Self::escape(value)))

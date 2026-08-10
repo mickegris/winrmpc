@@ -52,6 +52,8 @@ pub fn view<'a>(
         link("Outputs", 12, Message::NavigateTo(View::Outputs)),
         Space::with_width(12),
         link("Partitions", 12, Message::NavigateTo(View::Partitions)),
+        Space::with_width(12),
+        link("\u{1F551} History", 12, Message::NavigateTo(View::RecentlyPlayed)),
         Space::with_width(20),
         crossfade_control,
         Space::with_width(16),

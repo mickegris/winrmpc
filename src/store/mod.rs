@@ -22,6 +22,8 @@ const ART: TableDefinition<&str, &[u8]> = TableDefinition::new("art");
 const ART_META: TableDefinition<&str, &[u8]> = TableDefinition::new("art_meta");
 // key = "artist\x1ftitle\x1falbum"; value = serde_json(Option<Lyrics>)
 const LYRICS: TableDefinition<&str, &[u8]> = TableDefinition::new("lyrics");
+// key = server name; value = serde_json(Vec<RecentlyPlayedEntry>), newest-first
+const RECENTLY_PLAYED: TableDefinition<&str, &[u8]> = TableDefinition::new("recently_played");
 // Schema/migration markers; key = marker name, value = ignored
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
@@ -88,6 +90,7 @@ impl Store {
             let _ = wtx.open_table(ART);
             let _ = wtx.open_table(ART_META);
             let _ = wtx.open_table(LYRICS);
+            let _ = wtx.open_table(RECENTLY_PLAYED);
             let _ = wtx.open_table(META);
             let _ = wtx.commit();
         }
@@ -348,5 +351,121 @@ impl Store {
                 let _ = wtx.commit();
             }
         }
+    }
+
+    // ===================================================================
+    // Recently Played history (per server; app-generated data, not a cache
+    // of re-fetchable remote data — kept in redb for the same write-pattern
+    // reasons as art/lyrics, not because it's a "cache". See
+    // docs/plans/recently-added-and-played-history.md.)
+    // ===================================================================
+
+    /// Full history for `server`, newest-first. Empty (not an error) if the
+    /// server has none yet.
+    pub fn recently_played_get(&self, server: &str) -> Vec<crate::mpd::types::RecentlyPlayedEntry> {
+        (|| {
+            let rtx = self.db.begin_read().ok()?;
+            let table = rtx.open_table(RECENTLY_PLAYED).ok()?;
+            let guard = table.get(server).ok()??;
+            serde_json::from_slice(guard.value()).ok()
+        })()
+        .unwrap_or_default()
+    }
+
+    /// Replace `server`'s stored history with `entries` (caller is
+    /// responsible for pruning/order — this is a plain overwrite, not an
+    /// append, so a stale on-disk tail can't reappear).
+    pub fn recently_played_put(&self, server: &str, entries: &[crate::mpd::types::RecentlyPlayedEntry]) {
+        if let Ok(bytes) = serde_json::to_vec(entries) {
+            if let Ok(wtx) = self.db.begin_write() {
+                {
+                    if let Ok(mut t) = wtx.open_table(RECENTLY_PLAYED) {
+                        let _ = t.insert(server, bytes.as_slice());
+                    }
+                }
+                let _ = wtx.commit();
+            }
+        }
+    }
+
+    /// Remove a server's history entirely (called when the server profile
+    /// itself is deleted).
+    pub fn recently_played_delete(&self, server: &str) {
+        if let Ok(wtx) = self.db.begin_write() {
+            {
+                if let Ok(mut t) = wtx.open_table(RECENTLY_PLAYED) {
+                    let _ = t.remove(server);
+                }
+            }
+            let _ = wtx.commit();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mpd::types::RecentlyPlayedEntry;
+
+    fn temp_store() -> Store {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "winrmpc-test-{}-{}-{}",
+            std::process::id(),
+            now_secs(),
+            n
+        ));
+        Store::open(&dir)
+    }
+
+    fn entry(file: &str, played_at: i64) -> RecentlyPlayedEntry {
+        RecentlyPlayedEntry {
+            file: file.to_string(),
+            title: "T".into(),
+            artist: "A".into(),
+            album: "Al".into(),
+            played_at,
+        }
+    }
+
+    #[test]
+    fn recently_played_empty_server_returns_empty_vec() {
+        let store = temp_store();
+        assert!(store.recently_played_get("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn recently_played_round_trips() {
+        let store = temp_store();
+        let entries = vec![entry("a.mp3", 200), entry("b.mp3", 100)];
+        store.recently_played_put("server1", &entries);
+        assert_eq!(store.recently_played_get("server1"), entries);
+    }
+
+    #[test]
+    fn recently_played_keys_do_not_leak_across_servers() {
+        let store = temp_store();
+        store.recently_played_put("server1", &[entry("a.mp3", 100)]);
+        store.recently_played_put("server2", &[entry("b.mp3", 200)]);
+        assert_eq!(store.recently_played_get("server1"), vec![entry("a.mp3", 100)]);
+        assert_eq!(store.recently_played_get("server2"), vec![entry("b.mp3", 200)]);
+    }
+
+    #[test]
+    fn recently_played_put_overwrites_not_appends() {
+        let store = temp_store();
+        store.recently_played_put("server1", &[entry("a.mp3", 100), entry("b.mp3", 90)]);
+        store.recently_played_put("server1", &[entry("c.mp3", 300)]);
+        assert_eq!(store.recently_played_get("server1"), vec![entry("c.mp3", 300)]);
+    }
+
+    #[test]
+    fn recently_played_delete_removes_key() {
+        let store = temp_store();
+        store.recently_played_put("server1", &[entry("a.mp3", 100)]);
+        store.recently_played_delete("server1");
+        assert!(store.recently_played_get("server1").is_empty());
     }
 }

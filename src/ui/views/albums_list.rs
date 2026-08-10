@@ -3,7 +3,7 @@ use crate::ui::theme::AppColors;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
-pub fn view<'a>(albums: &'a [String]) -> Element<'a, Message> {
+pub fn view<'a>(albums: &'a [String], title: &'a str) -> Element<'a, Message> {
     let mut list = column![].spacing(0);
     for (i, album) in albums.iter().enumerate() {
         let bg = if i % 2 == 0 {
@@ -37,7 +37,7 @@ pub fn view<'a>(albums: &'a [String]) -> Element<'a, Message> {
                     .on_press(Message::GoBack)
                     .padding([4, 8]),
                 Space::with_width(12),
-                text("Albums").size(24).color(AppColors::TEXT_PRIMARY),
+                text(title).size(24).color(AppColors::TEXT_PRIMARY),
                 Space::with_width(12),
                 text(format!("{} albums", albums.len()))
                     .size(14)

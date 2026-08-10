@@ -1,11 +1,31 @@
 # Plan: Recently Added (library) + Recently Played history (Now Playing)
 
-Status: proposed — no code changes yet. Part of the mikMPD parity set (see
+Status: **implemented**. Part of the mikMPD parity set (see
 [`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gaps #4/#5). Two
 related but distinct features — "added" is a server-side query, "played" is
 client-side history — sharing this file because both extend the existing
 `RecentAlbum`/`recent_albums` machinery in `src/mpd/types.rs` /
 `src/config/settings.rs`.
+
+**Implementation notes / deviations**:
+- `PlayRecorder::tick` ended up self-tracking `last_elapsed` internally
+  rather than taking a caller-computed `delta_secs` — simpler call site (no
+  extra state needed on `App`) and equally testable as a pure struct.
+- **Radio streams are recorded, not skipped.** The plan's own "Skip CD/radio"
+  line contradicted the mikMPD behavior it was citing three lines above
+  ("Radio streams keep one file for hours → exactly one commit per
+  listening session, which is right") — only `cdda://` is skipped, matching
+  both mikMPD's actual documented behavior and the existing `recent_albums`
+  precedent it was supposed to mirror.
+- No dedicated `OpenRecentlyPlayed` message or `RecentlyPlayedMode` enum —
+  plain `Message::NavigateTo(View::RecentlyPlayed)` and a
+  `recently_played_show_albums: bool` do the same job with less surface,
+  consistent with this codebase's existing `show_lyrics`/`show_album_bio`
+  boolean-toggle convention rather than introducing a new enum type.
+- Grid tiling (Albums mode) is a manually chunked `column![row![...]]`
+  (4 tiles/row) — iced 0.13 has no wrap/flow layout; this is the same
+  approach flagged for the future library grid view in
+  `library-album-identity-and-multidisc.md`.
 
 ## Part A — Recently Added (new library section)
 

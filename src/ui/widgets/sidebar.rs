@@ -51,6 +51,7 @@ pub fn view<'a>(
             nav_button("Artists", View::Artists, current_view),
             nav_button("Albums", View::Albums, current_view),
             nav_button("Genres", View::Genres, current_view),
+            nav_button("Recently Added", View::RecentlyAdded, current_view),
             nav_button("Playlists", View::Playlists, current_view),
             nav_button("Browse", View::Browser, current_view),
             nav_button("Search", View::Search, current_view),

@@ -60,6 +60,12 @@ pub enum Message {
     ArtistAlbumsLoaded(String, Vec<String>),
     AlbumSongsLoaded(String, Vec<Song>),
 
+    // === Recently Added / Recently Played history ===
+    RecentlyAddedLoaded(Vec<Song>),
+    RecentlyPlayedLoaded(Vec<RecentlyPlayedEntry>),
+    ClearRecentlyPlayed,
+    ToggleRecentlyPlayedMode,
+
     // === Browser ===
     BrowsePath(String),
     BrowseLoaded(String, Vec<crate::mpd::DirectoryEntry>),
@@ -196,6 +202,8 @@ pub enum View {
     Settings,
     Log,
     ServerStats,
+    RecentlyAdded,
+    RecentlyPlayed,
     Playlists,
     PlaylistDetail(String),
     AddToPlaylist,

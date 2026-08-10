@@ -287,6 +287,138 @@ pub fn push_recent(recents: &mut Vec<RecentAlbum>, entry: RecentAlbum) {
     recents.truncate(8);
 }
 
+// ============================================================================
+// Recently Played history (distinct from `RecentAlbum` above, which is an
+// 8-item "what's been playing this session" glimpse). This is a longer,
+// per-track, per-server history — see docs/plans/recently-added-and-played-history.md.
+// ============================================================================
+
+/// One committed play, as shown in the Recently Played history view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecentlyPlayedEntry {
+    pub file: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    /// Unix seconds.
+    pub played_at: i64,
+}
+
+/// Drop entries older than 30 days, then cap at the 100 newest. `entries`
+/// must already be newest-first; this never reorders.
+pub fn prune_recently_played(entries: &mut Vec<RecentlyPlayedEntry>, now: i64) {
+    const MAX_AGE_SECS: i64 = 30 * 86_400;
+    const CAP: usize = 100;
+    entries.retain(|e| now - e.played_at < MAX_AGE_SECS);
+    entries.truncate(CAP);
+}
+
+/// Tracks continuous play of one file and reports when it should be
+/// committed to history — Spotify/mikMPD-style: a song "counts" once it's
+/// accumulated `min(30, max(5, duration/2))` seconds of actual playback, so
+/// short jingles still register but a track skipped after a few seconds
+/// doesn't. A file change or `tick` returning true both reset the recorder
+/// for the next song.
+#[derive(Debug, Default)]
+pub struct PlayRecorder {
+    file: String,
+    last_elapsed: f64,
+    accumulated_secs: f64,
+    committed: bool,
+}
+
+impl PlayRecorder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Call on every status poll with the current file, whether it's
+    /// playing, the song's elapsed position (seconds into the track), and
+    /// its total duration (if known). Returns `true` exactly once per
+    /// continuous play, the moment the commit threshold is crossed.
+    pub fn tick(
+        &mut self,
+        file: &str,
+        is_playing: bool,
+        elapsed_secs: f64,
+        duration_secs: Option<f64>,
+    ) -> bool {
+        if file != self.file {
+            self.file = file.to_string();
+            self.last_elapsed = elapsed_secs;
+            self.accumulated_secs = 0.0;
+            self.committed = false;
+            return false;
+        }
+        if !is_playing {
+            self.last_elapsed = elapsed_secs;
+            return false;
+        }
+        // Cap a single delta at 5s so a coarse/gapped poll cadence (or a
+        // manual seek) can't fast-forward the accumulator.
+        let delta = (elapsed_secs - self.last_elapsed).max(0.0).min(5.0);
+        self.last_elapsed = elapsed_secs;
+        if self.committed {
+            return false;
+        }
+        self.accumulated_secs += delta;
+        let threshold = duration_secs
+            .map(|d| (d / 2.0).max(5.0).min(30.0))
+            .unwrap_or(30.0);
+        if self.accumulated_secs >= threshold {
+            self.committed = true;
+            return true;
+        }
+        false
+    }
+}
+
+/// One tile's worth of data for the Recently Played "Albums" view — derived
+/// from track history, not recorded separately, so there's one source of
+/// truth (mirrors mikMPD's `recentAlbumGroups`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecentlyPlayedAlbum {
+    pub artist: String,
+    pub album: String,
+    pub last_played: i64,
+}
+
+/// Collapse per-track history into newest-first album groups. `entries` must
+/// already be newest-first; the first occurrence of each (artist, album)
+/// pair wins (it's the most recent one), so this is a single pass.
+pub fn recently_played_albums(entries: &[RecentlyPlayedEntry]) -> Vec<RecentlyPlayedAlbum> {
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut groups = Vec::new();
+    for e in entries {
+        let key = (e.artist.clone(), e.album.clone());
+        if seen.insert(key) {
+            groups.push(RecentlyPlayedAlbum {
+                artist: e.artist.clone(),
+                album: e.album.clone(),
+                last_played: e.played_at,
+            });
+        }
+    }
+    groups
+}
+
+/// "3 min ago" / "2 hours ago" / "5 days ago"-style relative timestamp.
+pub fn relative_time(secs_ago: i64) -> String {
+    let secs_ago = secs_ago.max(0);
+    if secs_ago < 60 {
+        "just now".to_string()
+    } else if secs_ago < 3600 {
+        let mins = secs_ago / 60;
+        format!("{mins} min ago")
+    } else if secs_ago < 86_400 {
+        let hours = secs_ago / 3600;
+        format!("{hours}h ago")
+    } else {
+        let days = secs_ago / 86_400;
+        format!("{days}d ago")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +591,168 @@ mod tests {
         assert_eq!(v.len(), 8);
         // Most recent is at front
         assert_eq!(v[0].album, "9");
+    }
+
+    // --- prune_recently_played ---------------------------------------------
+
+    fn played_entry(secs_ago: i64, now: i64) -> RecentlyPlayedEntry {
+        RecentlyPlayedEntry {
+            file: "song.mp3".into(),
+            title: "T".into(),
+            artist: "A".into(),
+            album: "Al".into(),
+            played_at: now - secs_ago,
+        }
+    }
+
+    #[test]
+    fn prune_recently_played_drops_entries_older_than_30_days() {
+        let now = 1_000_000_000;
+        let mut v = vec![
+            played_entry(10, now),
+            played_entry(31 * 86_400, now),
+        ];
+        prune_recently_played(&mut v, now);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].played_at, now - 10);
+    }
+
+    #[test]
+    fn prune_recently_played_caps_at_100() {
+        let now = 1_000_000_000;
+        let mut v: Vec<RecentlyPlayedEntry> =
+            (0..150).map(|i| played_entry(i, now)).collect();
+        prune_recently_played(&mut v, now);
+        assert_eq!(v.len(), 100);
+    }
+
+    #[test]
+    fn prune_recently_played_applies_both_limits_together() {
+        let now = 1_000_000_000;
+        // 60 fresh entries + 60 stale entries.
+        let mut v: Vec<RecentlyPlayedEntry> = (0..60).map(|i| played_entry(i, now)).collect();
+        v.extend((0..60).map(|_| played_entry(40 * 86_400, now)));
+        prune_recently_played(&mut v, now);
+        assert_eq!(v.len(), 60);
+        assert!(v.iter().all(|e| now - e.played_at < 30 * 86_400));
+    }
+
+    #[test]
+    fn prune_recently_played_empty_input() {
+        let mut v: Vec<RecentlyPlayedEntry> = vec![];
+        prune_recently_played(&mut v, 1_000_000_000);
+        assert!(v.is_empty());
+    }
+
+    // --- PlayRecorder --------------------------------------------------------
+
+    /// Ticks `r` forward from `from` to `to` in <=1s steps (realistic polling
+    /// cadence — winrmpc polls every 500ms) so no delta trips the 5s
+    /// large-jump cap. Returns the last tick's result.
+    fn tick_steps(r: &mut PlayRecorder, file: &str, from: f64, to: f64, duration: Option<f64>) -> bool {
+        let mut elapsed = from;
+        let mut committed = false;
+        while elapsed < to {
+            elapsed = (elapsed + 1.0).min(to);
+            committed = r.tick(file, true, elapsed, duration);
+        }
+        committed
+    }
+
+    #[test]
+    fn play_recorder_commits_at_30_seconds_when_duration_unknown() {
+        let mut r = PlayRecorder::new();
+        assert!(!r.tick("a.mp3", true, 0.0, None)); // file-change tick, resets
+        assert!(!tick_steps(&mut r, "a.mp3", 0.0, 29.0, None));
+        assert!(tick_steps(&mut r, "a.mp3", 29.0, 30.0, None));
+    }
+
+    #[test]
+    fn play_recorder_half_duration_rule_for_short_track() {
+        // 20s track → threshold = max(5, 10) = 10s.
+        let mut r = PlayRecorder::new();
+        r.tick("a.mp3", true, 0.0, Some(20.0));
+        assert!(!tick_steps(&mut r, "a.mp3", 0.0, 9.0, Some(20.0)));
+        assert!(tick_steps(&mut r, "a.mp3", 9.0, 10.0, Some(20.0)));
+    }
+
+    #[test]
+    fn play_recorder_does_not_double_commit_same_file() {
+        let mut r = PlayRecorder::new();
+        r.tick("a.mp3", true, 0.0, None);
+        assert!(tick_steps(&mut r, "a.mp3", 0.0, 30.0, None));
+        assert!(!tick_steps(&mut r, "a.mp3", 30.0, 40.0, None));
+    }
+
+    #[test]
+    fn play_recorder_file_change_resets_accumulator() {
+        let mut r = PlayRecorder::new();
+        r.tick("a.mp3", true, 0.0, None);
+        assert!(!tick_steps(&mut r, "a.mp3", 0.0, 20.0, None)); // accumulated 20s, not yet committed
+        assert!(!r.tick("b.mp3", true, 0.0, None)); // file-change tick itself never commits
+        assert!(!tick_steps(&mut r, "b.mp3", 0.0, 20.0, None)); // only 20s into the new file
+        assert!(tick_steps(&mut r, "b.mp3", 20.0, 30.0, None));
+    }
+
+    #[test]
+    fn play_recorder_pause_freezes_accumulation() {
+        let mut r = PlayRecorder::new();
+        r.tick("a.mp3", true, 0.0, None);
+        tick_steps(&mut r, "a.mp3", 0.0, 20.0, None);
+        // Paused for a while — elapsed doesn't move; must not commit or misbehave.
+        assert!(!r.tick("a.mp3", false, 20.0, None));
+        assert!(!r.tick("a.mp3", false, 20.0, None));
+        // Resume: needs 10 more accumulated seconds to reach 30s.
+        assert!(!tick_steps(&mut r, "a.mp3", 20.0, 25.0, None));
+        assert!(tick_steps(&mut r, "a.mp3", 25.0, 30.0, None));
+    }
+
+    #[test]
+    fn play_recorder_large_elapsed_jump_is_capped_at_5s() {
+        let mut r = PlayRecorder::new();
+        r.tick("a.mp3", true, 0.0, None);
+        // A seek or long poll gap must not instantly satisfy the threshold.
+        assert!(!r.tick("a.mp3", true, 1000.0, None));
+    }
+
+    // --- recently_played_albums ---------------------------------------------
+
+    #[test]
+    fn recently_played_albums_dedupes_newest_wins() {
+        let entries = vec![
+            RecentlyPlayedEntry { file: "1".into(), title: "T1".into(), artist: "A".into(), album: "X".into(), played_at: 300 },
+            RecentlyPlayedEntry { file: "2".into(), title: "T2".into(), artist: "A".into(), album: "X".into(), played_at: 200 },
+            RecentlyPlayedEntry { file: "3".into(), title: "T3".into(), artist: "B".into(), album: "Y".into(), played_at: 100 },
+        ];
+        let groups = recently_played_albums(&entries);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].album, "X");
+        assert_eq!(groups[0].last_played, 300);
+        assert_eq!(groups[1].album, "Y");
+    }
+
+    #[test]
+    fn recently_played_albums_distinct_artists_same_title_stay_separate() {
+        let entries = vec![
+            RecentlyPlayedEntry { file: "1".into(), title: "T".into(), artist: "A".into(), album: "Greatest Hits".into(), played_at: 200 },
+            RecentlyPlayedEntry { file: "2".into(), title: "T".into(), artist: "B".into(), album: "Greatest Hits".into(), played_at: 100 },
+        ];
+        assert_eq!(recently_played_albums(&entries).len(), 2);
+    }
+
+    #[test]
+    fn recently_played_albums_empty_input() {
+        assert!(recently_played_albums(&[]).is_empty());
+    }
+
+    // --- relative_time ---------------------------------------------------
+
+    #[test]
+    fn relative_time_formats_buckets() {
+        assert_eq!(relative_time(30), "just now");
+        assert_eq!(relative_time(90), "1 min ago");
+        assert_eq!(relative_time(3700), "1h ago");
+        assert_eq!(relative_time(2 * 86_400 + 10), "2d ago");
     }
 
     // --- validate_playlist_name ------------------------------------------
