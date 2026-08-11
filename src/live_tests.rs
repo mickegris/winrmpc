@@ -179,9 +179,13 @@ async fn live_album_grouping_collapses_real_multidisc_albums() {
     );
     for g in &multi {
         for v in &g.variants {
+            // Case-insensitive: the grouping key folds case, so a variant
+            // may legitimately differ from the group's first-seen spelling
+            // (one real album is tagged "Decade Of Aggression - Disc 2"
+            // alongside "Decade of Aggression - Disc 1 of 2").
             assert_eq!(
-                album_base_and_disc(v).0,
-                g.base,
+                album_base_and_disc(v).0.to_lowercase(),
+                g.base.to_lowercase(),
                 "variant {v:?} of group {:?} must strip to the group's base",
                 g.base
             );
@@ -194,11 +198,13 @@ async fn live_album_grouping_collapses_real_multidisc_albums() {
     }
 
     // Art keys: every disc of a set must resolve to one shared cache key.
+    // Compared case-insensitively for the same reason as above — the art
+    // key is built from the raw tag, which may vary in case across discs.
     for g in &multi {
         let keys: std::collections::HashSet<String> = g
             .variants
             .iter()
-            .map(|v| art_key_for(&g.artist, v))
+            .map(|v| art_key_for(&g.artist, v).to_lowercase())
             .collect();
         assert_eq!(
             keys.len(),
@@ -416,5 +422,6 @@ async fn snapcast_keeps_the_connection_on_an_rpc_error_response() {
         "an RPC error response proves the socket is fine — don't drop it"
     );
 }
+
 
 

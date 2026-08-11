@@ -257,15 +257,23 @@ pub struct AlbumGroup {
 
 /// Groups `(album_artist, album)` pairs (as returned by
 /// `MpdClient::list_albums_by_artist`) into artist-aware, disc-collapsed
-/// rows. Keyed on `(artist.to_lowercase(), base)`, so same-named albums by
-/// different artists stay separate rows while disc-suffixed variants of the
-/// same artist's album collapse into one. Preserves first-seen order.
+/// rows. Keyed on `(artist.to_lowercase(), base.to_lowercase())`, so
+/// same-named albums by different artists stay separate rows while
+/// disc-suffixed variants of the same artist's album collapse into one.
+/// Preserves first-seen order.
+///
+/// The **base** is case-folded for the key (though the first-seen spelling
+/// is what gets displayed) because inconsistent capitalisation across the
+/// discs of one set is common in real tags — this library has
+/// `"Decade Of Aggression - Disc 2"` alongside
+/// `"Decade of Aggression - Disc 1 of 2"`, which would otherwise be two
+/// rows of one album.
 pub fn group_albums_by_artist(pairs: &[(String, String)]) -> Vec<AlbumGroup> {
     let mut index: HashMap<(String, String), usize> = HashMap::new();
     let mut groups: Vec<AlbumGroup> = Vec::new();
     for (artist, album) in pairs {
         let base = album_base_and_disc(album).0;
-        let key = (artist.to_lowercase(), base.clone());
+        let key = (artist.to_lowercase(), base.to_lowercase());
         match index.get(&key) {
             Some(&i) => {
                 if !groups[i].variants.contains(album) {
@@ -299,13 +307,29 @@ pub fn album_disc_count(variant_count: usize, max_tag_disc: u32) -> usize {
 const DISC_MARKER_WORDS: [&str; 3] = ["disc", "disk", "cd"];
 const DISC_SEPARATORS: [char; 5] = ['-', '\u{2013}', '\u{2014}', ':', ','];
 
-/// Strips a trailing disc marker from an album title — `"X [Disc 1]"`,
-/// `"X (Disk 2)"`, `"X - Disc 1"`, `"X: disc 12"`, bare `"XCD2"` (only when
-/// preceded by a delimiter, so `"ABCD2"` is left alone) — returning
-/// `(base, Some(disc_number))`. Passes the input through unchanged
-/// (`(album, None)`) when there's no marker, when the "marker" has no
-/// digits (`"Live CD"`), or when stripping it would leave an empty base
-/// (`"Disc 1"` alone).
+/// Strips a trailing disc marker from an album title, returning
+/// `(base, Some(disc_number))`. Recognised forms:
+///
+/// | Input | Base | Disc |
+/// |---|---|---|
+/// | `"X [Disc 1]"` / `"X (Disk 2)"` | `X` | 1 / 2 |
+/// | `"X - Disc 1"` / `"X: disc 12"` / `"XCD2"` | `X` | 1 / 12 / 2 |
+/// | `"X (Disc One)"` | `X` | 1 |
+/// | `"X [Disc A]"` / `"X [Disc B]"` | `X` | 1 / 2 |
+/// | `"X - Disc 1 of 2"` / `"X (CD 1/2)"` | `X` | 1 |
+/// | `"X [24-bit Remaster CD 1]"` | `X [24-bit Remaster]` | 1 |
+///
+/// That last row is the only case where the base keeps a bracket: when the
+/// marker is merely the *tail* of a qualifier bracket, only the marker is
+/// removed and the qualifier stays. Dropping the whole bracket would fold a
+/// remaster into the plain edition, which the library may hold separately —
+/// and it's the same reason `strip_edition_qualifier` is lookup-only and
+/// never touches a cache key.
+///
+/// Passes the input through unchanged (`(album, None)`) when there is no
+/// marker, when the "marker" carries no disc identifier (`"Live CD"`,
+/// `"Killers (CDM 7520192)"`, `"… [2001 CD Edition]"`), or when stripping
+/// would leave an empty base (`"Disc 1"` alone).
 pub fn album_base_and_disc(album: &str) -> (String, Option<u32>) {
     let trimmed = album.trim_end();
     if trimmed.is_empty() {
@@ -315,13 +339,27 @@ pub fn album_base_and_disc(album: &str) -> (String, Option<u32>) {
     // Bracketed form: "... [Disc 1]" / "... (CD 2)".
     if let Some(&last) = trimmed.as_bytes().last() {
         if last == b']' || last == b')' {
-            let open = if last == b']' { '[' } else { '(' };
+            let (open, close) = if last == b']' { ('[', ']') } else { ('(', ')') };
             if let Some(open_idx) = trimmed.rfind(open) {
                 let inner = &trimmed[open_idx + 1..trimmed.len() - 1];
+
+                // (a) The whole bracket is the marker: "X [Disc 1]" -> "X".
                 if let Some(n) = parse_disc_marker_whole(inner) {
                     let base = trim_trailing_separator(&trimmed[..open_idx]);
                     if !base.is_empty() {
-                        return (base.to_string(), Some(n));
+                        return (strip_disc_count_qualifier(base).to_string(), Some(n));
+                    }
+                }
+
+                // (b) The marker is only the tail of a qualifier bracket:
+                // "X [24-bit Remaster CD 1]" -> "X [24-bit Remaster]".
+                // Keeping the qualifier is what lets both discs of a
+                // remastered set collapse together without also merging
+                // them into a differently-mastered copy of the album.
+                if let Some((rest, n)) = parse_bare_trailing_marker(inner) {
+                    let before = &trimmed[..open_idx];
+                    if !before.trim().is_empty() {
+                        return (format!("{before}{open}{rest}{close}"), Some(n));
                     }
                 }
             }
@@ -330,10 +368,55 @@ pub fn album_base_and_disc(album: &str) -> (String, Option<u32>) {
 
     // Bare trailing form: "... - Disc 1" / "...CD2" (no brackets).
     if let Some((base, n)) = parse_bare_trailing_marker(trimmed) {
-        return (base, Some(n));
+        return (strip_disc_count_qualifier(&base).to_string(), Some(n));
     }
 
-    (album.to_string(), None)
+    (strip_disc_count_qualifier(album).to_string(), None)
+}
+
+/// Drops a trailing "how many discs are in the box" bracket — `"(2CD)"`,
+/// `"(3 CDs)"`, `"[2 Disc]"`. That's a packaging note, not a disc
+/// *identifier* and not part of the title, and it is applied to every base
+/// (marker or not) because it has to be: this library tags one album's two
+/// discs as `"Nostradamus (2CD) (CD 1/2)"` and `"Nostradamus (disc 2)"`,
+/// which only land on the same base if the count bracket goes away whether
+/// or not a disc marker followed it.
+fn strip_disc_count_qualifier(s: &str) -> &str {
+    let trimmed = s.trim_end();
+    let Some(&last) = trimmed.as_bytes().last() else { return s };
+    let open = match last {
+        b']' => '[',
+        b')' => '(',
+        _ => return s,
+    };
+    let Some(open_idx) = trimmed.rfind(open) else { return s };
+    if !is_disc_count_phrase(&trimmed[open_idx + 1..trimmed.len() - 1]) {
+        return s;
+    }
+    let base = trim_trailing_separator(&trimmed[..open_idx]);
+    if base.is_empty() {
+        s
+    } else {
+        base
+    }
+}
+
+/// True for `"2CD"`, `"2 CD"`, `"3-CDs"`, `"2 Disc"` — a count, then a
+/// marker word, and nothing else. Deliberately narrow: `"24-bit Remaster"`
+/// also starts with digits, but what follows isn't a marker word.
+fn is_disc_count_phrase(inner: &str) -> bool {
+    let inner = inner.trim().to_lowercase();
+    let digits_end = inner
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(inner.len());
+    // A count of 1 disc isn't a box, and >99 isn't a count.
+    if digits_end == 0 || digits_end > 2 {
+        return false;
+    }
+    let rest = inner[digits_end..].trim_start_matches([' ', '-']);
+    DISC_MARKER_WORDS
+        .iter()
+        .any(|w| rest == *w || (rest.len() == w.len() + 1 && rest.starts_with(w) && rest.ends_with('s')))
 }
 
 /// The single source of truth for building an album's art-cache key —
@@ -369,20 +452,100 @@ fn trim_trailing_separator(s: &str) -> &str {
         .trim_end()
 }
 
-/// Parses e.g. "disc 1", "disk.2", "cd12" when the *entire* (trimmed)
-/// input is exactly that — used for the content of a trailing bracket.
+/// Parses e.g. "disc 1", "disk.2", "cd12", "Disc One", "Disc A",
+/// "CD 1/2" when the *entire* (trimmed) input is exactly that — used for
+/// the content of a trailing bracket.
+///
+/// Operates on a lowercased copy and never indexes back into `s`, so the
+/// non-length-preserving-`to_lowercase` hazard `rfind_ascii_ci` exists to
+/// avoid doesn't apply here.
 fn parse_disc_marker_whole(s: &str) -> Option<u32> {
-    let s = s.trim();
-    let lower = s.to_lowercase();
+    let lower = s.trim().to_lowercase();
     for word in DISC_MARKER_WORDS {
-        if let Some(rest) = lower.strip_prefix(word) {
-            let digits = rest.trim_start_matches('.').trim_start();
-            if is_short_digit_run(digits) {
-                return digits.parse().ok();
+        let Some(after_word) = lower.strip_prefix(word) else { continue };
+        let rest = after_word.trim_start_matches('.').trim_start();
+        if let Some(n) = parse_disc_number(rest) {
+            return Some(n);
+        }
+        // A spelled-out number or a letter disc id is only accepted when
+        // something separated it from the marker word. Without that,
+        // "(CDs)" would read as "CD, disc S" and "(CDone)" as "CD, disc 1".
+        if after_word.len() != rest.len() {
+            if let Some(n) = parse_disc_word_or_letter(rest) {
+                return Some(n);
             }
         }
     }
     None
+}
+
+/// Real multi-disc sets are small; anything larger is far more likely to be
+/// a catalogue number or a year that happens to sit after a marker word.
+const MAX_DISC_NUMBER: u32 = 99;
+
+/// A numeric disc identifier: a short digit run (`"1"`, `"12"`), or the
+/// "which of how many" forms `"1 of 2"` / `"1/2"`, from which the first
+/// number is taken.
+fn parse_disc_number(s: &str) -> Option<u32> {
+    let head = disc_number_head(s.trim());
+    if !is_short_digit_run(head) {
+        return None;
+    }
+    head.parse().ok().filter(|n| *n <= MAX_DISC_NUMBER)
+}
+
+/// For `"1 of 2"` / `"1/2"` returns `"1"`; otherwise returns `s` unchanged.
+/// The total is required to be a short digit run too, so `"1 of these"`
+/// isn't mistaken for a disc-of-total form.
+fn disc_number_head(s: &str) -> &str {
+    if let Some((head, total)) = s.split_once('/') {
+        if is_short_digit_run(total.trim()) {
+            return head.trim();
+        }
+    }
+    // `rfind_ascii_ci` rather than searching a lowercased copy: the index
+    // is used to slice `s` itself.
+    if let Some(idx) = rfind_ascii_ci(s, " of ") {
+        let total = &s[idx + " of ".len()..];
+        if is_short_digit_run(total.trim()) {
+            return s[..idx].trim();
+        }
+    }
+    s
+}
+
+const DISC_WORD_NUMBERS: [(&str, u32); 12] = [
+    ("one", 1),
+    ("two", 2),
+    ("three", 3),
+    ("four", 4),
+    ("five", 5),
+    ("six", 6),
+    ("seven", 7),
+    ("eight", 8),
+    ("nine", 9),
+    ("ten", 10),
+    ("eleven", 11),
+    ("twelve", 12),
+];
+
+/// A spelled-out disc number (`"One"`) or a single-letter disc id
+/// (`"A"` -> 1, `"B"` -> 2), as used by e.g. Depeche Mode's `101 [Disc A]`.
+fn parse_disc_word_or_letter(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let lower = s.to_ascii_lowercase();
+    if let Some((_, n)) = DISC_WORD_NUMBERS.iter().find(|(w, _)| *w == lower) {
+        return Some(*n);
+    }
+    let mut chars = s.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() || !c.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(u32::from(c.to_ascii_lowercase() as u8 - b'a') + 1)
 }
 
 fn is_short_digit_run(s: &str) -> bool {
@@ -396,17 +559,21 @@ fn parse_bare_trailing_marker(s: &str) -> Option<(String, u32)> {
     for word in DISC_MARKER_WORDS {
         let Some(idx) = rfind_ascii_ci(s, word) else { continue };
         let after = &s[idx + word.len()..];
-        let digits = after.trim_start_matches('.').trim_start();
-        if !is_short_digit_run(digits) {
+        let ident = after.trim_start_matches('.').trim_start();
+        // Same delimiter rule as `parse_disc_marker_whole`: digits may abut
+        // the marker word ("CD2"), a spelled-out number or letter may not.
+        let separated = after.len() != ident.len();
+        let Some(n) = parse_disc_number(ident)
+            .or_else(|| separated.then(|| parse_disc_word_or_letter(ident)).flatten())
+        else {
             continue;
-        }
+        };
         let before = &s[..idx];
         let boundary_ok = before.is_empty()
             || before.ends_with(|c: char| c.is_whitespace() || DISC_SEPARATORS.contains(&c));
         if !boundary_ok {
             continue;
         }
-        let n: u32 = digits.parse().ok()?;
         let base = trim_trailing_separator(before);
         if !base.is_empty() {
             return Some((base.to_string(), n));
@@ -857,6 +1024,133 @@ mod tests {
         let (base, disc) = album_base_and_disc("Blast   -   [Disc 1]");
         assert_eq!(base, "Blast");
         assert_eq!(disc, Some(1));
+    }
+
+    // --- disc-marker forms found in a real 9846-song library ------------
+    //
+    // Every string below is a genuine album tag from the library these rules
+    // were validated against. Keeping the real names (rather than tidy
+    // invented ones) is the point: each captures a tagging habit that
+    // actually occurs, and the negative cases are the ones a looser matcher
+    // would wrongly strip.
+
+    #[test]
+    fn album_base_and_disc_letter_disc_ids() {
+        assert_eq!(album_base_and_disc("101 [Disc A]"), ("101".into(), Some(1)));
+        assert_eq!(album_base_and_disc("101 [Disc B]"), ("101".into(), Some(2)));
+    }
+
+    #[test]
+    fn album_base_and_disc_spelled_out_number() {
+        assert_eq!(album_base_and_disc("Lotus (Disc One)"), ("Lotus".into(), Some(1)));
+        assert_eq!(album_base_and_disc("X (Disc Three)"), ("X".into(), Some(3)));
+    }
+
+    #[test]
+    fn album_base_and_disc_of_total_forms() {
+        assert_eq!(
+            album_base_and_disc("Decade of Aggression - Disc 1 of 2"),
+            ("Decade of Aggression".into(), Some(1)),
+        );
+        assert_eq!(
+            album_base_and_disc("Nostradamus (2CD) (CD 1/2)"),
+            ("Nostradamus".into(), Some(1)),
+        );
+    }
+
+    /// A marker at the tail of a qualifier bracket strips only the marker —
+    /// the qualifier stays, so a remastered set collapses across its discs
+    /// without merging into a differently-mastered copy.
+    #[test]
+    fn album_base_and_disc_marker_inside_a_qualifier_bracket() {
+        assert_eq!(
+            album_base_and_disc("Clutching at Straws [24-bit Remaster CD 1]"),
+            ("Clutching at Straws [24-bit Remaster]".into(), Some(1)),
+        );
+        assert_eq!(
+            album_base_and_disc("Misplaced Childhood [24-bit Remaster, CD 2]"),
+            ("Misplaced Childhood [24-bit Remaster]".into(), Some(2)),
+        );
+        // Both discs of one set must land on the same base.
+        assert_eq!(
+            album_base_and_disc("Clutching at Straws [24-bit Remaster CD 1]").0,
+            album_base_and_disc("Clutching at Straws [24-bit Remaster CD 2]").0,
+        );
+    }
+
+    #[test]
+    fn album_base_and_disc_strips_disc_count_qualifier() {
+        assert_eq!(album_base_and_disc("X (2CD)"), ("X".into(), None));
+        assert_eq!(album_base_and_disc("X (3 CDs)"), ("X".into(), None));
+        assert_eq!(album_base_and_disc("X [2 Disc]"), ("X".into(), None));
+        // The count bracket must go whether or not a disc marker follows it,
+        // or the two discs of Nostradamus never meet.
+        assert_eq!(
+            album_base_and_disc("Nostradamus (2CD) (CD 1/2)").0,
+            album_base_and_disc("Nostradamus (disc 2)").0,
+        );
+    }
+
+    /// Names that look marker-ish but must be left completely alone. These
+    /// are the false positives a wider matcher buys.
+    #[test]
+    fn album_base_and_disc_real_world_non_markers_pass_through() {
+        for name in [
+            "Killers (CDM 7520192)",                        // catalogue number
+            "Screaming For Vengeance [2001 CD Edition]",     // an edition
+            "Journeyman [2014 Audio Fidelity SACD AFZ 180]", // an edition
+            "Lightbulb Sun (Special Edition)",               // no marker at all
+            "Live CD",                                       // marker, no disc id
+        ] {
+            assert_eq!(
+                album_base_and_disc(name),
+                (name.to_string(), None),
+                "{name:?} must pass through untouched"
+            );
+        }
+    }
+
+    /// A letter or spelled-out number is only a disc id when something
+    /// separates it from the marker word — otherwise "(CDs)" reads as
+    /// "CD, disc S". Digits may still abut ("CD2"), which is a real form.
+    #[test]
+    fn album_base_and_disc_letter_requires_a_separator() {
+        assert_eq!(album_base_and_disc("X (CDs)"), ("X (CDs)".into(), None));
+        assert_eq!(album_base_and_disc("X (CDone)"), ("X (CDone)".into(), None));
+        assert_eq!(album_base_and_disc("X (CD2)"), ("X".into(), Some(2)));
+    }
+
+    /// Disc numbers are small. A 3-digit run after a marker word is far more
+    /// likely to be a catalogue number or a year.
+    #[test]
+    fn album_base_and_disc_rejects_implausibly_large_disc_numbers() {
+        assert_eq!(album_base_and_disc("X (CD 180)"), ("X (CD 180)".into(), None));
+        assert_eq!(album_base_and_disc("X (CD 12)"), ("X".into(), Some(12)));
+    }
+
+    #[test]
+    fn group_albums_folds_case_differences_in_the_base() {
+        // Real pair: one album, two rips, inconsistent capitalisation.
+        let pairs = gpairs(&[
+            ("Supertramp", "Crime Of The Century"),
+            ("Supertramp", "Crime of the Century"),
+        ]);
+        let groups = group_albums_by_artist(&pairs);
+        assert_eq!(groups.len(), 1);
+        // First-seen spelling is what gets displayed.
+        assert_eq!(groups[0].base, "Crime Of The Century");
+        assert_eq!(groups[0].variants.len(), 2);
+    }
+
+    #[test]
+    fn group_albums_folds_case_across_disc_variants() {
+        let pairs = gpairs(&[
+            ("Slayer", "Decade Of Aggression - Disc 2"),
+            ("Slayer", "Decade of Aggression - Disc 1 of 2"),
+        ]);
+        let groups = group_albums_by_artist(&pairs);
+        assert_eq!(groups.len(), 1, "one album, not two");
+        assert_eq!(groups[0].variants.len(), 2);
     }
 
     #[test]

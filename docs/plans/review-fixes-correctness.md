@@ -452,3 +452,70 @@ this round: widening the matcher is exactly the kind of change that starts
 stripping real album titles, and it wants its own plan with these six rows as
 the test corpus. It belongs with the deferred item 6 (punctuation folding) as
 a single "grouping-key robustness" follow-up.
+
+---
+
+## Album-matching round: closing the real-world gaps
+
+The gaps measured above are now **fixed**, and re-measured against the same
+library: **829 rows → 782 groups, 42 collapsed** (was 789 / 35).
+
+| Form added | Example from the library | Base | Disc |
+|---|---|---|---|
+| Letter disc ids | `101 [Disc A]` / `[Disc B]` | `101` | 1 / 2 |
+| Spelled-out numbers | `Lotus (Disc One)` | `Lotus` | 1 |
+| Of-total | `Decade of Aggression - Disc 1 of 2` | `Decade of Aggression` | 1 |
+| Slash-total | `Nostradamus (2CD) (CD 1/2)` | `Nostradamus` | 1 |
+| Marker at the tail of a qualifier bracket | `Clutching at Straws [24-bit Remaster CD 1]` | `Clutching at Straws [24-bit Remaster]` | 1 |
+| Disc-*count* bracket | `X (2CD)`, `X (3 CDs)` | `X` | — |
+
+Two design calls worth keeping:
+
+- **The qualifier bracket is preserved, not dropped.** `[24-bit Remaster CD 1]`
+  becomes `[24-bit Remaster]`, not nothing. Both discs still collapse, but a
+  remaster doesn't get merged into a differently-mastered copy of the same
+  album that the library may hold separately — the same reasoning that keeps
+  `strip_edition_qualifier` lookup-only.
+- **The disc-count bracket is stripped unconditionally**, even with no disc
+  marker following. It has to be: this library tags one album's two discs as
+  `Nostradamus (2CD) (CD 1/2)` and `Nostradamus (disc 2)`, which only land on
+  the same base if `(2CD)` always goes.
+
+**Grouping keys now case-fold the base too** (`base.to_lowercase()`, first-seen
+spelling still displayed). This was a separate real split: `Crime Of The
+Century` / `Crime of the Century`, `Music For The Jilted Generation` /
+`Music for the Jilted Generation`, and `Decade Of/of Aggression` were each two
+rows of one album. This is a slice of deferred item 6 — the *case* half of the
+folding. The punctuation half (en/em-dash, smart quotes) is still deferred; no
+album in this library needed it.
+
+### Guard rails against over-stripping
+
+Widening the matcher is how you start eating real titles, so each addition is
+gated:
+
+- A spelled-out number or a letter id is only accepted when a separator sits
+  between it and the marker word — otherwise `(CDs)` reads as "CD, disc S" and
+  `(CDone)` as "CD, disc 1". Digits may still abut, since `CD2` is a real form.
+- Disc numbers are capped at `MAX_DISC_NUMBER` (99). Without it,
+  `[… SACD 180]` would strip as disc 180.
+- The count-bracket rule requires digits *then* a marker word and nothing
+  else, so `[24-bit Remaster]` — which also starts with digits — is untouched.
+
+### How this was validated
+
+Not by unit tests alone. Every one of the **88 names the matcher alters** and
+all **42 collapsed groups** were dumped from the real library and read
+individually to confirm each strip and each merge is genuinely the same
+album. That review is what caught the case-folding split and the
+`Nostradamus` mismatch, neither of which was in the original finding list.
+The negative corpus (`Killers (CDM 7520192)`,
+`Screaming For Vengeance [2001 CD Edition]`,
+`Journeyman [2014 Audio Fidelity SACD AFZ 180]`) is now a unit test, since
+those are exactly what a looser matcher would break.
+
+### Still not handled, deliberately
+
+`Volume 3 Disc3 (Rem.2007)` — marker followed by a *non*-marker bracket.
+Handling it means stripping from the middle of the name, which is a
+materially riskier rule, and it is a lone row: collapsing gains nothing.
