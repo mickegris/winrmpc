@@ -257,9 +257,21 @@ impl MpdClient {
         let started = std::time::Instant::now();
         let result = conn.command_list(&refs).await;
         let elapsed = started.elapsed();
+        // `duration_ms` must be a structured tracing field, not just text in
+        // the message: `logger::InAppLayer` reads that field into
+        // `LogEntry.duration_ms`, which is what drives `is_slow()` and the
+        // Log view's ⚠ prefix. A bulk enqueue is exactly the command worth
+        // flagging when it runs long, so it has to carry the field like
+        // `cmd()` does.
+        let duration_ms = elapsed.as_millis() as u64;
         match &result {
-            Ok(_) => tracing::info!("→ add_all ({} tracks, {elapsed:?})", uris.len()),
-            Err(e) => tracing::warn!("← ERR add_all: {e} ({elapsed:?})"),
+            Ok(_) => tracing::info!(duration_ms, "→ add_all ({} tracks, {elapsed:?})", uris.len()),
+            Err(e) => tracing::warn!(
+                duration_ms,
+                "← ERR add_all: {e} ({elapsed:?}) — MPD aborts a command list at the \
+                 first failure, so some of the {} tracks were not queued",
+                uris.len()
+            ),
         }
         result.map(|_| ())
     }

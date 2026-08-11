@@ -35,6 +35,11 @@ impl SnapcastClient {
         *self.conn.lock().await = None;
     }
 
+    /// Whether a connection object is currently held. Note this is a
+    /// bookkeeping check, not a socket probe — it only stays accurate
+    /// because `request()` drops the connection the moment a transport
+    /// error proves it dead, so a `true` here means "not known to be
+    /// broken" rather than "verified alive".
     pub async fn is_connected(&self) -> bool {
         self.conn.lock().await.is_some()
     }
@@ -49,7 +54,24 @@ impl SnapcastClient {
     async fn request(&self, method: &str, params: Value) -> SnapcastResult<Value> {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(SnapcastError::NotConnected)?;
-        conn.request(method, params).await
+        let result = conn.request(method, params).await;
+        // A transport failure means this socket is dead (snapserver
+        // restarted, LAN blip, laptop resumed from sleep). Drop it here so
+        // `is_connected()` reports false and the next `on_view_enter` /
+        // poll reconnects. Without this the connection object lingers as
+        // `Some` forever, the `if !is_connected() { connect() }` guard
+        // never fires again, and the whole view is stuck erroring until
+        // the app is restarted or the server switched.
+        //
+        // `Rpc` errors are deliberately excluded: those are well-formed
+        // JSON-RPC error *responses*, which prove the connection is fine.
+        if matches!(
+            result,
+            Err(SnapcastError::Connection(_) | SnapcastError::Io(_) | SnapcastError::Json(_))
+        ) {
+            *guard = None;
+        }
+        result
     }
 
     /// `Server.GetStatus` — the full group/client/stream tree.

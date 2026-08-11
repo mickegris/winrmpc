@@ -1,6 +1,9 @@
 # Plan: Correctness + panic fixes from the post-parity code review
 
-Status: **items 1-5 implemented.** Item 6 (punctuation-folded grouping key)
+Status: **items 1-5 implemented** (in `f423f18`), and the six findings from
+a **second review round against that fix commit itself** are implemented in
+the follow-up commit — see "Second review round" at the bottom of this file.
+Item 6 (punctuation-folded grouping key)
 remains **deliberately deferred** — it was already marked "follow-up sized,
 not part of the urgent batch" in this plan's own text, and that call still
 stands; it's a genuine parity gap, not a regression, and is sized more like
@@ -37,11 +40,16 @@ commit since none of them touch overlapping code (verified by a clean build
   Genre-detail-originated album selection, which is exactly the unsafe
   merge mikMPD's rule exists to prevent. So `fetch_album_bio` keeps
   `artist: Option<String>` for keying and derives a separate
-  `query_artist: String` (with the fallback) only for the MusicBrainz call.
+  `query_artist: String` only for the MusicBrainz call.
   New `album_scoped_key(artist: Option<&str>, album: &str)` helper in
   `types.rs` backs both the `album_bios` and `album_songs` maps (the
   render arm's lookup key and `AlbumSongsLoaded`'s stored key were both
   updated to match).
+  **Superseded in the follow-up round** (see "Second review round" below):
+  splitting key from query was right, but keeping the `selected_artist`
+  *fallback* in `query_artist` was not — it made the stored value
+  nondeterministic under a deterministic key. The fallback is now gone
+  entirely; `query_artist` is just `artist.unwrap_or_default()`.
 - Item 4's fix is `rfind_ascii_ci`, not literally `char_indices()` +
   `eq_ignore_ascii_case` inlined at the call site as sketched — factored
   into its own function since it's reused by nothing else but reads much
@@ -364,3 +372,44 @@ un-folded.
   two different artists' same-titled albums back to back and confirm each
   shows its own bio; connect to server A, open Snapcast, switch to server B,
   reopen Snapcast, confirm it reflects B.
+
+---
+
+## Second review round (review of the fix commit itself)
+
+`f423f18` — the commit implementing items 1-5 above plus all four items of
+[`review-fixes-performance.md`](review-fixes-performance.md) — was itself
+code-reviewed. Six findings, **all fixed in the immediate follow-up
+commit**; nothing from this round is deferred.
+
+| # | Finding | Where |
+|---|---------|-------|
+| 1 | **Snapcast could no longer self-heal after a connection drop.** Gating `connect()` on `is_connected()` was correct in isolation, but `is_connected()` is a bare `Option::is_some()` and *nothing* ever cleared a dead connection — `request()` returned `Err` on EOF and left `conn` as `Some`, and `SnapcastUnreachable` only stored an error string. After any snapserver restart or LAN blip the 2s poll and every view re-entry failed forever; only `SwitchServer` or an app restart recovered. A regression: the wasteful unconditional `connect()` it replaced *did* heal. Fixed by dropping the connection in `SnapcastClient::request()` on `Connection`/`Io`/`Json` errors (but **not** on `Rpc` — a well-formed JSON-RPC error response proves the socket is fine). The performance plan's §3 offered two options and only the probe half was implemented; the probe alone is insufficient. | `snapcast/client.rs` |
+| 2 | **Artist-less album bios persisted a wrong-artist result under a shared key.** With `artist: None` the redb key is `"\x1f{album}"` for every artist, while `query_artist` still fell back to the transient `self.selected_artist` — so a bio fetched for whatever artist page happened to be open got written permanently into a slot shared by every artist-less album of that title, and read back for unrelated ones. Nondeterministic content under a deterministic key. Fixed by removing the fallback outright (see the amended item-2 note above). | `ui/app.rs` |
+| 3 | **`PlayAlbum` could silently start playback on a truncated album.** `command_list` aborts at the first bad URI and the call site did `.ok()`, having already cleared the queue. Fixed by logging a "queued a partial album" warning at both `PlayAlbum` and `QueueAlbum` instead of discarding the error. | `ui/app.rs` |
+| 4 | **`add_all` omitted the `duration_ms` structured tracing field**, so the one command this whole change exists to make fast could never trip `LogEntry::is_slow()`'s ⚠ in the Log view. Fixed. | `mpd/client.rs` |
+| 5 | **The `art_key_for` fix didn't actually land for Recently Played.** `RecentlyPlayedEntry.artist` is the *track* artist, but art is only ever cached under the *album* artist, so compilation tiles still missed. Fixed by recording `album_artist` alongside `artist` (`#[serde(default)]` for existing history) and adding `art_artist()`, which `recently_played_albums` now groups and labels by — which also collapses a compilation to one tile instead of one per guest artist. | `mpd/types.rs`, `ui/app.rs` |
+| 6 | **The new `decode_snap_status` test was tautological** — it compared against `decode_snap_groups`/`decode_snap_streams`, which are now thin wrappers over the function under test, so it asserted a function equals itself. Replaced with literal expected values, plus a degrades-to-empty case. | `snapcast/types.rs` |
+
+One finding from that review was **investigated and rejected**: the claim
+that `decode_snap_groups`/`decode_snap_streams` are now dead outside tests
+and would warn `never used`. A clean full rebuild emits zero warnings —
+they stay reachable as `pub` items of a `pub mod`. The tautological-test
+half of that finding was real and is #6 above.
+
+### Testing added this round
+
+- `art_artist_prefers_album_artist_and_falls_back_to_track_artist` —
+  covers the `#[serde(default)]` back-compat path for history written
+  before `album_artist` existed.
+- `recently_played_albums_art_key_matches_song_art_key_on_a_compilation` —
+  the actual regression guard: builds a `Song` with a differing track /
+  album artist *and* a disc suffix, and asserts the key the tile looks up
+  equals the key `Song::art_key()` caches under.
+- `recently_played_albums_collapse_guest_artists_of_one_compilation`.
+- `decode_snap_status_returns_both_halves_from_one_parse` and
+  `decode_snap_status_degrades_to_empty_halves_on_unexpected_shape`.
+- **Not unit-testable without a mock socket** (consistent with the existing
+  `protocol.rs` gap): the Snapcast drop-on-transport-error path. Manual QA
+  instead — open the Snapcast view, restart snapserver, confirm the view
+  recovers on its own within a poll or two rather than needing a restart.

@@ -1,6 +1,12 @@
 # Plan: Performance + accuracy fixes from the post-parity code review
 
-Status: **all 4 items implemented**, in the same commit as
+Status: **all 4 items implemented** (in `f423f18`). A second review round
+against that commit found follow-up defects in items 1, 3 and 4 — the
+Snapcast reconnect gate could no longer self-heal, `add_all`'s truncation
+was swallowed at the call site, and `add_all` omitted the `duration_ms`
+tracing field. All are fixed in the follow-up commit; see "Second review
+round" in [`review-fixes-correctness.md`](review-fixes-correctness.md) for
+the full table. Originally landed in the same commit as
 [`review-fixes-correctness.md`](review-fixes-correctness.md) (items 3-4
 here directly interact with that plan's item 3, and the plan itself said to
 do them together). Same source: review of the seven parity commits on

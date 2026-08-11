@@ -521,10 +521,33 @@ pub fn push_recent(recents: &mut Vec<RecentAlbum>, entry: RecentAlbum) {
 pub struct RecentlyPlayedEntry {
     pub file: String,
     pub title: String,
+    /// The *track* artist (`display_artist()`) — what the history list
+    /// shows per row. Not usable as an art-cache key; see `album_artist`.
     pub artist: String,
+    /// The *album* artist (`display_album_artist()`), recorded separately
+    /// because art is always cached under that (`Song::art_key()`), never
+    /// under the track artist. On a compilation or a "feat." track the two
+    /// differ, and keying art off `artist` silently missed the cache.
+    ///
+    /// `#[serde(default)]` for entries persisted before this field existed:
+    /// they deserialize to `""`, and `art_artist()` falls back to `artist`.
+    #[serde(default)]
+    pub album_artist: String,
     pub album: String,
     /// Unix seconds.
     pub played_at: i64,
+}
+
+impl RecentlyPlayedEntry {
+    /// The artist to build an art-cache key from — `album_artist` when
+    /// known, else the track artist (pre-`album_artist` history entries).
+    pub fn art_artist(&self) -> &str {
+        if self.album_artist.is_empty() {
+            &self.artist
+        } else {
+            &self.album_artist
+        }
+    }
 }
 
 /// Drop entries older than 30 days, then cap at the 100 newest. `entries`
@@ -613,10 +636,15 @@ pub fn recently_played_albums(entries: &[RecentlyPlayedEntry]) -> Vec<RecentlyPl
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut groups = Vec::new();
     for e in entries {
-        let key = (e.artist.clone(), e.album.clone());
+        // Group and label by the *album* artist: an album tile is about the
+        // album, so a compilation collapses to one tile instead of one per
+        // guest artist, and `artist` here is then the same value
+        // `Song::art_key()` cached the art under.
+        let artist = e.art_artist();
+        let key = (artist.to_string(), e.album.clone());
         if seen.insert(key) {
             groups.push(RecentlyPlayedAlbum {
-                artist: e.artist.clone(),
+                artist: artist.to_string(),
                 album: e.album.clone(),
                 last_played: e.played_at,
             });
@@ -1027,6 +1055,7 @@ mod tests {
             file: "song.mp3".into(),
             title: "T".into(),
             artist: "A".into(),
+            album_artist: String::new(),
             album: "Al".into(),
             played_at: now - secs_ago,
         }
@@ -1147,9 +1176,9 @@ mod tests {
     #[test]
     fn recently_played_albums_dedupes_newest_wins() {
         let entries = vec![
-            RecentlyPlayedEntry { file: "1".into(), title: "T1".into(), artist: "A".into(), album: "X".into(), played_at: 300 },
-            RecentlyPlayedEntry { file: "2".into(), title: "T2".into(), artist: "A".into(), album: "X".into(), played_at: 200 },
-            RecentlyPlayedEntry { file: "3".into(), title: "T3".into(), artist: "B".into(), album: "Y".into(), played_at: 100 },
+            RecentlyPlayedEntry { file: "1".into(), title: "T1".into(), artist: "A".into(), album_artist: String::new(), album: "X".into(), played_at: 300 },
+            RecentlyPlayedEntry { file: "2".into(), title: "T2".into(), artist: "A".into(), album_artist: String::new(), album: "X".into(), played_at: 200 },
+            RecentlyPlayedEntry { file: "3".into(), title: "T3".into(), artist: "B".into(), album_artist: String::new(), album: "Y".into(), played_at: 100 },
         ];
         let groups = recently_played_albums(&entries);
         assert_eq!(groups.len(), 2);
@@ -1161,8 +1190,8 @@ mod tests {
     #[test]
     fn recently_played_albums_distinct_artists_same_title_stay_separate() {
         let entries = vec![
-            RecentlyPlayedEntry { file: "1".into(), title: "T".into(), artist: "A".into(), album: "Greatest Hits".into(), played_at: 200 },
-            RecentlyPlayedEntry { file: "2".into(), title: "T".into(), artist: "B".into(), album: "Greatest Hits".into(), played_at: 100 },
+            RecentlyPlayedEntry { file: "1".into(), title: "T".into(), artist: "A".into(), album_artist: String::new(), album: "Greatest Hits".into(), played_at: 200 },
+            RecentlyPlayedEntry { file: "2".into(), title: "T".into(), artist: "B".into(), album_artist: String::new(), album: "Greatest Hits".into(), played_at: 100 },
         ];
         assert_eq!(recently_played_albums(&entries).len(), 2);
     }
@@ -1170,6 +1199,65 @@ mod tests {
     #[test]
     fn recently_played_albums_empty_input() {
         assert!(recently_played_albums(&[]).is_empty());
+    }
+
+    #[test]
+    fn art_artist_prefers_album_artist_and_falls_back_to_track_artist() {
+        let mut e = RecentlyPlayedEntry {
+            file: "1".into(),
+            title: "T".into(),
+            artist: "Guest Artist".into(),
+            album_artist: "Various Artists".into(),
+            album: "Comp".into(),
+            played_at: 0,
+        };
+        assert_eq!(e.art_artist(), "Various Artists");
+        // Entries persisted before `album_artist` existed deserialize to "".
+        e.album_artist = String::new();
+        assert_eq!(e.art_artist(), "Guest Artist");
+    }
+
+    #[test]
+    fn recently_played_albums_art_key_matches_song_art_key_on_a_compilation() {
+        // The bug this guards: history recorded the *track* artist, while
+        // art is always cached under `Song::art_key()` (the *album* artist),
+        // so compilation tiles never found their art.
+        let mut track = song();
+        track.artist = Some("Guest Artist".into());
+        track.album_artist = Some("Various Artists".into());
+        track.album = Some("Comp [Disc 1]".into());
+
+        let entries = vec![RecentlyPlayedEntry {
+            file: "1".into(),
+            title: "T".into(),
+            artist: track.display_artist().to_string(),
+            album_artist: track.display_album_artist().to_string(),
+            album: track.display_album().to_string(),
+            played_at: 0,
+        }];
+        let groups = recently_played_albums(&entries);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            art_key_for(&groups[0].artist, &groups[0].album),
+            track.art_key(),
+        );
+    }
+
+    #[test]
+    fn recently_played_albums_collapse_guest_artists_of_one_compilation() {
+        let mk = |artist: &str, played_at: i64| RecentlyPlayedEntry {
+            file: artist.into(),
+            title: "T".into(),
+            artist: artist.into(),
+            album_artist: "Various Artists".into(),
+            album: "Comp".into(),
+            played_at,
+        };
+        let entries = vec![mk("Guest A", 300), mk("Guest B", 200)];
+        let groups = recently_played_albums(&entries);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].artist, "Various Artists");
+        assert_eq!(groups[0].last_played, 300);
     }
 
     // --- relative_time ---------------------------------------------------

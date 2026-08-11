@@ -239,10 +239,31 @@ mod tests {
     }
 
     #[test]
-    fn decode_snap_status_returns_both_halves_matching_the_individual_decoders() {
+    fn decode_snap_status_returns_both_halves_from_one_parse() {
+        // Asserted against literal expected values rather than against
+        // decode_snap_groups/decode_snap_streams — those are now thin
+        // wrappers over this function, so comparing to them would just
+        // assert that it equals itself and could never fail.
         let (groups, streams) = decode_snap_status(&fixture());
-        assert_eq!(groups, decode_snap_groups(&fixture()));
-        assert_eq!(streams, decode_snap_streams(&fixture()));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].id, "group1");
+        assert_eq!(groups[0].display_name(), "Living Room");
+        assert_eq!(groups[0].clients.len(), 2);
+        assert_eq!(groups[0].clients[0].display_name(), "Kitchen");
+        assert_eq!(groups[0].clients[0].volume, 65);
+
+        assert_eq!(
+            streams,
+            vec![SnapStream { id: "stream1".into(), status: "playing".into() }]
+        );
+    }
+
+    #[test]
+    fn decode_snap_status_degrades_to_empty_halves_on_unexpected_shape() {
+        let (groups, streams) = decode_snap_status(&serde_json::json!("not an object"));
+        assert!(groups.is_empty());
+        assert!(streams.is_empty());
     }
 
     #[test]

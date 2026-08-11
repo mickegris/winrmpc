@@ -484,6 +484,7 @@ mod tests {
             file: file.to_string(),
             title: "T".into(),
             artist: "A".into(),
+            album_artist: String::new(),
             album: "Al".into(),
             played_at,
         }

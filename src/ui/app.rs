@@ -506,6 +506,7 @@ impl App {
                                 file: song.file.clone(),
                                 title: song.display_title().to_string(),
                                 artist: song.display_artist().to_string(),
+                                album_artist: song.display_album_artist().to_string(),
                                 album: song.display_album().to_string(),
                                 played_at: now,
                             };
@@ -728,7 +729,17 @@ impl App {
                 Task::perform(
                     async move {
                         client.clear().await.ok();
-                        client.add_all(&uris).await.ok();
+                        // Don't swallow this: `add_all` is one command list,
+                        // which MPD aborts at the first bad URI, and the
+                        // queue was just cleared — so a failure here means
+                        // playback is about to start on a *partial* album
+                        // rather than on nothing at all.
+                        if let Err(e) = client.add_all(&uris).await {
+                            tracing::warn!(
+                                "Play All: queued a partial album ({} tracks requested) — {e}",
+                                uris.len()
+                            );
+                        }
                         client.play().await.ok();
                     },
                     |_| Message::Tick,
@@ -739,7 +750,12 @@ impl App {
                 let client = self.client.clone();
                 Task::perform(
                     async move {
-                        client.add_all(&uris).await.ok();
+                        if let Err(e) = client.add_all(&uris).await {
+                            tracing::warn!(
+                                "Queue All: appended a partial album ({} tracks requested) — {e}",
+                                uris.len()
+                            );
+                        }
                         if let Ok(status) = client.status().await {
                             if status.state == PlayState::Stop {
                                 client.play().await.ok();
@@ -2457,21 +2473,26 @@ impl App {
     /// (previously the in-memory guard was keyed by album name alone, so
     /// two different artists' same-titled album showed each other's bio
     /// for the rest of the session — see
-    /// docs/plans/review-fixes-correctness.md §2). `artist` also drives the
-    /// actual MusicBrainz/Wikipedia query; when unknown (e.g. reached from
-    /// Genre detail) it falls back to whichever artist page happens to be
-    /// open as a best-effort search hint — that fallback is *only* for the
-    /// query, never for the cache key, so a stale `selected_artist` can't
-    /// cause a wrong-artist cache hit.
+    /// docs/plans/review-fixes-correctness.md §2). The same `artist` — and
+    /// *only* that artist — also drives the MusicBrainz/Wikipedia query, so
+    /// key and query are always derived from the same input and can never
+    /// disagree.
+    ///
+    /// There used to be a `self.selected_artist` fallback here for the
+    /// `artist: None` case (reached from Genre detail). It was removed: the
+    /// key stays `"\x1f{album}"` regardless, so the fallback wrote a bio
+    /// fetched for *whatever artist page happened to be open* into a slot
+    /// shared by every artist-less album of that title — permanently, in
+    /// redb, and it would be read back for unrelated albums too. Querying
+    /// with an empty artist instead degrades to a title-only Wikipedia
+    /// lookup (still guarded by `title_matches`), which finds fewer bios
+    /// but can never attribute one to the wrong album.
     fn fetch_album_bio(&self, artist: Option<String>, album: String) -> Task<Message> {
         let key = album_scoped_key(artist.as_deref(), &album);
         if self.album_bios.contains_key(&key) {
             return Task::none();
         }
-        let query_artist = artist
-            .clone()
-            .or_else(|| self.selected_artist.clone())
-            .unwrap_or_default();
+        let query_artist = artist.clone().unwrap_or_default();
         let mb = self.mb_client.clone();
         let store = self.store.clone();
         Task::perform(
