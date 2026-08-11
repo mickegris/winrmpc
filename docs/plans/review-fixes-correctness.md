@@ -413,3 +413,42 @@ half of that finding was real and is #6 above.
   `protocol.rs` gap): the Snapcast drop-on-transport-error path. Manual QA
   instead — open the Snapcast view, restart snapserver, confirm the view
   recovers on its own within a poll or two rather than needing a restart.
+
+---
+
+## Measured against a real library (10.0.1.3, MPD 0.24.0, 9846 songs)
+
+The live integration tests in `src/live_tests.rs` were run against a real
+server. All the fixes above hold up: `add_all` enqueues in order and its
+stop-at-first-failure semantics are exactly as documented (a bad URI in the
+middle leaves the earlier tracks queued and drops the rest), grouping
+collapses real multi-disc sets, and every disc of a set resolves to one
+shared art key.
+
+**Grouping coverage on real data: 829 album rows → 789 groups, 35 collapsed
+multi-disc sets.** 14 marker-looking names were left as singletons. Most of
+those are *correct* refusals — `Killers (CDM 7520192)` is a catalogue
+number, `Screaming For Vengeance [2001 CD Edition]` and
+`Journeyman [2014 Audio Fidelity SACD AFZ 180]` are editions, not discs.
+
+But three real sets (six rows) **should** have collapsed and didn't:
+
+| Rows | Why `album_base_and_disc` misses |
+|---|---|
+| `101 [Disc A]` / `101 [Disc B]` | disc identified by a **letter**, not a digit — `is_short_digit_run` requires digits |
+| `Clutching at Straws [24-bit Remaster CD 1]` / `[… CD 2]` | marker is **inside a bracket with other text**, so the bracketed-marker path doesn't match and the bare-trailing path sees `]` after the digits |
+| `Misplaced Childhood [24-bit Remaster, CD 1]` / `[… CD 2]` | same |
+
+Also not collapsed, each a lone row so nothing to merge with anyway:
+`Lotus (Disc One)` (spelled-out number), `Decade of Aggression - Disc 1 of 2`
+(trailing text after the number), `Volume 3 Disc3 (Rem.2007)` (marker not
+trailing), `Nostradamus (2CD) (CD 1/2)` (`N/M` disc form).
+
+This is a **pre-existing coverage gap, not a regression** — `album_base_and_disc`
+was only ever specified for trailing digit markers, and each of these needs a
+separate rule (letters as disc ids; markers embedded in a qualifier bracket;
+spelled-out numbers; `1 of 2` / `1/2` forms). Deliberately **not** fixed in
+this round: widening the matcher is exactly the kind of change that starts
+stripping real album titles, and it wants its own plan with these six rows as
+the test corpus. It belongs with the deferred item 6 (punctuation folding) as
+a single "grouping-key robustness" follow-up.

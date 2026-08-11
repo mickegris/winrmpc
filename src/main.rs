@@ -12,6 +12,8 @@ mod lyrics;
 mod store;
 mod discovery;
 mod snapcast;
+#[cfg(test)]
+mod live_tests;
 
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;

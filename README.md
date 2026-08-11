@@ -16,6 +16,26 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 - Repeat, random, single, and consume mode toggles
 - Real-time progress bar with elapsed/total time display
 - Now Playing view with album art
+- Crossfade and replay-gain mode toggles right in Now Playing
+
+### Queue
+- Reorder tracks up/down, remove individual tracks, clear the queue
+- **Play next** — insert a track directly after the one currently playing
+- Save the current queue as a stored playlist
+
+### Stored Playlists
+- Browse, load, rename, and delete MPD stored playlists
+- Reorder and remove tracks within a playlist
+- **Add to playlist** picker reachable from Now Playing, albums, the queue, and search
+
+### Lyrics
+- Synced and plain lyrics fetched from [LRCLIB](https://lrclib.net/)
+- Synced lyrics highlight and auto-scroll in time with playback
+- Cached per track, so each song is only fetched once
+
+### History
+- **Recently Added** — albums added to the library in the last 30 days
+- **Recently Played** — per-server track and album history, kept for 30 days
 
 ### Library Management
 - **Artist browsing** with album listings and artist art fetched from MusicBrainz
@@ -23,12 +43,13 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 - **Genre browsing** with drill-down into albums per genre
 - **File/folder browser** — navigate your MPD music directory tree directly
 - **Search** — full-text search across your library
+- **Multi-disc albums collapse into one entry** — `Album [Disc 1]` / `[Disc 2]` show as a single album with all discs, sorted by disc then track. Albums are grouped per artist, so two artists' same-titled albums stay separate
 
 ### Album & Artist Art
-- Art fetched from MPD embedded tags (FLAC, ALAC, MP3, etc.)
+- Art is looked up in order: **embedded tag → cover file next to the music → internet**
 - Fallback to **MusicBrainz** and **Cover Art Archive** for album covers
 - Artist images sourced from MusicBrainz
-- All art cached to disk — fast on subsequent loads
+- All art cached in an embedded database with a configurable size cap and LRU eviction — fast on subsequent loads, and "no art exists" is remembered too so it isn't re-fetched every launch
 
 ### Wikipedia Integration
 - Artist biographies and album descriptions fetched from English Wikipedia via MusicBrainz URL relations
@@ -44,6 +65,16 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 - Built-in Swedish Radio streams (SR P1, P2, P3)
 - Add and remove custom stream URLs
 
+### Multiple Servers
+- Save several MPD servers and switch between them from Settings
+- **Nearby Servers** — discover MPD instances on your LAN over mDNS/Zeroconf and pre-fill the add-server form with one click
+- Each server keeps its own partition and play history
+
+### Snapcast Multiroom
+- Control a [Snapcast](https://github.com/badaix/snapcast) server alongside MPD
+- Per-client volume, per-group mute, and per-group stream selection
+- Connects to the same host as MPD on port 1705 by default
+
 ### Partitions (Multi-Room Support)
 - List, create, and delete MPD partitions
 - Switch between partitions; selected partition persists across restarts
@@ -57,7 +88,12 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 ### Log View
 - All application events visible inside the app under **Log** (below Settings)
 - No console window required — runs cleanly as a background-free desktop app
+- Every MPD command is timed; anything slower than 2s is flagged with a ⚠
 - Clear button to reset the log
+
+### Server Statistics
+- Song/album/artist counts, uptime, total playtime, and last database update
+- **Update Database** button, disabled while a scan is already running
 
 ## Screenshots
 
@@ -158,35 +194,67 @@ cargo test escape          # run tests whose name matches "escape"
 cargo test parse_status -- --exact   # run one specific test
 ```
 
-The suite is pure-logic (command escaping, protocol parsing, type formatting) and needs no running MPD server.
+The default suite needs **no running MPD server**. It covers the pure-logic
+core (command escaping, protocol parsing, album/disc grouping, type
+formatting) plus a few tests that drive the Snapcast client against a local
+mock socket.
+
+There is also an opt-in set of integration tests that talk to a real server.
+They are `#[ignore]`d so they never run by accident, and are enabled by
+pointing two environment variables at your own MPD and Snapcast instances:
+
+```bash
+WINRMPC_TEST_MPD=192.168.1.50:6600 \
+WINRMPC_TEST_SNAPCAST=192.168.1.50:1705 \
+  cargo test -- --ignored --test-threads=1
+```
+
+These are read-only against your library. The ones that enqueue tracks create
+a throwaway MPD **partition**, do their work there, and delete it afterwards,
+so your real queue and playback are never touched.
 
 ## Configuration
 
-On first launch winrmpc connects to MPD at `127.0.0.1:6600`. Use the **Settings** view (bottom of the sidebar) to change the connection and optionally set a CD device path.
+On first launch winrmpc connects to MPD at `127.0.0.1:6600`. Use the **Settings** view (bottom of the sidebar) to add servers and switch between them; the CD device path is set in the **CD** view and the database-update trigger lives in **Stats**.
 
-Configuration file:
+Configuration file (Windows path shown; Linux and macOS use their own standard config directories):
 ```
 %APPDATA%\winrmpc\winrmpc\config\config.toml
 ```
 
-Album art cache:
+Cache database (album art, lyrics, biographies, play history):
 ```
-%LOCALAPPDATA%\winrmpc\winrmpc\cache\
+%LOCALAPPDATA%\winrmpc\winrmpc\cache\winrmpc.redb
 ```
 
 ### Example config.toml
 
 ```toml
-mpd_host = "192.168.1.50"
-mpd_port = 6600
-# mpd_password = "your_password"
-# cd_device = "/dev/sr0"
+default_server = "Living Room"
 art_cache_size_mb = 500
+
+[[servers]]
+name = "Living Room"
+host = "192.168.1.50"
+port = 6600
+# password = "your_password"
+# default_partition = "default"
+# Snapcast defaults to the same host on port 1705 when these are unset:
+# snapcast_host = "192.168.1.50"
+# snapcast_port = 1705
+
+[[servers]]
+name = "Office"
+host = "192.168.1.51"
+port = 6600
 
 [theme]
 dark_mode = true
 accent_color = "#4fc3f7"
 ```
+
+Older single-server config files are still read and are migrated to the
+`[[servers]]` form automatically on first launch.
 
 ## License
 
