@@ -5,16 +5,16 @@
 use crate::mpd::types::{art_key_for, recently_played_albums, relative_time, RecentlyPlayedEntry};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::album_grid;
 use iced::widget::{button, column, container, image, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
 
-const TILE_SIZE: u16 = 120;
-const TILES_PER_ROW: usize = 4;
 
 pub fn view<'a>(
     entries: &'a [RecentlyPlayedEntry],
     show_albums: bool,
+    grid_view: bool,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
 ) -> Element<'a, Message> {
     let mode_label = if show_albums { "Albums" } else { "Tracks" };
@@ -35,10 +35,17 @@ pub fn view<'a>(
         Space::with_width(Length::Fill),
         toggle_btn,
         Space::with_width(8),
-        clear_btn,
     ]
     .align_y(Alignment::Center)
     .padding([12, 12]);
+    // Grid/list only applies to the Albums mode; the Tracks mode is
+    // inherently a list.
+    let header = if show_albums {
+        header.push(album_grid::layout_toggle(grid_view)).push(Space::with_width(8))
+    } else {
+        header
+    };
+    let header = header.push(clear_btn);
 
     let body: Element<'a, Message> = if entries.is_empty() {
         container(
@@ -51,23 +58,53 @@ pub fn view<'a>(
     } else if show_albums {
         let now = chrono::Utc::now().timestamp();
         let groups = recently_played_albums(entries);
-        let tiles: Vec<Element<'a, Message>> = groups
-            .into_iter()
-            .map(|g| album_tile(g, now, art_handles))
-            .collect();
-
-        // `Element` isn't `Clone`, so chunk by consuming the iterator in
-        // fixed-size groups rather than slicing borrowed `tiles`.
-        let mut rows = column![].spacing(16);
-        let mut iter = tiles.into_iter();
-        loop {
-            let group: Vec<Element<'a, Message>> = (&mut iter).take(TILES_PER_ROW).collect();
-            if group.is_empty() {
-                break;
+        if grid_view {
+            let tiles: Vec<Element<'a, Message>> = groups
+                .into_iter()
+                .map(|g| {
+                    let art = album_grid::art_for(art_handles, &g.artist, &g.album);
+                    let caption = relative_time(now - g.last_played);
+                    album_grid::tile(
+                        art,
+                        g.album.clone(),
+                        g.artist.clone(),
+                        Some(caption),
+                        Message::AlbumSelected(g.album.clone(), Some(g.artist.clone())),
+                    )
+                })
+                .collect();
+            scrollable(container(album_grid::grid(tiles)).padding(20))
+                .height(Length::Fill)
+                .into()
+        } else {
+            let mut list = column![].spacing(0);
+            for (i, g) in groups.into_iter().enumerate() {
+                let bg = if i % 2 == 0 { AppColors::ROW_EVEN } else { AppColors::ROW_ODD };
+                let label = row![
+                    text(g.album.clone()).size(14).color(AppColors::TEXT_PRIMARY),
+                    text(g.artist.clone()).size(12).color(AppColors::TEXT_MUTED),
+                    Space::with_width(Length::Fill),
+                    text(relative_time(now - g.last_played))
+                        .size(11)
+                        .color(AppColors::TEXT_MUTED),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+                list = list.push(
+                    button(label)
+                        .on_press(Message::AlbumSelected(g.album.clone(), Some(g.artist.clone())))
+                        .padding([7, 12])
+                        .width(Length::Fill)
+                        .style(move |_t: &iced::Theme, _s| button::Style {
+                            background: Some(bg.into()),
+                            text_color: AppColors::TEXT_PRIMARY,
+                            border: iced::Border::default(),
+                            ..Default::default()
+                        }),
+                );
             }
-            rows = rows.push(row(group).spacing(16));
+            scrollable(list).height(Length::Fill).into()
         }
-        scrollable(container(rows).padding(20)).height(Length::Fill).into()
     } else {
         let now = chrono::Utc::now().timestamp();
         let mut list = column![].spacing(0);
@@ -122,61 +159,3 @@ pub fn view<'a>(
         .into()
 }
 
-fn album_tile<'a>(
-    group: crate::mpd::types::RecentlyPlayedAlbum,
-    now: i64,
-    art_handles: &'a HashMap<String, iced::widget::image::Handle>,
-) -> Element<'a, Message> {
-    let key = art_key_for(&group.artist, &group.album);
-    let art: Element<'a, Message> = match art_handles.get(&key) {
-        Some(handle) => image(handle.clone()).width(TILE_SIZE).height(TILE_SIZE).into(),
-        None => container(text("").size(1))
-            .width(TILE_SIZE)
-            .height(TILE_SIZE)
-            .style(|_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_SECONDARY.into()),
-                border: iced::Border {
-                    radius: 4.0.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .into(),
-    };
-
-    let crate::mpd::types::RecentlyPlayedAlbum { artist, album, last_played } = group;
-    let relative = relative_time(now - last_played);
-    let select_artist = artist.clone();
-
-    button(
-        column![
-            art,
-            Space::with_height(6),
-            text(album.clone()).size(13).color(AppColors::TEXT_PRIMARY),
-            text(artist).size(11).color(AppColors::TEXT_SECONDARY),
-            text(relative).size(10).color(AppColors::TEXT_MUTED),
-        ]
-        .align_x(Alignment::Center)
-        .width(TILE_SIZE),
-    )
-    .on_press(Message::AlbumSelected(album, Some(select_artist)))
-    .padding(4)
-    .style(|_t: &iced::Theme, status: button::Status| {
-        let bg = match status {
-            button::Status::Hovered | button::Status::Pressed => {
-                Some(AppColors::BG_HOVER.into())
-            }
-            _ => None,
-        };
-        button::Style {
-            background: bg,
-            text_color: AppColors::TEXT_PRIMARY,
-            border: iced::Border {
-                radius: 4.0.into(),
-                ..Default::default()
-            },
-            shadow: iced::Shadow::default(),
-        }
-    })
-    .into()
-}

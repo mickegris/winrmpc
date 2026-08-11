@@ -176,8 +176,13 @@ impl MpdClient {
 
     /// Current replay gain mode ("off"/"track"/"album"/"auto"). Defaults to
     /// "off" if the server omits the field (matches MPD's own default).
+    ///
+    /// The command is `replay_gain_status`, **with** the underscore between
+    /// "replay" and "gain" — `replaygain_status` is not a command and MPD
+    /// answers `ACK [5@0] {} unknown command`. Verified against the protocol
+    /// docs and a live MPD 0.24.0.
     pub async fn replay_gain_status(&self) -> MpdResult<String> {
-        let pairs = self.cmd("replaygain_status").await?;
+        let pairs = self.cmd("replay_gain_status").await?;
         Ok(pairs
             .iter()
             .find(|(k, _)| k == "replay_gain_mode")
@@ -190,7 +195,7 @@ impl MpdClient {
     }
 
     fn replay_gain_mode_cmd(mode: &str) -> String {
-        format!("replaygain_mode {mode}")
+        format!("replay_gain_mode {mode}")
     }
 
     // ========================================================================
@@ -680,8 +685,8 @@ mod tests {
 
     #[test]
     fn replay_gain_mode_cmd_formats_mode() {
-        assert_eq!(MpdClient::replay_gain_mode_cmd("off"), "replaygain_mode off");
-        assert_eq!(MpdClient::replay_gain_mode_cmd("auto"), "replaygain_mode auto");
+        assert_eq!(MpdClient::replay_gain_mode_cmd("off"), "replay_gain_mode off");
+        assert_eq!(MpdClient::replay_gain_mode_cmd("auto"), "replay_gain_mode auto");
     }
 
     #[test]

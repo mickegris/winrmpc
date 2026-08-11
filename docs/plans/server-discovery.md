@@ -1,3 +1,13 @@
+> **REMOVED (0.4.1).** LAN server discovery shipped in `b820700` and was
+> removed again at the user's request: the `mdns-sd` dependency, the
+> `src/discovery/` module, the `Nearby Servers` section in Settings and the
+> four `Message` variants are all gone. Manual server entry — which always
+> worked and was the only path that saved a profile anyway — is now the only
+> way to add a server. This document is kept as the record of what was built
+> and why, not as a description of current behaviour.
+
+---
+
 # Plan: LAN MPD server discovery (mDNS/Zeroconf)
 
 Status: **implemented**. Part of the mikMPD parity set (see

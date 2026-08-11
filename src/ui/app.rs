@@ -105,10 +105,11 @@ pub struct App {
     snapcast_groups: Vec<crate::snapcast::SnapGroup>,
     snapcast_streams: Vec<crate::snapcast::SnapStream>,
     snapcast_error: Option<String>,
+    /// Whether disconnected Snapcast clients are listed. Off by default —
+    /// a Snapcast server keeps a stale entry for every device that ever
+    /// connected, so most of the list is usually dead weight.
+    snapcast_show_inactive: bool,
 
-    // LAN server discovery (Settings view)
-    discovered_servers: Vec<crate::discovery::DiscoveredServer>,
-    discovery_scanning: bool,
 
     // Settings UI
     settings_host: String,
@@ -231,9 +232,8 @@ impl App {
             snapcast_groups: Vec::new(),
             snapcast_streams: Vec::new(),
             snapcast_error: None,
+            snapcast_show_inactive: false,
 
-            discovered_servers: Vec::new(),
-            discovery_scanning: false,
 
             settings_host: String::new(),
             settings_port: String::new(),
@@ -283,15 +283,6 @@ impl App {
         // for a subsystem the user isn't looking at is pure waste.
         if self.current_view == View::Snapcast {
             subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Message::SnapcastPollTick));
-        }
-
-        // LAN discovery: only while a scan is active (started from Settings,
-        // self-timed — see Message::StartDiscovery/DiscoveryFinished).
-        if self.discovery_scanning {
-            subs.push(
-                Subscription::run_with_id("server-discovery", crate::discovery::discover())
-                    .map(Message::ServerDiscovered),
-            );
         }
 
         Subscription::batch(subs)
@@ -553,7 +544,15 @@ impl App {
                     }
                 }
 
+                // A new track means new lyrics: send the pane back to the top
+                // rather than letting it keep the previous track's offset.
+                let track_changed = song.as_ref().map(|s| &s.file)
+                    != self.current_song.as_ref().map(|s| &s.file);
+
                 let mut tasks: Vec<Task<Message>> = Vec::new();
+                if track_changed {
+                    tasks.push(self.reset_lyrics_scroll());
+                }
                 if let Some(ref s) = song {
                     let art_key = s.art_key();
                     if !self.art_handles.contains_key(&art_key) {
@@ -790,7 +789,7 @@ impl App {
             }
             Message::AlbumsLoaded(a) => {
                 self.albums = a;
-                Task::none()
+                self.prefetch_album_art()
             }
             Message::GenresLoaded(g) => {
                 self.genres = g;
@@ -943,45 +942,15 @@ impl App {
                     if !self.art_handles.contains_key(&key) {
                         // Use the first disc variant to find a song URI for
                         // MPD art lookup.
-                        let c = self.client.clone();
                         let variant = group
                             .variants
                             .first()
                             .cloned()
                             .unwrap_or_else(|| group.base.clone());
-                        let base = group.base.clone();
-                        let cache = self.art_cache.clone_inner();
-                        let art_key = key.clone();
-                        let art_artist = artist.clone();
-                        let mb = self.mb_client.clone();
-                        let gate = self.art_fetch_gate.clone();
-                        tasks.push(Task::perform(
-                            async move {
-                                if let Some(data) = cache.get(&art_key).await {
-                                    return (art_key, Some(data));
-                                }
-                                let _permit = gate.acquire().await;
-                                // Try MPD first: tag art, then cover-file art.
-                                let songs = c.find("Album", &variant).await.unwrap_or_default();
-                                if let Some(first) = songs.first() {
-                                    if let Ok(Some(data)) = c.tag_art(&first.file).await {
-                                        let _ = cache.store(&art_key, &data).await;
-                                        return (art_key, Some(data));
-                                    }
-                                    if let Ok(Some(data)) = c.cover_file_art(&first.file).await {
-                                        let _ = cache.store(&art_key, &data).await;
-                                        return (art_key, Some(data));
-                                    }
-                                }
-                                // Fallback to MusicBrainz
-                                if let Some(data) = mb.fetch_album_art(&art_artist, &base).await {
-                                    let _ = cache.store(&art_key, &data).await;
-                                    return (art_key, Some(data));
-                                }
-                                cache.store_empty(&art_key).await;
-                                (art_key, None)
-                            },
-                            |(key, data)| Message::ArtLoaded(key, data),
+                        tasks.push(self.fetch_album_group_art(
+                            artist.clone(),
+                            group.base.clone(),
+                            variant,
                         ));
                     }
                 }
@@ -1017,7 +986,7 @@ impl App {
                     .map(|s| (s.display_album_artist().to_string(), s.display_album().to_string()))
                     .collect();
                 self.recently_added_albums = group_albums_by_artist(&pairs);
-                Task::none()
+                self.prefetch_album_art()
             }
             Message::RecentlyPlayedLoaded(entries) => {
                 self.recently_played = entries;
@@ -1036,6 +1005,13 @@ impl App {
                     },
                     |_| Message::Noop,
                 )
+            }
+            Message::ToggleAlbumGridView => {
+                self.config.album_grid_view = !self.config.album_grid_view;
+                self.config.save().ok();
+                // Grid mode shows covers, so make sure some are actually
+                // fetched for whatever list is on screen.
+                self.prefetch_album_art()
             }
             Message::ToggleRecentlyPlayedMode => {
                 self.recently_played_show_albums = !self.recently_played_show_albums;
@@ -1709,6 +1685,10 @@ impl App {
                 self.snapcast_error = None;
                 Task::none()
             }
+            Message::SnapcastToggleShowInactive => {
+                self.snapcast_show_inactive = !self.snapcast_show_inactive;
+                Task::none()
+            }
             Message::SnapcastUnreachable(msg) => {
                 self.snapcast_error = Some(msg);
                 Task::none()
@@ -1788,36 +1768,6 @@ impl App {
                 }
             }
 
-            // =================================================================
-            // LAN server discovery
-            // =================================================================
-            Message::StartDiscovery => {
-                self.discovered_servers.clear();
-                self.discovery_scanning = true;
-                // The discovery stream itself has no "finished" event; stop
-                // showing "Searching..." shortly after its own scan window
-                // (a small margin so in-flight events aren't cut off).
-                Task::perform(
-                    tokio::time::sleep(Duration::from_secs(11)),
-                    |_| Message::DiscoveryFinished,
-                )
-            }
-            Message::ServerDiscovered(server) => {
-                if !self.discovered_servers.iter().any(|s| s.name == server.name) {
-                    self.discovered_servers.push(server);
-                }
-                Task::none()
-            }
-            Message::DiscoveryFinished => {
-                self.discovery_scanning = false;
-                Task::none()
-            }
-            Message::UseDiscoveredServer(server) => {
-                self.settings_server_name = server.name;
-                self.settings_host = server.host;
-                self.settings_port = server.port.to_string();
-                Task::none()
-            }
             // Legacy — no longer in the UI; kept for compatibility.
             Message::SaveSettings => Task::none(),
             Message::ServerNameChanged(s) => {
@@ -2068,7 +2018,6 @@ impl App {
                     self.show_lyrics,
                     self.lyrics_scroll_id.clone(),
                     self.playing_from_playlist.as_deref(),
-                    self.replay_gain_mode.as_deref(),
                 )
             }
             View::Queue => {
@@ -2082,17 +2031,28 @@ impl App {
                 views::artists_list::view(&self.artists)
             }
             View::Albums => {
-                views::albums_list::view(&self.albums, "Albums")
+                views::albums_list::view(
+                    &self.albums,
+                    "Albums",
+                    &self.art_handles,
+                    self.config.album_grid_view,
+                )
             }
             View::Genres => {
                 views::genres_list::view(&self.genres)
             }
             View::RecentlyAdded => {
-                views::albums_list::view(&self.recently_added_albums, "Recently Added")
+                views::albums_list::view(
+                    &self.recently_added_albums,
+                    "Recently Added",
+                    &self.art_handles,
+                    self.config.album_grid_view,
+                )
             }
             View::RecentlyPlayed => views::recently_played::view(
                 &self.recently_played,
                 self.recently_played_show_albums,
+                self.config.album_grid_view,
                 &self.art_handles,
             ),
             View::ArtistDetail(name) => {
@@ -2154,6 +2114,7 @@ impl App {
                 &self.snapcast_groups,
                 &self.snapcast_streams,
                 self.snapcast_error.as_deref(),
+                self.snapcast_show_inactive,
             ),
             View::Partitions => {
                 let current = self
@@ -2204,7 +2165,11 @@ impl App {
         };
 
         let player_bar =
-            widgets::player_bar::view(&self.status, &self.current_song);
+            widgets::player_bar::view(
+                &self.status,
+                &self.current_song,
+                self.replay_gain_mode.as_deref(),
+            );
 
         let content = column![
             row![sidebar, main_content].height(Length::Fill),
@@ -2466,6 +2431,94 @@ impl App {
         )
     }
 
+
+    /// How many uncached albums a single grid/list view will fetch art for.
+    ///
+    /// Bounded on purpose. Each uncached album costs an MPD `find` to locate
+    /// a track, and on a miss a MusicBrainz lookup behind the global ~1 req/s
+    /// throttle — so an unbounded prefetch over a 800-album library would
+    /// hammer the server for a quarter of an hour. Art already in the cache
+    /// always renders regardless of this cap, so grids fill in as you browse.
+    const ALBUM_ART_PREFETCH_LIMIT: usize = 60;
+
+    /// Fetch one album's cover: MPD tag art, then MPD cover file, then
+    /// MusicBrainz — the order documented in CLAUDE.md. `variant` is the raw
+    /// album tag to look a track up by (a disc variant for multi-disc sets);
+    /// `base` is the disc-stripped name used for the cache key and the
+    /// MusicBrainz query.
+    fn fetch_album_group_art(&self, artist: String, base: String, variant: String) -> Task<Message> {
+        let art_key = art_key_for(&artist, &base);
+        let c = self.client.clone();
+        let cache = self.art_cache.clone_inner();
+        let mb = self.mb_client.clone();
+        let gate = self.art_fetch_gate.clone();
+        Task::perform(
+            async move {
+                if let Some(data) = cache.get(&art_key).await {
+                    return (art_key, Some(data));
+                }
+                let _permit = gate.acquire().await;
+                let songs = c.find("Album", &variant).await.unwrap_or_default();
+                if let Some(first) = songs.first() {
+                    if let Ok(Some(data)) = c.tag_art(&first.file).await {
+                        let _ = cache.store(&art_key, &data).await;
+                        return (art_key, Some(data));
+                    }
+                    if let Ok(Some(data)) = c.cover_file_art(&first.file).await {
+                        let _ = cache.store(&art_key, &data).await;
+                        return (art_key, Some(data));
+                    }
+                }
+                if let Some(data) = mb.fetch_album_art(&artist, &base).await {
+                    let _ = cache.store(&art_key, &data).await;
+                    return (art_key, Some(data));
+                }
+                cache.store_empty(&art_key).await;
+                (art_key, None)
+            },
+            |(key, data)| Message::ArtLoaded(key, data),
+        )
+    }
+
+    /// Kick off art fetches for the album list currently on screen, capped at
+    /// `ALBUM_ART_PREFETCH_LIMIT`. No-op on views that aren't album lists.
+    fn prefetch_album_art(&self) -> Task<Message> {
+        // (artist, base, variant-to-look-up)
+        let groups: Vec<(String, String, String)> = match &self.current_view {
+            View::Albums => self
+                .albums
+                .iter()
+                .map(|g| {
+                    let v = g.variants.first().cloned().unwrap_or_else(|| g.base.clone());
+                    (g.artist.clone(), g.base.clone(), v)
+                })
+                .collect(),
+            View::RecentlyAdded => self
+                .recently_added_albums
+                .iter()
+                .map(|g| {
+                    let v = g.variants.first().cloned().unwrap_or_else(|| g.base.clone());
+                    (g.artist.clone(), g.base.clone(), v)
+                })
+                .collect(),
+            View::RecentlyPlayed => recently_played_albums(&self.recently_played)
+                .into_iter()
+                .map(|g| (g.artist.clone(), g.album.clone(), g.album.clone()))
+                .collect(),
+            _ => return Task::none(),
+        };
+
+        let tasks: Vec<Task<Message>> = groups
+            .into_iter()
+            .filter(|(artist, base, _)| {
+                !self.art_handles.contains_key(&art_key_for(artist, base))
+            })
+            .take(Self::ALBUM_ART_PREFETCH_LIMIT)
+            .map(|(artist, base, variant)| self.fetch_album_group_art(artist, base, variant))
+            .collect();
+        Task::batch(tasks)
+    }
+
     /// Fetch an album's Wikipedia bio — same shape as `fetch_artist_bio`.
     /// Both the in-memory `album_bios` map and the redb key are scoped by
     /// `album_scoped_key(artist, album)`, matching `View::AlbumDetail`'s own
@@ -2541,6 +2594,10 @@ impl App {
 
     fn on_view_enter(&mut self, view: View) -> Task<Message> {
         match view {
+            // Entering from another view, the lyrics scrollable can pick up
+            // the scroll offset of whatever scrollable last occupied that
+            // tree position — see `reset_lyrics_scroll`.
+            View::NowPlaying => self.reset_lyrics_scroll(),
             View::Artists => {
                 let client = self.client.clone();
                 Task::perform(
@@ -2651,6 +2708,9 @@ impl App {
                 )
             }
             View::ServerStats => self.fetch_stats(),
+            // History is already in memory; nothing to load, but the covers
+            // may not be cached yet.
+            View::RecentlyPlayed => self.prefetch_album_art(),
             View::RecentlyAdded => {
                 let client = self.client.clone();
                 Task::perform(
@@ -2775,11 +2835,29 @@ fn fetch_lyrics(&self, song: &Song) -> Task<Message> {
     )
 }
 
+/// Snap the lyrics pane back to the top.
+///
+/// Needed because iced reuses widget state by *(tree position, widget type)*
+/// only — `scrollable::Id` is for targeting operations, not for identity —
+/// so the lyrics scrollable inherits whatever offset the previously-rendered
+/// scrollable at that path had. Going from a synced track (autoscrolled near
+/// the bottom) to a plain-lyrics one would otherwise open scrolled past the
+/// end of much shorter content, i.e. blank.
+fn reset_lyrics_scroll(&self) -> Task<Message> {
+    scrollable::snap_to(
+        self.lyrics_scroll_id.clone(),
+        scrollable::RelativeOffset::START,
+    )
+}
+
 /// Keep the highlighted synced-lyric line in view by snapping the lyrics
 /// scrollable to a position proportional to the active line. No-op unless
 /// lyrics are shown and the current track has synced lyrics.
 fn lyrics_autoscroll(&self) -> Task<Message> {
-    if !self.show_lyrics {
+    // Also gated on the active view: the lyrics scrollable only exists in
+    // the widget tree while Now Playing is open, so from any other view
+    // this snap_to walks the tree every 500ms to reach nothing.
+    if !self.show_lyrics || self.current_view != View::NowPlaying {
         return Task::none();
     }
     let Some(song) = &self.current_song else {
@@ -3036,52 +3114,6 @@ fn settings_view(&self) -> Element<'_, Message> {
         ]
         .spacing(4);
 
-        let nearby_section: Element<'_, Message> = {
-            let mut list = column![].spacing(4);
-            if self.discovery_scanning && self.discovered_servers.is_empty() {
-                list = list.push(text("Searching...").size(12).color(AppColors::TEXT_MUTED));
-            } else if self.discovered_servers.is_empty() {
-                list = list.push(text("No servers found yet.").size(12).color(AppColors::TEXT_MUTED));
-            }
-            for server in &self.discovered_servers {
-                list = list.push(
-                    button(
-                        row![
-                            text(server.name.clone()).size(13).color(AppColors::TEXT_PRIMARY),
-                            Space::with_width(Length::Fill),
-                            text(format!("{}:{}", server.host, server.port))
-                                .size(11)
-                                .color(AppColors::TEXT_MUTED),
-                        ]
-                        .align_y(iced::Alignment::Center),
-                    )
-                    .on_press(Message::UseDiscoveredServer(server.clone()))
-                    .padding([6, 10])
-                    .width(Length::Fill),
-                );
-            }
-
-            let scan_label = if self.discovery_scanning { "Searching..." } else { "Rescan" };
-            column![
-                row![
-                    text("Nearby Servers").size(14).color(AppColors::TEXT_SECONDARY),
-                    Space::with_width(Length::Fill),
-                    button(text(scan_label).size(12))
-                        .on_press_maybe((!self.discovery_scanning).then_some(Message::StartDiscovery))
-                        .padding([4, 12]),
-                ]
-                .align_y(iced::Alignment::Center),
-                Space::with_height(6),
-                list,
-                Space::with_height(4),
-                text("Servers appear here if MPD has Zeroconf enabled. Manual entry always works.")
-                    .size(10)
-                    .color(AppColors::TEXT_MUTED),
-            ]
-            .spacing(2)
-            .into()
-        };
-
         let content = column![
             row![
                 text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
@@ -3094,8 +3126,6 @@ fn settings_view(&self) -> Element<'_, Message> {
             text("Servers").size(16).color(AppColors::TEXT_PRIMARY),
             Space::with_height(8),
             server_list,
-            Space::with_height(12),
-            nearby_section,
             Space::with_height(12),
             add_form,
         ]

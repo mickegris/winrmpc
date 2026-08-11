@@ -1,4 +1,3 @@
-use crate::discovery::DiscoveredServer;
 use crate::mpd::types::*;
 use crate::snapcast::{SnapGroup, SnapStream};
 
@@ -76,6 +75,9 @@ pub enum Message {
     RecentlyPlayedLoaded(Vec<RecentlyPlayedEntry>),
     ClearRecentlyPlayed,
     ToggleRecentlyPlayedMode,
+    /// Switch Albums / Recently Added / Recently Played between the cover
+    /// grid and the compact list. Shared by all three; persisted.
+    ToggleAlbumGridView,
 
     // === Browser ===
     BrowsePath(String),
@@ -193,13 +195,10 @@ pub enum Message {
     SnapcastSetVolume(String, u8),
     SnapcastToggleClientMute(String, bool),
     SnapcastToggleGroupMute(String, bool),
+    /// Show/hide disconnected Snapcast clients (view-local, not persisted).
+    SnapcastToggleShowInactive,
     SnapcastSetGroupStream(String, String),
 
-    // === LAN server discovery ===
-    StartDiscovery,
-    ServerDiscovered(DiscoveredServer),
-    DiscoveryFinished,
-    UseDiscoveredServer(DiscoveredServer),
 
     // === Misc ===
     ErrorOccurred(String),

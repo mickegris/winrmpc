@@ -12,9 +12,37 @@ pub fn view<'a>(
     groups: &'a [SnapGroup],
     streams: &'a [crate::snapcast::SnapStream],
     error: Option<&'a str>,
+    show_inactive: bool,
 ) -> Element<'a, Message> {
-    let header = column![
+    // Disconnected clients accumulate on a Snapcast server: every browser
+    // tab or device that ever connected leaves a stale entry behind, so the
+    // list is mostly noise by default.
+    let inactive_count: usize = groups
+        .iter()
+        .flat_map(|g| g.clients.iter())
+        .filter(|c| !c.connected)
+        .count();
+
+    let mut header_row = row![
         text("Snapcast").size(24).color(AppColors::TEXT_PRIMARY),
+        Space::with_width(Length::Fill),
+    ]
+    .align_y(Alignment::Center);
+    if inactive_count > 0 {
+        let label = if show_inactive {
+            format!("Hide {inactive_count} inactive")
+        } else {
+            format!("Show {inactive_count} inactive")
+        };
+        header_row = header_row.push(
+            button(text(label).size(12))
+                .on_press(Message::SnapcastToggleShowInactive)
+                .padding([4, 10]),
+        );
+    }
+
+    let header = column![
+        header_row,
         Space::with_height(4),
         text("Control Snapcast multiroom clients.")
             .size(13)
@@ -36,7 +64,7 @@ pub fn view<'a>(
         )
         .padding(20)
         .into()
-    } else if groups.is_empty() {
+    } else if visible_groups(groups, show_inactive).is_empty() {
         container(
             text("No Snapcast groups found.")
                 .size(14)
@@ -46,8 +74,8 @@ pub fn view<'a>(
         .into()
     } else {
         let mut list = column![].spacing(12);
-        for group in groups {
-            list = list.push(group_section(group, streams));
+        for group in visible_groups(groups, show_inactive) {
+            list = list.push(group_section(group, streams, show_inactive));
         }
         scrollable(list).height(Length::Fill).into()
     };
@@ -62,9 +90,20 @@ pub fn view<'a>(
     .into()
 }
 
+/// Groups worth rendering: when inactive clients are hidden, a group whose
+/// clients are *all* disconnected has nothing left to show, so drop the
+/// whole group rather than leaving an empty card behind.
+fn visible_groups(groups: &[SnapGroup], show_inactive: bool) -> Vec<&SnapGroup> {
+    groups
+        .iter()
+        .filter(|g| show_inactive || g.clients.iter().any(|c| c.connected))
+        .collect()
+}
+
 fn group_section<'a>(
     group: &'a SnapGroup,
     streams: &'a [crate::snapcast::SnapStream],
+    show_inactive: bool,
 ) -> Element<'a, Message> {
     let mute_label = if group.muted { "Unmute Group" } else { "Mute Group" };
     let group_id = group.id.clone();
@@ -93,7 +132,7 @@ fn group_section<'a>(
     );
 
     let mut client_rows = column![].spacing(8);
-    for client in &group.clients {
+    for client in group.clients.iter().filter(|c| show_inactive || c.connected) {
         client_rows = client_rows.push(client_row(client));
     }
 

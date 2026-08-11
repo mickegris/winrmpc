@@ -16,7 +16,7 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 - Repeat, random, single, and consume mode toggles
 - Real-time progress bar with elapsed/total time display
 - Now Playing view with album art
-- Crossfade and replay-gain mode toggles right in Now Playing
+- Crossfade and replay gain sit in the player bar beside repeat/random/single/consume
 
 ### Queue
 - Reorder tracks up/down, remove individual tracks, clear the queue
@@ -43,6 +43,7 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 - **Genre browsing** with drill-down into albums per genre
 - **File/folder browser** — navigate your MPD music directory tree directly
 - **Search** — full-text search across your library
+- **Cover grid or compact list** — toggle Albums, Recently Added and Recently Played between a grid of album art and a dense list; the choice is remembered
 - **Multi-disc albums collapse into one entry** — `Album [Disc 1]` / `[Disc 2]` show as a single album with all discs, sorted by disc then track. Albums are grouped per artist, so two artists' same-titled albums stay separate
 
 ### Album & Artist Art
@@ -67,12 +68,12 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 
 ### Multiple Servers
 - Save several MPD servers and switch between them from Settings
-- **Nearby Servers** — discover MPD instances on your LAN over mDNS/Zeroconf and pre-fill the add-server form with one click
 - Each server keeps its own partition and play history
 
 ### Snapcast Multiroom
 - Control a [Snapcast](https://github.com/badaix/snapcast) server alongside MPD
 - Per-client volume, per-group mute, and per-group stream selection
+- Disconnected clients are hidden by default, with a toggle to show them — a Snapcast server keeps a stale entry for every device that ever connected
 - Connects to the same host as MPD on port 1705 by default
 
 ### Partitions (Multi-Room Support)
@@ -259,6 +260,10 @@ Older single-server config files are still read and are migrated to the
 ## License
 
 MIT
+
+## MPD protocol
+
+Command reference: <https://mpd.readthedocs.io/en/stable/protocol.html>
 
 ## Acknowledgments
 

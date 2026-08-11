@@ -18,7 +18,7 @@ cargo test <name>        # run tests whose name matches <name>
 cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 ```
 
-- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 50 tests cover the pure-logic core, all I/O-free:
+- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 149 offline tests cover the pure-logic core, all I/O-free:
   - `mpd/client.rs` — `escape` injection safety (quotes, backslashes, ordering)
   - `mpd/protocol.rs` — `pairs_to_map`, `split_groups`, `parse_ack`
   - `mpd/commands.rs` — every response parser (`parse_status`/`song`/`songs`/`outputs`/`partitions`/`directory_listing`/`stats`/`tag_list`); note the `Time`→`duration` fallback rule
@@ -40,7 +40,6 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 - `directories` — platform config/cache paths
 - `fuzzy-matcher` — search ranking; `flume` — channels; `open` — launch URLs; `urlencoding`; `chrono`
 - `anyhow`, `thiserror`, `tracing`
-- `mdns-sd` — pure-Rust mDNS/Zeroconf, used only for LAN MPD server discovery (`src/discovery/`); no OS-level Bonjour dependency, so it works the same on Windows/Linux/macOS
 
 ## Project Structure
 
@@ -69,8 +68,6 @@ src/
   lyrics/
     mod.rs                   Re-exports LyricsClient, Lyrics, LyricLine, cache_path
     lrclib.rs                LRCLIB fetch + parse_lrc ([mm:ss.xx] synced lyrics)
-  discovery/
-    mod.rs                   mDNS LAN server discovery (_mpd._tcp.local.); iced Stream via mdns-sd
   snapcast/
     mod.rs                   Re-exports SnapcastClient, SnapClient, SnapGroup, SnapStream
     protocol.rs              Raw TCP, newline-delimited JSON-RPC 2.0, request/notification split
@@ -111,6 +108,7 @@ src/
       sidebar.rs             Navigation sidebar
       art_image.rs           Bytes → iced ImageHandle helper
       link.rs                Clickable hyperlink widget (opens URLs via `open`)
+      album_grid.rs          Shared cover-grid: tile/grid/layout_toggle/art_for, used by Albums, Recently Added and Recently Played
       mod.rs
 ```
 
@@ -123,8 +121,12 @@ Fields saved to TOML via `directories` (Windows: `%APPDATA%\winrmpc\winrmpc\conf
 - `radio_stations: Vec<RadioStation>` — built-ins + user customs; `ensure_builtin_stations()` re-adds missing built-ins on load
 - `cd_device: Option<String>` — e.g. `/dev/sr0`; edited in the **CD view** (moved out of Settings), `#[serde(default)]`
 - `recent_albums: Vec<RecentAlbum>` — most-recent-first, capped at 8, `#[serde(default)]`; updated on `CurrentSongUpdated` when the album changes
+- `album_grid_view: bool` — cover grid vs compact list for Albums / Recently Added / Recently Played, `#[serde(default)]`; see "Album cover grid vs list"
 
 **Migration** (`AppConfig::load`): if `servers` is empty after deserialize, synthesize `MpdServer { name: "Default", … }` from the legacy fields, set `default_server`, and `save()` once so the file upgrades. All new optional fields must carry `#[serde(default)]` so existing config files still load.
+
+## MPD protocol reference
+**<https://mpd.readthedocs.io/en/stable/protocol.html>** — the authoritative command reference. Check it before adding or changing any command; exact spelling matters and MPD rejects anything else outright with `ACK [5@0] {} unknown command` (see the `replay_gain_mode` note under "Playback options"). Underscore conventions are inconsistent across the protocol — `replay_gain_mode` and `list_OK` have them, `setvol`, `playid`, `seekcur`, `listplaylistinfo`, `delpartition` don't — so guessing is unreliable.
 
 ## MpdClient (`src/mpd/client.rs`)
 - `Arc<Mutex<Option<MpdConnection>>>` — clone-cheap, shared across async tasks
@@ -188,8 +190,10 @@ Artist images: `"artist:{name}"`.
 ### Queue editing
 `QueueRemove(id)` uses `delete_id` (song id, not position — stable across concurrent queue mutations). `QueueMoveUp`/`QueueMoveDown(pos)` wrap `move_pos(from, to)`; MPD's `move FROM TO` leaves the song at position `TO` in the *final* list (remove-then-insert semantics), so `move(pos, pos-1)`/`move(pos, pos+1)` are simple adjacent swaps with no off-by-one. `QueueAddNext(uri)` composes this: `add_id` appends to the end, then `move_pos(end, current_song_pos + 1)` relocates it to play right after the current track; if nothing is playing (`song_pos` is `None`), it falls back to `play_id` on the newly added song instead of trying to insert "next" of nothing.
 
-### Now Playing quick controls
-Crossfade (`Status.crossfade`, already parsed) and replay gain mode (`MpdClient::replay_gain_status`/`set_replay_gain_mode`, sends `replaygain_mode <mode>`) live in `now_playing.rs`'s top `toggle_row`, alongside `Outputs`/`Partitions` quick-nav links (plain `NavigateTo`, no new state). `replay_gain_mode` is fetched once in `fetch_all()` on connect (not polled — it rarely changes and isn't part of `status`), stored on `App`, and optimistically updated in the `SetReplayGainMode` handler before the command round-trips.
+### Playback options: crossfade + replay gain (`src/ui/widgets/player_bar.rs`)
+Crossfade (`Status.crossfade`) and replay gain both live in the **player bar**, on a third line under repeat/random/single/consume — they're server-wide playback settings exactly like those, so they belong next to them rather than in a single view's header (they were originally in `now_playing.rs`'s `toggle_row`). The replay-gain `pick_list` carries a visible **"Replay Gain"** label; a bare dropdown reading `off/track/album/auto` gives no clue what it controls.
+- **The MPD commands are `replay_gain_status` and `replay_gain_mode <mode>` — with the underscore between "replay" and "gain".** `replaygain_status`/`replaygain_mode` are not commands; MPD answers `ACK [5@0] {} unknown command` and replay gain silently never works. This was a real shipped bug, fixed in 0.4.1; `live_replay_gain_round_trips` in `live_tests.rs` guards it against a real server, because a unit test can only check the string we build, not that MPD accepts it.
+- `replay_gain_mode` is fetched once in `fetch_all()` on connect (not polled — it rarely changes and isn't part of `status`), stored on `App`, and optimistically updated in the `SetReplayGainMode` handler before the command round-trips.
 
 ### CD playback
 - **Play whole disc**: `add("cdda://")` (no device) or `add("cdda://{device}")` when configured
@@ -214,12 +218,10 @@ Single `winrmpc.redb` file under the platform cache dir. Tables: `art` (blobs), 
 ## Server switching (`src/ui/app.rs`, `src/ui/message.rs`)
 `active_server: String` tracks the current server by name. `SwitchServer(name)` rebuilds `MpdClient`, sets `connected = false`, emits `Connect`, and restores that server's `default_partition` on `Connected`. It also reloads `recently_played` history for the new server (`recently_played_get`, via `spawn_blocking`) and clears the in-memory list first so a slow load can't briefly show the old server's history. `SetDefaultServer` / `AddServer` / `RemoveServer` manage the list from the Settings view; `RemoveServer` also deletes the removed server's `recently_played` key. Startup connects to `default_server`.
 
-## LAN Server Discovery (`src/discovery/mod.rs`, Settings view)
-`discovery::discover()` returns an `impl Stream<Item = DiscoveredServer>` (built with `iced::stream::channel`, wrapped into a `Subscription` via `Subscription::run_with_id("server-discovery", ...)`) that browses `_mpd._tcp.local.` via `mdns_sd::ServiceDaemon` for a fixed 10s window, then stops itself (`stop_browse`/`shutdown`) — re-scan is the "Rescan" button in Settings' new "Nearby Servers" section, not automatic. `Message::StartDiscovery` sets `discovery_scanning = true` (which is what puts the subscription in the batch) and fires a companion `Task::perform(sleep(11s), |_| Message::DiscoveryFinished)` — 1s past the stream's own deadline — to flip it back off; the stream has no separate "I'm done" event of its own. `Message::ServerDiscovered` de-dupes by name. Clicking a discovered row (`UseDiscoveredServer`) **pre-fills** the manual add-server form fields (`settings_server_name`/`settings_host`/`settings_port`) — it never silently saves a profile; password stays manual, matching mikMPD's exact behavior. `instance_name_from_fullname` (pure, tested) strips the `._mpd._tcp.local.` suffix from the raw mDNS fullname.
-
 ## Snapcast Multiroom Control (`src/snapcast/`, `src/ui/views/snapcast.rs`)
 Sibling module to `mpd/`, not bolted onto `MpdClient` — Snapcast is a fully independent JSON-RPC-2.0-over-raw-TCP connection (port 1705 by default) that may be absent/unreachable while MPD is fine. `SnapcastConnection::request()` (`protocol.rs`) sends one line, then reads lines until one carries the matching `"id"`, silently skipping anything else (interleaved push notifications, or a stale response) — this app doesn't consume notifications, polling only (`Message::SnapcastPollTick` every 2s, subscribed only while `View::Snapcast` is the active view). `SnapClient`/`SnapGroup`/`SnapStream` (`types.rs`) are decoded straight from `Server.GetStatus`'s `result.server` JSON via `serde_json` (no hand-rolled parser needed — Snapcast's wire format is already JSON, unlike MPD's).
 - **Connection lifecycle**: `self.snapcast_client: Option<SnapcastClient>` is created lazily on `View::Snapcast` entry (`on_view_enter`, now `&mut self`) and reused across later visits — `on_view_enter` only rebuilds it when there's none yet or `SnapcastClient::addr()` no longer matches the server's current `snapcast_addr()` (host/port edited in Settings), and only calls `SnapcastClient::connect()` when `is_connected()` is false, so a working connection isn't torn down and reopened on every single visit. `is_connected()` is only bookkeeping (`Option::is_some()`), **not** a socket probe — what keeps it honest is that `SnapcastClient::request()` sets the connection back to `None` whenever a call fails with `Connection`/`Io`/`Json` (a dead socket: snapserver restarted, LAN blip, resume from sleep), so the next poll or view entry reconnects. `Rpc` errors deliberately don't drop the connection — a well-formed JSON-RPC error response proves the socket is fine. Without that reset the `if !is_connected()` guard would never fire again after the first drop and the view would stay stuck erroring until an app restart. `Message::SwitchServer` clears `snapcast_client`/`snapcast_groups`/`snapcast_streams`/`snapcast_error` outright — otherwise a client built against server A would silently keep controlling A's Snapcast instance after switching to server B, since nothing else would notice the server changed while that view is closed.
+- **Inactive clients are hidden by default.** A Snapcast server keeps a stale entry for every device that ever connected (a real server here showed 17 groups of which 2 had a connected client), so the unfiltered list is mostly dead weight. `snapcast_show_inactive: bool` on `App` (session-local, not persisted) drives a "Show/Hide N inactive" button in the view header, shown only when there *are* inactive clients. `visible_groups()` also drops a group whose clients are *all* disconnected, so hiding doesn't leave empty cards behind.
 - **Controls** (`Client.SetVolume`, `Group.SetMute`, `Group.SetStream`): each handler optimistically mutates `self.snapcast_groups` in place first (so the UI reflects the change immediately, e.g. a dragged slider), then fires the RPC. No drag-lock against the 2s poll — the existing MPD volume slider (`player_bar.rs`) doesn't have one either, so this matches the codebase's established pattern rather than adding new complexity; the only failure mode is a rare mid-drag poll overwrite, acceptable for a v1.
 - **Not implemented** (explicitly deferred in the plan's own phasing): notification-driven live updates, client rename/latency editing, moving clients between groups, deleting disconnected clients, and a Settings UI for editing `snapcast_host`/`snapcast_port` per server (the fields exist and default to "same host as MPD, port 1705").
 
@@ -227,6 +229,13 @@ Sibling module to `mpd/`, not bolted onto `MpdClient` — Snapcast is a fully in
 Two distinct features sharing one plan (`docs/plans/recently-added-and-played-history.md`) because both extend history-adjacent state — **not to be confused with `RecentAlbum`/`recent_albums`**, the pre-existing 8-item "what's been playing this session" strip shown inline in Now Playing, which is untouched by this section.
 - **Recently Added** (`View::RecentlyAdded`, sidebar beneath Genres): `MpdClient::find_recently_added(since, limit)` sends `find "(modified-since '…')" window 0:limit` — always bounded (an unbounded `modified-since` scan can outrun the socket read on a large library). `on_view_enter` computes `since` as `now - 30 days`. Songs are sorted newest-`last_modified`-first and collapsed to unique album names, rendered through the same `views::albums_list::view` used for the plain Albums list (now takes a `title: &str` param so it can say "Recently Added" instead of "Albums").
 - **Recently Played** (`View::RecentlyPlayed`, opened via a "🕐 History" link in Now Playing's toggle row, not the sidebar): per-server track-level history, distinct from `recent_albums`. `PlayRecorder` (`types.rs`) is a self-contained tick-based reducer — call `tick(file, is_playing, elapsed_secs, duration_secs)` on every `StatusUpdated`; it tracks its own last-seen elapsed internally (no caller-side delta bookkeeping needed) and returns `true` the moment a play should commit: `accumulated >= min(30, max(5, duration/2))` seconds of actual playback, capping any single delta at 5s so a seek or coarse poll gap can't fast-forward the threshold. A commit pushes a `RecentlyPlayedEntry` to `self.recently_played`, prunes to 30 days / 100 entries (`prune_recently_played`), and persists via `spawn_blocking`. **CD tracks are skipped** (no recording at all while `cdda://` is playing); radio streams are recorded (unlike `recent_albums`, which effectively excludes them via its "Unknown Album" filter). The view's Albums mode **derives** groups from track history (`recently_played_albums` — first occurrence per (artist, album) wins, since entries are already newest-first) rather than recording albums separately, so there's one source of truth. `RecentlyPlayedEntry` carries **both** artists: `artist` (`display_artist()`, the track artist, shown per row) and `album_artist` (`display_album_artist()`, `#[serde(default)]` for pre-existing history). `RecentlyPlayedEntry::art_artist()` returns `album_artist` when set and falls back to `artist`, and it's what `recently_played_albums` groups and labels by — art is only ever cached under `Song::art_key()`, i.e. the *album* artist, so grouping by the track artist both split compilations into one tile per guest artist and made every one of those tiles miss the art cache.
+
+## Album cover grid vs list (`src/ui/widgets/album_grid.rs`)
+The Albums list, Recently Added and Recently Played (Albums mode) all render through one shared widget, so they look and behave identically. `album_grid` exposes `tile()` (cover + title + subtitle + optional caption), `grid()` (chunks tiles into rows — `Element` isn't `Clone`, so it consumes the iterator rather than slicing), `layout_toggle()` (the ▦ Grid / ☰ List button) and `art_for()` (cache lookup via `art_key_for`).
+- **One flag for all three views**: `AppConfig::album_grid_view` (`#[serde(default)]`, persisted), toggled by `Message::ToggleAlbumGridView`. Deliberately not per-view — three independent layout memories would feel arbitrary.
+- **List mode also shows art**, as a 36px thumbnail, so switching layouts never changes *which* albums appear to have covers.
+- **Art prefetch is bounded** — `App::ALBUM_ART_PREFETCH_LIMIT` (60). Each uncached album costs an MPD `find` to locate a track plus, on a miss, a MusicBrainz lookup behind the global ~1 req/s throttle; an unbounded prefetch over an 800-album library would hammer the server for a quarter of an hour. `prefetch_album_art()` picks the list matching the current view, skips anything already in `art_handles`, and takes the first 60. Cached art always renders regardless of the cap, so grids fill in as you browse. **Known limitation**: there's no visible-range/lazy fetch (iced 0.13 doesn't expose scroll position per item), so past the first 60 uncached entries tiles show the placeholder block until visited.
+- `fetch_album_group_art(artist, base, variant)` is the single per-album fetch (tag → cover file → MusicBrainz), shared by `prefetch_album_art` and the `ArtistAlbumsLoaded` handler.
 
 ## Stored Playlists (`src/mpd/client.rs`, `src/ui/views/{playlists_list,playlist_detail,add_to_playlist}.rs`)
 Mirrors mikMPD's setup. `PlaylistInfo` (`src/mpd/types.rs`) backs `View::Playlists` / `View::PlaylistDetail(name)` / `View::AddToPlaylist`, driven by `on_view_enter` (`View::Playlists` → `list_playlists`).
@@ -239,6 +248,7 @@ Mirrors mikMPD's setup. `PlaylistInfo` (`src/mpd/types.rs`) backs `View::Playlis
 `LyricsClient` fetches synced/plain lyrics from LRCLIB for the current song; `parse_lrc` parses `[mm:ss.xx]` timestamps. Results cache through the redb `Store` (`lyrics_get`/`lyrics_put`, keyed like art) so they're fetched once per track.
 - **State**: `lyrics: HashMap<String, Option<Lyrics>>` on `App` — `None` entry = loading, `Some(None)` = fetched-but-none-found, `Some(Some(l))` = have lyrics. `show_lyrics: bool` (default `true`) toggled by `Message::ToggleLyrics`.
 - **Now Playing layout**: when `show_lyrics`, the view splits into a left column (art/info/recents) and a right `FillPortion(2)` lyrics panel; synced lines highlight the one matching `elapsed - LYRIC_SYNC_OFFSET` (0.5s, since LRCLIB timestamps tend to lead slightly) and auto-scroll via `lyrics_scroll_id`.
+- **Both lyric branches must carry `.id(lyrics_scroll_id)`.** iced reuses widget state by *(tree position, widget type)* only — `scrollable::Id` is for targeting operations, not identity — so the synced and plain scrollables, which sit at the same tree path, share scroll state. The plain branch originally had no id: it inherited the synced branch's autoscrolled offset (near the bottom), opened scrolled past its own much shorter content, i.e. **blank**, and had no id to reset and no autoscroll to re-sync. `App::reset_lyrics_scroll()` snaps to `RelativeOffset::START` on track change and on entering Now Playing. `lyrics_autoscroll()` is additionally gated on `current_view == View::NowPlaying`, since off that view the operation walks the tree every 500ms to reach a widget that isn't there.
 - `fetch_lyrics(song)` (`app.rs`) skips the request if the key is already in `self.lyrics`.
 
 ## Album Art Fetch Order (`src/mpd/client.rs`, `App::fetch_art`)
@@ -294,7 +304,7 @@ Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer fo
 Build dependency: `winres = "0.1"` in `[build-dependencies]`.
 
 ## Planning Docs (`docs/plans/`)
-Design docs written before implementing a feature — read the relevant one before starting related work, and add new ones there for anything non-trivial. `mikmpd-parity-overview.md` tracks the gap between winrmpc and its sibling iOS client [mikMPD](https://github.com/mickegris/mikMPD) (`../mikMPD`), with one linked plan file per gap (queue editing, multi-disc album grouping, recently-added/played history, server stats & diagnostics, Snapcast control, LAN server discovery, Now Playing quick controls). `playlists.md` and `enhancements.md` (playlists, MPD log, lyrics) are earlier plans from this same parity effort — already shipped.
+Design docs written before implementing a feature — read the relevant one before starting related work, and add new ones there for anything non-trivial. `mikmpd-parity-overview.md` tracks the gap between winrmpc and its sibling iOS client [mikMPD](https://github.com/mickegris/mikMPD) (`../mikMPD`), with one linked plan file per gap (queue editing, multi-disc album grouping, recently-added/played history, server stats & diagnostics, Snapcast control, Now Playing quick controls). `server-discovery.md` is kept only as a record — that feature was **removed** in 0.4.1. `playlists.md` and `enhancements.md` (playlists, MPD log, lyrics) are earlier plans from this same parity effort — already shipped.
 
 ## Current Version
 `0.4.1` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.

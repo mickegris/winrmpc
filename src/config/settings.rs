@@ -70,6 +70,11 @@ pub struct AppConfig {
     pub cd_device: Option<String>,
     #[serde(default)]
     pub recent_albums: Vec<RecentAlbum>,
+    /// Cover grid (true) vs compact list (false) for the Albums, Recently
+    /// Added and Recently Played views. One flag for all three so the app
+    /// doesn't feel inconsistent between them.
+    #[serde(default)]
+    pub album_grid_view: bool,
 
     // Multi-server
     #[serde(default)]
@@ -163,6 +168,7 @@ impl Default for AppConfig {
             radio_stations: default_radio_stations(),
             cd_device: None,
             recent_albums: Vec::new(),
+            album_grid_view: false,
             servers: vec![server],
             default_server: Some("Default".into()),
         }

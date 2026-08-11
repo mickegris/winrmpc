@@ -2,11 +2,9 @@ use crate::mpd::types::*;
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::link::{icon_btn, link, link_accent};
-use iced::widget::{button, column, container, image, pick_list, row, scrollable, text, Space};
+use iced::widget::{button, column, container, image, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
-
-const REPLAY_GAIN_MODES: [&str; 4] = ["off", "track", "album", "auto"];
 
 /// Seconds to delay synced-lyric highlighting. LRCLIB timestamps tend to mark
 /// when a line *starts* slightly early relative to the audible vocal, so we
@@ -24,40 +22,17 @@ pub fn view<'a>(
     show_lyrics: bool,
     lyrics_scroll_id: iced::widget::scrollable::Id,
     playing_from: Option<&'a str>,
-    replay_gain_mode: Option<&'a str>,
 ) -> Element<'a, Message> {
     // Toggle row is placed first in ALL branches so the outer column has a
     // stable skeleton regardless of current_song state. This prevents iced's
     // positional widget-state diffing from reusing the centered "None" layout
     // on the "Some" branches after a momentary None blip.
-    let crossfade_secs = status.crossfade.unwrap_or(0);
-    let crossfade_control = row![
-        text("Crossfade").size(11).color(AppColors::TEXT_MUTED),
-        icon_btn("-", Message::SetCrossfade(crossfade_secs.saturating_sub(1))),
-        text(format!("{crossfade_secs}s")).size(12).color(AppColors::TEXT_PRIMARY),
-        icon_btn("+", Message::SetCrossfade(crossfade_secs + 1)),
-    ]
-    .spacing(2)
-    .align_y(Alignment::Center);
-
-    let rg_picker = pick_list(
-        REPLAY_GAIN_MODES.to_vec(),
-        replay_gain_mode,
-        |m: &str| Message::SetReplayGainMode(m.to_string()),
-    )
-    .text_size(11)
-    .padding([2, 6]);
-
     let toggle_row = row![
         link("Outputs", 12, Message::NavigateTo(View::Outputs)),
         Space::with_width(12),
         link("Partitions", 12, Message::NavigateTo(View::Partitions)),
         Space::with_width(12),
         link("\u{1F551} History", 12, Message::NavigateTo(View::RecentlyPlayed)),
-        Space::with_width(20),
-        crossfade_control,
-        Space::with_width(16),
-        rg_picker,
         Space::with_width(Length::Fill),
         lyrics_toggle(show_lyrics),
     ]
@@ -419,7 +394,16 @@ fn lyrics_column<'a>(
                     .height(Length::Fill)
                     .into()
             } else if let Some(ref plain) = l.plain {
+                // Same id as the synced branch (only one of the two renders
+                // at a time). Without it this scrollable is unreachable by
+                // `snap_to` — and because iced matches widget state by
+                // (tree position, widget type) alone, with `scrollable::Id`
+                // playing no part in that matching, this one sits at the
+                // *same* path as the synced one and inherits its scroll
+                // offset. Synced lyrics are autoscrolled near the bottom, so
+                // a plain-lyrics track landing on that offset renders blank.
                 scrollable(text(plain).size(15).color(AppColors::TEXT_SECONDARY))
+                    .id(scroll_id)
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into()

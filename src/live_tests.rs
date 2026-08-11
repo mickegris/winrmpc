@@ -425,3 +425,37 @@ async fn snapcast_keeps_the_connection_on_an_rpc_error_response() {
 
 
 
+
+/// Guards the `replay_gain_status` / `replay_gain_mode` spelling. Both were
+/// previously sent without the underscore between "replay" and "gain", which
+/// MPD rejects outright with `ACK [5@0] {} unknown command`, so replay gain
+/// silently never worked. A unit test can only check the string we build;
+/// only a live server proves MPD accepts it.
+#[tokio::test]
+#[ignore = "needs a live MPD server; set WINRMPC_TEST_MPD"]
+async fn live_replay_gain_round_trips() {
+    let Some(addr) = mpd_addr() else { return };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    let original = client
+        .replay_gain_status()
+        .await
+        .expect("replay_gain_status must be a real command");
+    assert!(
+        ["off", "track", "album", "auto"].contains(&original.as_str()),
+        "unexpected mode {original:?}"
+    );
+
+    for mode in ["track", "album", "auto", "off"] {
+        client
+            .set_replay_gain_mode(mode)
+            .await
+            .expect("replay_gain_mode must be a real command");
+        assert_eq!(client.replay_gain_status().await.expect("status"), mode);
+    }
+
+    // Leave the server exactly as we found it.
+    client.set_replay_gain_mode(&original).await.expect("restore");
+    assert_eq!(client.replay_gain_status().await.expect("status"), original);
+}

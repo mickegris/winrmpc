@@ -10,7 +10,6 @@ mod logger;
 mod icon;
 mod lyrics;
 mod store;
-mod discovery;
 mod snapcast;
 #[cfg(test)]
 mod live_tests;

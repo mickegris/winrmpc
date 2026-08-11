@@ -1,0 +1,102 @@
+//! Shared album-art grid, used by the Albums list, Recently Added and
+//! Recently Played so all three look and behave the same.
+//!
+//! Every one of those views can be shown either as a compact text list or as
+//! a grid of cover tiles (the Spotify/mikMPD shape); the choice is a single
+//! app-wide flag, `AppConfig::album_grid_view`.
+
+use crate::ui::message::Message;
+use crate::ui::theme::AppColors;
+use iced::widget::{button, column, container, image, row, text, Space};
+use iced::{Alignment, Element, Length};
+use std::collections::HashMap;
+
+pub const TILE_SIZE: u16 = 120;
+pub const TILES_PER_ROW: usize = 5;
+
+/// One cover tile: art (or a placeholder block), title, and a muted
+/// subtitle. `caption` is an optional third line — "2 discs", "3d ago".
+pub fn tile<'a>(
+    art: Option<&'a iced::widget::image::Handle>,
+    title: String,
+    subtitle: String,
+    caption: Option<String>,
+    on_press: Message,
+) -> Element<'a, Message> {
+    let art_widget: Element<'a, Message> = match art {
+        Some(handle) => image(handle.clone())
+            .width(TILE_SIZE)
+            .height(TILE_SIZE)
+            .into(),
+        None => container(text("").size(1))
+            .width(TILE_SIZE)
+            .height(TILE_SIZE)
+            .style(|_t: &iced::Theme| container::Style {
+                background: Some(AppColors::BG_SECONDARY.into()),
+                border: iced::Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into(),
+    };
+
+    let mut col = column![
+        art_widget,
+        Space::with_height(6),
+        text(title).size(13).color(AppColors::TEXT_PRIMARY),
+        text(subtitle).size(11).color(AppColors::TEXT_SECONDARY),
+    ]
+    .align_x(Alignment::Center)
+    .width(TILE_SIZE);
+
+    if let Some(c) = caption {
+        col = col.push(text(c).size(10).color(AppColors::TEXT_MUTED));
+    }
+
+    button(col)
+        .on_press(on_press)
+        .padding(4)
+        .style(|_t: &iced::Theme, _s| button::Style {
+            background: None,
+            text_color: AppColors::TEXT_PRIMARY,
+            border: iced::Border::default(),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Wraps tiles into rows. `Element` isn't `Clone`, so this consumes the
+/// iterator in fixed-size chunks rather than slicing a borrowed `Vec`.
+pub fn grid<'a>(tiles: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    let mut rows = column![].spacing(16);
+    let mut iter = tiles.into_iter();
+    loop {
+        let chunk: Vec<Element<'a, Message>> = (&mut iter).take(TILES_PER_ROW).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        rows = rows.push(row(chunk).spacing(16));
+    }
+    rows.into()
+}
+
+/// The Grid/List switch. Shown in every view that supports both.
+pub fn layout_toggle<'a>(grid_view: bool) -> Element<'a, Message> {
+    let label = if grid_view { "☰ List" } else { "▦ Grid" };
+    button(text(label).size(12))
+        .on_press(Message::ToggleAlbumGridView)
+        .padding([4, 12])
+        .into()
+}
+
+/// Look up an album's cached art. Returns `None` when nothing has been
+/// fetched for it yet, which renders as the placeholder block.
+pub fn art_for<'a>(
+    art_handles: &'a HashMap<String, iced::widget::image::Handle>,
+    artist: &str,
+    album: &str,
+) -> Option<&'a iced::widget::image::Handle> {
+    art_handles.get(&crate::mpd::types::art_key_for(artist, album))
+}
