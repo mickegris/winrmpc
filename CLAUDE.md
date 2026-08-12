@@ -204,6 +204,12 @@ Crossfade (`Status.crossfade`) and replay gain both live in the **player bar**, 
 - Note: `lsinfo cdda:///` and `lsinfo cdda:///dev/sr0` both fail on this setup. The batch add+delete fallback is the actual working path.
 - `MpdClient::delete_range_from(start)` — sends `delete {start}:` (open-ended range).
 
+### Connection desync + self-healing (`src/mpd/error.rs`, `client.rs`)
+**`MpdError::is_connection_fatal()`** — true for everything except `Server` (an `ACK`, which is a well-framed reply proving the socket is fine) and `NotConnected`. `MpdClient::cmd`/`cmd_binary`/`add_all` set `*guard = None` on a fatal error, so the next `ConnectionTick` opens a genuinely new socket.
+- **Why this is load-bearing**: `read_line` fails with `stream did not contain valid UTF-8` the moment binary art bytes are left in the buffer, and tokio consumes those bytes on the failed read — so one bad framing event poisons the connection permanently. Worse, `ConnectionTick` short-circuits on `client.is_connected()` (which is just `conn.is_some()`), so a desynced-but-`Some` connection made the app log **"Connected to MPD" every 3s while every command failed**, recoverable only by restarting. Shipped symptom: `currentsong` answering with `ACK … {albumart} No file exists`, i.e. reading a *previous* command's response.
+- `read_binary` must consume the trailing newline **and** the terminating line on every path, including `binary: 0` — an early return there left two lines for the next command to misread.
+- Header parse failures (`size:`/`binary:`) return `Parse`, which is fatal by design: we've read a header announcing a payload we can no longer locate.
+
 ### Protocol EOF guard (`src/mpd/protocol.rs`)
 All three read loops (`read_pairs`, `command_list`, `read_binary`) check `if line.is_empty()` and return `MpdError::Connection("Connection closed unexpectedly")` to prevent infinite hang on server drop.
 

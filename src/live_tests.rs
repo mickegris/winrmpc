@@ -459,3 +459,65 @@ async fn live_replay_gain_round_trips() {
     client.set_replay_gain_mode(&original).await.expect("restore");
     assert_eq!(client.replay_gain_status().await.expect("status"), original);
 }
+
+/// Reproduces the album-grid desync: many concurrent art fetches sharing one
+/// connection, interleaved with the 500ms status poll. Symptom in the field
+/// was every subsequent command failing with "stream did not contain valid
+/// UTF-8" and, damningly, `currentsong` receiving an ACK addressed to
+/// `{albumart}` — i.e. an unread response left in the socket.
+#[tokio::test]
+#[ignore = "needs a live MPD server; set WINRMPC_TEST_MPD"]
+async fn live_concurrent_art_fetches_do_not_desync_the_connection() {
+    let Some(addr) = mpd_addr() else { return };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    // A spread of real albums, like a grid page.
+    let pairs = client.list_albums_by_artist().await.expect("albums");
+    let mut uris = Vec::new();
+    for (artist, album) in pairs.iter().take(40) {
+        if artist.is_empty() { continue; }
+        if let Ok(songs) = client.find_album_by_artist(album, artist).await {
+            if let Some(s) = songs.first() {
+                uris.push(s.file.clone());
+            }
+        }
+        if uris.len() >= 12 { break; }
+    }
+    assert!(uris.len() >= 4, "need a few albums to hammer");
+
+    // Same shape as App::prefetch_album_art: bounded concurrency over the
+    // one shared connection, plus the status poll running alongside.
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    let mut handles = Vec::new();
+    for uri in uris.clone() {
+        let c = client.clone();
+        let g = gate.clone();
+        handles.push(tokio::spawn(async move {
+            let _p = g.acquire().await;
+            let _ = c.tag_art(&uri).await;
+            let _ = c.cover_file_art(&uri).await;
+        }));
+    }
+    let poller = {
+        let c = client.clone();
+        tokio::spawn(async move {
+            for _ in 0..40 {
+                let _ = c.status().await;
+                let _ = c.current_song().await;
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+    };
+    for h in handles { let _ = h.await; }
+    let _ = poller.await;
+
+    // The connection must still be usable and correctly framed.
+    let status = client
+        .status()
+        .await
+        .expect("status must still work after concurrent art fetches");
+    let _ = status.state;
+    let stats = client.stats().await.expect("stats must still work");
+    assert!(stats.songs > 0, "a framed response should carry real data");
+}

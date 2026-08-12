@@ -70,6 +70,12 @@ impl MpdClient {
         let elapsed = started.elapsed();
         let slow = elapsed.as_millis() as u64 >= crate::logger::SLOW_COMMAND_MS;
         let duration_ms = elapsed.as_millis() as u64;
+        if let Err(e) = &result {
+            if e.is_connection_fatal() {
+                tracing::warn!(duration_ms, "connection desynced on {verb} ({e}) — dropping it so the next tick reconnects");
+                *guard = None;
+            }
+        }
         match &result {
             Ok(_) if !quiet || slow => {
                 tracing::info!(duration_ms, "→ {verb} ({elapsed:?})")
@@ -90,7 +96,19 @@ impl MpdClient {
     async fn cmd_binary(&self, cmd: &str) -> MpdResult<Option<(Vec<u8>, usize)>> {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
-        conn.command_binary(cmd).await
+        let result = conn.command_binary(cmd).await;
+        // The binary path is the one most able to desync the stream: it
+        // reads a declared byte count out of the socket, so any disagreement
+        // between the header and what we consume leaves the remainder to be
+        // misread as the *next* command's response.
+        if let Err(e) = &result {
+            if e.is_connection_fatal() {
+                let verb = cmd.split_whitespace().next().unwrap_or(cmd);
+                tracing::warn!("connection desynced on {verb} ({e}) — dropping it so the next tick reconnects");
+                *guard = None;
+            }
+        }
+        result
     }
 
     /// Escape a user-supplied string value for inclusion inside MPD protocol quotes.
@@ -269,6 +287,11 @@ impl MpdClient {
         // flagging when it runs long, so it has to carry the field like
         // `cmd()` does.
         let duration_ms = elapsed.as_millis() as u64;
+        if let Err(e) = &result {
+            if e.is_connection_fatal() {
+                *guard = None;
+            }
+        }
         match &result {
             Ok(_) => tracing::info!(duration_ms, "→ add_all ({} tracks, {elapsed:?})", uris.len()),
             Err(e) => tracing::warn!(
@@ -697,6 +720,23 @@ mod tests {
             "add \"a.flac\"".to_string(),
             "add \"dir/b \\\"weird\\\".mp3\"".to_string(),
         ]);
+    }
+
+    #[test]
+    fn connection_fatal_classification() {
+        // An ACK is a well-framed reply — the socket is fine, keep it.
+        assert!(!MpdError::Server { code: 50, message: "No file exists".into() }
+            .is_connection_fatal());
+        assert!(!MpdError::NotConnected.is_connection_fatal());
+        // These all mean the stream position is unknown.
+        assert!(MpdError::Connection("closed".into()).is_connection_fatal());
+        assert!(MpdError::Parse("binary: bad".into()).is_connection_fatal());
+        assert!(MpdError::Protocol("bad greeting".into()).is_connection_fatal());
+        assert!(MpdError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+        .is_connection_fatal());
     }
 
     #[test]

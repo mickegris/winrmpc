@@ -1,7 +1,7 @@
 use crate::config::MpdServer;
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
-use iced::widget::{button, column, container, pick_list, text, Space};
+use iced::widget::{scrollable, button, column, container, pick_list, text, Space};
 use iced::{Alignment, Element, Length};
 
 pub fn view<'a>(
@@ -37,8 +37,7 @@ pub fn view<'a>(
         .size(9)
         .color(AppColors::TEXT_MUTED);
 
-    container(
-        column![
+    let nav = column![
             Space::with_height(12),
             container(status_text).center_x(Length::Fill),
             Space::with_height(4),
@@ -57,7 +56,11 @@ pub fn view<'a>(
             nav_button("Search", View::Search, current_view),
             nav_button("Radio", View::Radio, current_view),
             nav_button("CD", View::CD, current_view),
-            Space::with_height(Length::Fill),
+            // Fixed gap rather than Length::Fill: with a Fill here the
+            // bottom group (…Settings/Log/Stats) got pushed off the bottom
+            // of a shorter window with no way to reach it, since the sidebar
+            // doesn't scroll on its own.
+            Space::with_height(14),
             nav_button("Outputs", View::Outputs, current_view),
             nav_button("Partitions", View::Partitions, current_view),
             nav_button("Snapcast", View::Snapcast, current_view),
@@ -68,8 +71,11 @@ pub fn view<'a>(
         ]
         .spacing(1)
         .align_x(Alignment::Center)
-        .width(Length::Fill),
-    )
+        .width(Length::Fill);
+
+    // Scrollable so every entry stays reachable no matter how short the
+    // window is — there are 17 of them.
+    container(scrollable(nav).height(Length::Fill))
     .width(90)
     .height(Length::Fill)
     .style(|_theme: &iced::Theme| container::Style {

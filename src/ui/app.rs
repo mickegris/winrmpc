@@ -344,6 +344,14 @@ impl App {
                         async move {
                             // Skip reconnect if the TCP connection is already up
                             // (e.g. startup partition switch is still in progress).
+                            //
+                            // This is only safe because `MpdClient` now drops
+                            // the connection on any framing/IO error
+                            // (`MpdError::is_connection_fatal`). Without that,
+                            // a desynced socket stayed `Some` forever, this
+                            // check-circuited every reconnect, and the app
+                            // logged "Connected to MPD" every 3s while every
+                            // command failed — recoverable only by restarting.
                             if client.is_connected().await {
                                 return Ok(());
                             }
@@ -2434,12 +2442,15 @@ impl App {
 
     /// How many uncached albums a single grid/list view will fetch art for.
     ///
-    /// Bounded on purpose. Each uncached album costs an MPD `find` to locate
-    /// a track, and on a miss a MusicBrainz lookup behind the global ~1 req/s
-    /// throttle — so an unbounded prefetch over a 800-album library would
-    /// hammer the server for a quarter of an hour. Art already in the cache
-    /// always renders regardless of this cap, so grids fill in as you browse.
-    const ALBUM_ART_PREFETCH_LIMIT: usize = 60;
+    /// Bounded on purpose, and deliberately small. Each uncached album costs
+    /// an MPD `find` to locate a track, then `readpicture` and `albumart`
+    /// probes, and on a miss a MusicBrainz lookup behind the global ~1 req/s
+    /// throttle. On a library with no embedded art *every* album takes the
+    /// full path, so this is the most connection pressure the app ever
+    /// generates — it was 60 and that was enough to make the shared
+    /// connection fall over. Art already in the cache always renders
+    /// regardless of this cap, so grids fill in as you browse.
+    const ALBUM_ART_PREFETCH_LIMIT: usize = 24;
 
     /// Fetch one album's cover: MPD tag art, then MPD cover file, then
     /// MusicBrainz — the order documented in CLAUDE.md. `variant` is the raw

@@ -99,52 +99,61 @@ pub fn view<'a>(
         ConsumeState::Off => "Consume Off",
     };
 
-    // Crossfade and replay gain live here beside the other playback modes
-    // rather than in Now Playing's header — they're server-wide playback
-    // settings, exactly like repeat/random/single/consume, and they apply
-    // no matter which view is open.
+    // Crossfade and replay gain are server-wide playback settings exactly
+    // like repeat/random/single/consume, so they sit beside them rather than
+    // in one view's header — stacked in their own column to the *left* of
+    // the mode buttons, crossfade above replay gain.
     let crossfade_secs = status.crossfade.unwrap_or(0);
     let crossfade_control = row![
-        text("Crossfade").size(10).color(AppColors::TEXT_MUTED),
+        text("Crossfade").size(12).color(AppColors::TEXT_SECONDARY),
+        Space::with_width(Length::Fill),
         small_btn("−", Message::SetCrossfade(crossfade_secs.saturating_sub(1))),
         text(format!("{crossfade_secs}s"))
-            .size(11)
+            .size(13)
             .color(AppColors::TEXT_PRIMARY),
         small_btn("+", Message::SetCrossfade(crossfade_secs + 1)),
     ]
-    .spacing(3)
+    .spacing(4)
     .align_y(Alignment::Center);
 
     // Labelled: a bare dropdown reading "off"/"track"/"album"/"auto" gives
     // no clue what it controls.
     let replay_gain_control = row![
-        text("Replay Gain").size(10).color(AppColors::TEXT_MUTED),
+        text("Replay Gain").size(12).color(AppColors::TEXT_SECONDARY),
+        Space::with_width(Length::Fill),
         pick_list(
             REPLAY_GAIN_MODES.to_vec(),
             replay_gain_mode,
             |m: &str| Message::SetReplayGainMode(m.to_string()),
         )
-        .text_size(11)
-        .padding([2, 6]),
+        .text_size(12)
+        .padding([3, 8]),
     ]
-    .spacing(4)
+    .spacing(6)
     .align_y(Alignment::Center);
 
-    let mode_indicators = column![
-        row![
-            mode_btn(repeat_text, status.repeat, Message::ToggleRepeat),
-            mode_btn(random_text, status.random, Message::ToggleRandom),
+    let audio_settings = column![crossfade_control, replay_gain_control]
+        .spacing(5)
+        .width(190);
+
+    let mode_indicators = row![
+        audio_settings,
+        Space::with_width(14),
+        column![
+            row![
+                mode_btn(repeat_text, status.repeat, Message::ToggleRepeat),
+                mode_btn(random_text, status.random, Message::ToggleRandom),
+            ]
+            .spacing(4),
+            row![
+                mode_btn(single_text, status.single != SingleState::Off, Message::ToggleSingle),
+                mode_btn(consume_text, status.consume != ConsumeState::Off, Message::ToggleConsume),
+            ]
+            .spacing(4),
         ]
-        .spacing(2),
-        row![
-            mode_btn(single_text, status.single != SingleState::Off, Message::ToggleSingle),
-            mode_btn(consume_text, status.consume != ConsumeState::Off, Message::ToggleConsume),
-        ]
-        .spacing(2),
-        row![crossfade_control, Space::with_width(10), replay_gain_control]
-            .align_y(Alignment::Center),
+        .spacing(4),
     ]
-    .spacing(3);
+    .align_y(Alignment::Center);
 
     container(
         column![
@@ -227,15 +236,15 @@ fn mode_btn(label: &str, active: bool, msg: Message) -> Element<'_, Message> {
 
     button(
         container(
-            text(label.to_string()).size(9).color(fg),
+            text(label.to_string()).size(11).color(fg),
         )
         .center_x(Length::Fill)
         .center_y(Length::Fill),
     )
     .on_press(msg)
-    .height(18)
-    .width(70)
-    .padding([1, 4])
+    .height(24)
+    .width(88)
+    .padding([2, 6])
     .style(move |_theme: &iced::Theme, _status| button::Style {
         background: Some(bg.into()),
         text_color: fg,
@@ -257,8 +266,8 @@ fn format_time(secs: f64) -> String {
 
 /// Compact square button for the crossfade −/+ steppers.
 fn small_btn(label: &str, msg: Message) -> Element<'_, Message> {
-    button(text(label).size(11).color(AppColors::TEXT_SECONDARY))
-        .padding([1, 5])
+    button(text(label).size(13).color(AppColors::TEXT_PRIMARY))
+        .padding([2, 8])
         .on_press(msg)
         .style(|_t: &iced::Theme, _s| button::Style {
             background: Some(AppColors::BG_SECONDARY.into()),
