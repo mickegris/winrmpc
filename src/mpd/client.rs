@@ -55,18 +55,35 @@ impl MpdClient {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
         let verb = cmd.split_whitespace().next().unwrap_or(cmd);
-        // Suppress high-frequency polling verbs from the in-app log
+        // Suppress high-frequency polling verbs from the in-app log, unless
+        // they turn out to be slow — a hung status/currentsong poll is
+        // exactly the failure mode worth surfacing despite the normal quiet
+        // rule (see docs/plans/server-stats-and-diagnostics.md §Part B).
         let quiet = matches!(
             verb,
             "status" | "currentsong" | "playlistinfo"
                 | "outputs" | "listpartitions"
                 | "idle" | "noidle"
         );
+        let started = std::time::Instant::now();
         let result = conn.command(cmd).await;
+        let elapsed = started.elapsed();
+        let slow = elapsed.as_millis() as u64 >= crate::logger::SLOW_COMMAND_MS;
+        let duration_ms = elapsed.as_millis() as u64;
+        if let Err(e) = &result {
+            if e.is_connection_fatal() {
+                tracing::warn!(duration_ms, "connection desynced on {verb} ({e}) — dropping it so the next tick reconnects");
+                *guard = None;
+            }
+        }
         match &result {
-            Ok(_) if !quiet => tracing::info!("→ {verb}"),
-            Err(e) if !quiet => tracing::warn!("← ERR {verb}: {e}"),
-            Err(e) => tracing::debug!("← ERR {verb}: {e}"),
+            Ok(_) if !quiet || slow => {
+                tracing::info!(duration_ms, "→ {verb} ({elapsed:?})")
+            }
+            Err(e) if !quiet || slow => {
+                tracing::warn!(duration_ms, "← ERR {verb}: {e} ({elapsed:?})")
+            }
+            Err(e) => tracing::debug!(duration_ms, "← ERR {verb}: {e} ({elapsed:?})"),
             _ => {}
         }
         result
@@ -79,7 +96,19 @@ impl MpdClient {
     async fn cmd_binary(&self, cmd: &str) -> MpdResult<Option<(Vec<u8>, usize)>> {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
-        conn.command_binary(cmd).await
+        let result = conn.command_binary(cmd).await;
+        // The binary path is the one most able to desync the stream: it
+        // reads a declared byte count out of the socket, so any disagreement
+        // between the header and what we consume leaves the remainder to be
+        // misread as the *next* command's response.
+        if let Err(e) = &result {
+            if e.is_connection_fatal() {
+                let verb = cmd.split_whitespace().next().unwrap_or(cmd);
+                tracing::warn!("connection desynced on {verb} ({e}) — dropping it so the next tick reconnects");
+                *guard = None;
+            }
+        }
+        result
     }
 
     /// Escape a user-supplied string value for inclusion inside MPD protocol quotes.
@@ -163,6 +192,30 @@ impl MpdClient {
         self.cmd_ok(&format!("crossfade {secs}")).await
     }
 
+    /// Current replay gain mode ("off"/"track"/"album"/"auto"). Defaults to
+    /// "off" if the server omits the field (matches MPD's own default).
+    ///
+    /// The command is `replay_gain_status`, **with** the underscore between
+    /// "replay" and "gain" — `replaygain_status` is not a command and MPD
+    /// answers `ACK [5@0] {} unknown command`. Verified against the protocol
+    /// docs and a live MPD 0.24.0.
+    pub async fn replay_gain_status(&self) -> MpdResult<String> {
+        let pairs = self.cmd("replay_gain_status").await?;
+        Ok(pairs
+            .iter()
+            .find(|(k, _)| k == "replay_gain_mode")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "off".to_string()))
+    }
+
+    pub async fn set_replay_gain_mode(&self, mode: &str) -> MpdResult<()> {
+        self.cmd_ok(&Self::replay_gain_mode_cmd(mode)).await
+    }
+
+    fn replay_gain_mode_cmd(mode: &str) -> String {
+        format!("replay_gain_mode {mode}")
+    }
+
     // ========================================================================
     // Status / Current Song
     // ========================================================================
@@ -206,6 +259,58 @@ impl MpdClient {
             .find(|(k, _)| k == "Id")
             .and_then(|(_, v)| v.parse().ok())
             .ok_or_else(|| MpdError::Parse("No Id in addid response".into()))
+    }
+
+    /// Bulk-add multiple URIs in one round trip via `command_list`, instead
+    /// of one `add` per URI (which starves the shared connection mutex —
+    /// and the 500ms status poll that also needs it — for the duration of
+    /// the whole list; see docs/plans/review-fixes-performance.md §1, and
+    /// mikMPD's own "Bulk enqueue is server-side" note for the same lesson
+    /// learned the hard way there). MPD applies the list in order and stops
+    /// at the first failing command — tracks queued before the failure stay
+    /// queued; nothing after it is attempted.
+    pub async fn add_all(&self, uris: &[String]) -> MpdResult<()> {
+        if uris.is_empty() {
+            return Ok(());
+        }
+        let cmds = Self::build_add_commands(uris);
+        let refs: Vec<&str> = cmds.iter().map(|s| s.as_str()).collect();
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut().ok_or(MpdError::NotConnected)?;
+        let started = std::time::Instant::now();
+        let result = conn.command_list(&refs).await;
+        let elapsed = started.elapsed();
+        // `duration_ms` must be a structured tracing field, not just text in
+        // the message: `logger::InAppLayer` reads that field into
+        // `LogEntry.duration_ms`, which is what drives `is_slow()` and the
+        // Log view's ⚠ prefix. A bulk enqueue is exactly the command worth
+        // flagging when it runs long, so it has to carry the field like
+        // `cmd()` does.
+        let duration_ms = elapsed.as_millis() as u64;
+        if let Err(e) = &result {
+            if e.is_connection_fatal() {
+                *guard = None;
+            }
+        }
+        match &result {
+            Ok(_) => tracing::info!(duration_ms, "→ add_all ({} tracks, {elapsed:?})", uris.len()),
+            Err(e) => tracing::warn!(
+                duration_ms,
+                "← ERR add_all: {e} ({elapsed:?}) — MPD aborts a command list at the \
+                 first failure, so some of the {} tracks were not queued",
+                uris.len()
+            ),
+        }
+        result.map(|_| ())
+    }
+
+    /// Pure command-string formation for `add_all`, split out so it's
+    /// testable without a live connection (mirrors the `escape()` tests'
+    /// style for the rest of this module).
+    fn build_add_commands(uris: &[String]) -> Vec<String> {
+        uris.iter()
+            .map(|u| format!("add \"{}\"", Self::escape(u)))
+            .collect()
     }
 
     pub async fn delete_pos(&self, pos: u32) -> MpdResult<()> {
@@ -255,9 +360,52 @@ impl MpdClient {
         Ok(commands::parse_tag_list(&pairs, tag))
     }
 
+    /// `list Album group AlbumArtist` (MPD 0.21+) — returns
+    /// `(album_artist, album)` pairs, so same-named albums by different
+    /// artists can be told apart. Falls back to a flat, artist-less list
+    /// (empty-string artist) on ACK from a pre-0.21 server that doesn't
+    /// support `group`.
+    pub async fn list_albums_by_artist(&self) -> MpdResult<Vec<(String, String)>> {
+        match self.cmd("list Album group AlbumArtist").await {
+            Ok(pairs) => Ok(commands::parse_grouped_values(&pairs, "AlbumArtist", "Album")),
+            Err(_) => {
+                let albums = self.list_tag("Album").await?;
+                Ok(albums.into_iter().map(|a| (String::new(), a)).collect())
+            }
+        }
+    }
+
+    /// `find Album "X" AlbumArtist "Y"` — artist-scoped album lookup, used
+    /// once album identity is artist-aware so same-named albums by
+    /// different artists don't mix tracks.
+    pub async fn find_album_by_artist(&self, album: &str, artist: &str) -> MpdResult<Vec<Song>> {
+        let pairs = self
+            .cmd(&format!(
+                "find Album \"{}\" AlbumArtist \"{}\"",
+                Self::escape(album),
+                Self::escape(artist)
+            ))
+            .await?;
+        Ok(commands::parse_songs(&pairs))
+    }
+
     pub async fn find(&self, tag: &str, value: &str) -> MpdResult<Vec<Song>> {
         let pairs = self
             .cmd(&format!("find {tag} \"{}\"", Self::escape(value)))
+            .await?;
+        Ok(commands::parse_songs(&pairs))
+    }
+
+    /// Songs added/modified since `since` (MPD timestamp format,
+    /// `YYYY-MM-DDTHH:MM:SSZ`), bounded to `limit` results. Unbounded
+    /// `modified-since` queries can outrun the socket's read timeout on a
+    /// large library, so this always uses a `window`.
+    pub async fn find_recently_added(&self, since: &str, limit: u32) -> MpdResult<Vec<Song>> {
+        let pairs = self
+            .cmd(&format!(
+                "find \"(modified-since '{}')\" window 0:{limit}",
+                Self::escape(since)
+            ))
             .await?;
         Ok(commands::parse_songs(&pairs))
     }
@@ -319,7 +467,16 @@ impl MpdClient {
         let pairs = self
             .cmd(&format!("listplaylistinfo \"{}\"", Self::escape(name)))
             .await?;
-        Ok(commands::parse_songs(&pairs))
+        let mut songs = commands::parse_songs(&pairs);
+        // Some MPD versions omit "Pos" from listplaylistinfo; assign it from
+        // the record index so duplicate files in a playlist still resolve to
+        // a unique, correct position for play-at/remove/move.
+        for (i, song) in songs.iter_mut().enumerate() {
+            if song.pos.is_none() {
+                song.pos = Some(i as u32);
+            }
+        }
+        Ok(songs)
     }
 
     pub async fn save_playlist(&self, name: &str) -> MpdResult<()> {
@@ -332,6 +489,37 @@ impl MpdClient {
 
     pub async fn load_playlist(&self, name: &str) -> MpdResult<()> {
         self.cmd_ok(&format!("load \"{}\"", Self::escape(name))).await
+    }
+
+    pub async fn playlist_add(&self, name: &str, uri: &str) -> MpdResult<()> {
+        self.cmd_ok(&format!(
+            "playlistadd \"{}\" \"{}\"",
+            Self::escape(name),
+            Self::escape(uri)
+        ))
+        .await
+    }
+
+    pub async fn playlist_delete(&self, name: &str, pos: u32) -> MpdResult<()> {
+        self.cmd_ok(&format!("playlistdelete \"{}\" {pos}", Self::escape(name)))
+            .await
+    }
+
+    pub async fn playlist_move(&self, name: &str, from: u32, to: u32) -> MpdResult<()> {
+        self.cmd_ok(&format!(
+            "playlistmove \"{}\" {from} {to}",
+            Self::escape(name)
+        ))
+        .await
+    }
+
+    pub async fn rename_playlist(&self, old: &str, new: &str) -> MpdResult<()> {
+        self.cmd_ok(&format!(
+            "rename \"{}\" \"{}\"",
+            Self::escape(old),
+            Self::escape(new)
+        ))
+        .await
     }
 
     // ========================================================================
@@ -384,16 +572,17 @@ impl MpdClient {
     // Album Art (binary protocol)
     // ========================================================================
 
-    /// Fetch full album art for a song URI.
-    /// Uses "albumart" command with chunked binary reads.
-    pub async fn album_art(&self, uri: &str) -> MpdResult<Option<Vec<u8>>> {
+    /// Shared chunked binary-read loop for `readpicture`/`albumart`, which
+    /// share an identical wire protocol (offset-paginated binary chunks)
+    /// and differ only in which MPD verb is sent.
+    async fn fetch_binary_art(&self, verb: &str, uri: &str) -> MpdResult<Option<Vec<u8>>> {
         let mut offset: usize = 0;
         let mut full_data = Vec::new();
         let mut total_size: usize = 0;
 
         loop {
             let result = self
-                .cmd_binary(&format!("albumart \"{}\" {offset}", Self::escape(uri)))
+                .cmd_binary(&format!("{verb} \"{}\" {offset}", Self::escape(uri)))
                 .await;
 
             match result {
@@ -410,10 +599,6 @@ impl MpdClient {
                     }
                 }
                 Ok(None) => return Ok(None),
-                Err(MpdError::Server { code: 50, .. }) => {
-                    // No album art, try readpicture
-                    return self.read_picture(uri).await;
-                }
                 Err(e) => return Err(e),
             }
         }
@@ -421,45 +606,24 @@ impl MpdClient {
         if full_data.is_empty() {
             Ok(None)
         } else {
-            tracing::info!("→ albumart \"{uri}\" ({} KB)", full_data.len() / 1024);
+            tracing::info!("→ {verb} \"{uri}\" ({} KB)", full_data.len() / 1024);
             Ok(Some(full_data))
         }
     }
 
-    /// Fallback: readpicture command for embedded art
-    pub async fn read_picture(&self, uri: &str) -> MpdResult<Option<Vec<u8>>> {
-        let mut offset: usize = 0;
-        let mut full_data = Vec::new();
-        let mut total_size: usize = 0;
+    /// Art embedded in the song file's own tags ("readpicture"). Tried
+    /// first — on a tagged library this is the art that actually exists,
+    /// so probing it before the separate-cover-file path avoids a wasted
+    /// round trip per album (see
+    /// docs/plans/art-wikipedia-fetch-order-and-caching.md §1).
+    pub async fn tag_art(&self, uri: &str) -> MpdResult<Option<Vec<u8>>> {
+        self.fetch_binary_art("readpicture", uri).await
+    }
 
-        loop {
-            let result = self
-                .cmd_binary(&format!("readpicture \"{}\" {offset}", Self::escape(uri)))
-                .await;
-
-            match result {
-                Ok(Some((chunk, size))) => {
-                    if total_size == 0 {
-                        total_size = size;
-                        full_data.reserve(total_size);
-                    }
-                    offset += chunk.len();
-                    full_data.extend_from_slice(&chunk);
-                    if offset >= total_size {
-                        break;
-                    }
-                }
-                Ok(None) => return Ok(None),
-                Err(e) => return Err(e),
-            }
-        }
-
-        if full_data.is_empty() {
-            Ok(None)
-        } else {
-            tracing::info!("→ readpicture \"{uri}\" ({} KB)", full_data.len() / 1024);
-            Ok(Some(full_data))
-        }
+    /// A separate cover-file image beside the song, e.g. `cover.jpg`
+    /// ("albumart"). Tried after `tag_art`.
+    pub async fn cover_file_art(&self, uri: &str) -> MpdResult<Option<Vec<u8>>> {
+        self.fetch_binary_art("albumart", uri).await
     }
 
     // ========================================================================
@@ -540,5 +704,43 @@ mod tests {
                 assert!(i > 0 && bytes[i - 1] == b'\\', "bare quote at {i}");
             }
         }
+    }
+
+    #[test]
+    fn replay_gain_mode_cmd_formats_mode() {
+        assert_eq!(MpdClient::replay_gain_mode_cmd("off"), "replay_gain_mode off");
+        assert_eq!(MpdClient::replay_gain_mode_cmd("auto"), "replay_gain_mode auto");
+    }
+
+    #[test]
+    fn build_add_commands_one_add_per_uri_escaped() {
+        let uris = vec!["a.flac".to_string(), "dir/b \"weird\".mp3".to_string()];
+        let cmds = MpdClient::build_add_commands(&uris);
+        assert_eq!(cmds, vec![
+            "add \"a.flac\"".to_string(),
+            "add \"dir/b \\\"weird\\\".mp3\"".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn connection_fatal_classification() {
+        // An ACK is a well-framed reply — the socket is fine, keep it.
+        assert!(!MpdError::Server { code: 50, message: "No file exists".into() }
+            .is_connection_fatal());
+        assert!(!MpdError::NotConnected.is_connection_fatal());
+        // These all mean the stream position is unknown.
+        assert!(MpdError::Connection("closed".into()).is_connection_fatal());
+        assert!(MpdError::Parse("binary: bad".into()).is_connection_fatal());
+        assert!(MpdError::Protocol("bad greeting".into()).is_connection_fatal());
+        assert!(MpdError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+        .is_connection_fatal());
+    }
+
+    #[test]
+    fn build_add_commands_empty_input() {
+        assert!(MpdClient::build_add_commands(&[]).is_empty());
     }
 }

@@ -60,7 +60,7 @@ pub fn view<'a>(
                 ]
                 .align_y(Alignment::Center),
             )
-            .on_press(Message::AlbumSelected(album.clone()))
+            .on_press(Message::AlbumSelected(album.clone(), Some(artist.to_string())))
             .padding([8, 12])
             .width(Length::Fill)
             .style(|_theme: &iced::Theme, _status| button::Style {
@@ -87,6 +87,8 @@ pub fn view<'a>(
                         Space::with_width(8),
                         icon_btn("▶", Message::PlaySong(song.file.clone())),
                         icon_btn("+", Message::QueueAddOnly(song.file.clone())),
+                        icon_btn("⏭", Message::QueueAddNext(song.file.clone())),
+                        icon_btn("☰", Message::OpenAddToPlaylist(vec![song.file.clone()])),
                         text(track.to_string())
                             .size(12)
                             .width(30)

@@ -10,6 +10,9 @@ mod logger;
 mod icon;
 mod lyrics;
 mod store;
+mod snapcast;
+#[cfg(test)]
+mod live_tests;
 
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
@@ -41,6 +44,12 @@ fn main() -> iced::Result {
         .theme(App::theme)
         .window(iced::window::Settings {
             size: iced::Size::new(1200.0, 800.0),
+            // Below roughly this, Now Playing stops fitting: the art (300px)
+            // plus the song info plus the lyrics pane run out of width, and
+            // the recently-played strip runs out of height and starts
+            // colliding with the player bar. iced widgets don't clip their
+            // parent, so "too small" doesn't degrade gracefully — it overlaps.
+            min_size: Some(iced::Size::new(1000.0, 700.0)),
             icon: icon::make_icon(),
             ..Default::default()
         })

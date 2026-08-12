@@ -5,3 +5,10 @@ target
 **/mutants.out*/
 *~
 *.lock
+# ...but Cargo.lock belongs in version control for a *binary* crate:
+# without it every machine resolves its own dependency versions, so builds
+# aren't reproducible and a bad upstream patch release can't be pinned back.
+!Cargo.lock
+
+# Transient temp files written by the Claude Code settings writer
+.claude/settings.local.json.tmp.*

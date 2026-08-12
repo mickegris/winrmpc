@@ -1,8 +1,12 @@
 use crate::config::MpdServer;
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
-use iced::widget::{button, column, container, pick_list, text, Space};
+use iced::widget::{scrollable, button, column, container, pick_list, text, Space};
 use iced::{Alignment, Element, Length};
+
+/// Sidebar column width. Sized to hold the longest nav label
+/// ("Recently Added") on one line at text size 11, plus the slim scrollbar.
+const SIDEBAR_WIDTH: u16 = 132;
 
 pub fn view<'a>(
     current_view: &View,
@@ -13,11 +17,11 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let status_text = if connected {
         text(format!("Connected\n{mpd_addr}"))
-            .size(9)
+            .size(10)
             .color(AppColors::SUCCESS)
     } else {
         text("Not connected")
-            .size(9)
+            .size(10)
             .color(AppColors::ERROR)
     };
 
@@ -26,8 +30,8 @@ pub fn view<'a>(
         let names: Vec<String> = servers.iter().map(|s| s.name.clone()).collect();
         pick_list(names, Some(active_server.to_string()), Message::SwitchServer)
             .width(Length::Fill)
-            .text_size(9)
-            .padding([3, 6])
+            .text_size(11)
+            .padding([4, 8])
             .into()
     } else {
         Space::with_height(0).into()
@@ -37,8 +41,7 @@ pub fn view<'a>(
         .size(9)
         .color(AppColors::TEXT_MUTED);
 
-    container(
-        column![
+    let nav = column![
             Space::with_height(12),
             container(status_text).center_x(Length::Fill),
             Space::with_height(4),
@@ -51,22 +54,47 @@ pub fn view<'a>(
             nav_button("Artists", View::Artists, current_view),
             nav_button("Albums", View::Albums, current_view),
             nav_button("Genres", View::Genres, current_view),
+            nav_button("Recently Added", View::RecentlyAdded, current_view),
+            nav_button("Playlists", View::Playlists, current_view),
             nav_button("Browse", View::Browser, current_view),
             nav_button("Search", View::Search, current_view),
             nav_button("Radio", View::Radio, current_view),
             nav_button("CD", View::CD, current_view),
-            Space::with_height(Length::Fill),
+            // Fixed gap rather than Length::Fill: with a Fill here the
+            // bottom group (…Settings/Log/Stats) got pushed off the bottom
+            // of a shorter window with no way to reach it, since the sidebar
+            // doesn't scroll on its own.
+            Space::with_height(14),
             nav_button("Outputs", View::Outputs, current_view),
             nav_button("Partitions", View::Partitions, current_view),
+            nav_button("Snapcast", View::Snapcast, current_view),
             nav_button("Settings", View::Settings, current_view),
             nav_button("Log", View::Log, current_view),
+            nav_button("Stats", View::ServerStats, current_view),
             Space::with_height(8),
         ]
         .spacing(1)
         .align_x(Alignment::Center)
-        .width(Length::Fill),
+        .width(Length::Fill);
+
+    // Scrollable so every entry stays reachable no matter how short the
+    // window is — there are 17 of them. The scrollbar is slimmed down and
+    // given no margin because at this width the default 10px bar plus its
+    // margin is a meaningful slice of the label area.
+    container(
+        scrollable(nav)
+            .height(Length::Fill)
+            .direction(scrollable::Direction::Vertical(
+                scrollable::Scrollbar::new()
+                    .width(4)
+                    .scroller_width(4)
+                    .margin(0),
+            )),
     )
-    .width(90)
+    // 90px was too narrow for the labels it has to hold: "Recently Added"
+    // wrapped to two lines and the connection line ("Connected" over
+    // host:port) was clipped mid-word.
+    .width(SIDEBAR_WIDTH)
     .height(Length::Fill)
     .style(|_theme: &iced::Theme| container::Style {
         background: Some(AppColors::BG_SECONDARY.into()),
@@ -96,12 +124,12 @@ fn nav_button<'a>(
     button(
         container(
             text(label.to_string())
-                .size(11)
+                .size(12)
                 .color(fg)
                 .align_x(Alignment::Center),
         )
         .center_x(Length::Fill)
-        .padding([10, 4]),
+        .padding([9, 8]),
     )
     .on_press(Message::NavigateTo(target))
     .width(Length::Fill)

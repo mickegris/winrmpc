@@ -21,7 +21,7 @@ pub fn view<'a>(
                     .size(14)
                     .color(AppColors::TEXT_PRIMARY),
             )
-            .on_press(Message::AlbumSelected(album.clone()))
+            .on_press(Message::AlbumSelected(album.clone(), None))
             .padding([7, 12])
             .width(Length::Fill)
             .style(move |_theme: &iced::Theme, _status| button::Style {

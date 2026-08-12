@@ -1,6 +1,7 @@
 use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::link::icon_btn;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -107,7 +108,10 @@ pub fn view<'a>(
         let album_btn = button(
             text(song.display_album()).size(11),
         )
-        .on_press(Message::AlbumSelected(song.display_album().to_string()))
+        .on_press(Message::AlbumSelected(
+            song.display_album().to_string(),
+            Some(song.display_album_artist().to_string()),
+        ))
         .padding(0)
         .width(Length::FillPortion(2))
         .style(|_t: &iced::Theme, s: button::Status| button::Style {
@@ -119,6 +123,21 @@ pub fn view<'a>(
             border: iced::Border::default(),
             shadow: iced::Shadow::default(),
         });
+
+        let mut actions = row![].spacing(2);
+        if i > 0 {
+            actions = actions.push(icon_btn("▲", Message::QueueMoveUp(pos)));
+        }
+        if i + 1 < queue.len() {
+            actions = actions.push(icon_btn("▼", Message::QueueMoveDown(pos)));
+        }
+        actions = actions.push(icon_btn(
+            "☰",
+            Message::OpenAddToPlaylist(vec![song.file.clone()]),
+        ));
+        if let Some(id) = song.id {
+            actions = actions.push(icon_btn("✕", Message::QueueRemove(id)));
+        }
 
         items = items.push(
             container(
@@ -134,6 +153,7 @@ pub fn view<'a>(
                         .size(11)
                         .width(55)
                         .color(AppColors::TEXT_MUTED),
+                    actions,
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),

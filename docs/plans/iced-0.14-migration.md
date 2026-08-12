@@ -111,3 +111,41 @@ Mandatory manual visual pass after it builds (see §6 checklist), especially:
 
 ## 8. Effort estimate
 Likely **one focused session**: a toolchain bump, a handful of struct-literal/entry fixes, and a careful visual QA pass. The long pole is the manual layout verification, not the code.
+
+---
+
+## 9. Post-mortem findings (2026-08, supersedes the optimism above)
+
+Everything above was written *before* a migration was attempted. It was
+attempted, and it failed. Read this section first — sections 0–8 describe the
+mechanical work accurately, but their "small migration" framing does not
+survive what follows.
+
+- The 2026-06 attempt (`79b960b`) was **reverted** (`31c7dba`) for glyph
+  corruption after atlas growth on resize. The revert message blamed
+  cryoglyph, but the corruption also reproduced under **tiny-skia**, which
+  doesn't link cryoglyph — so the responsible layer is
+  `iced_graphics`/`cosmic-text`, not the wgpu text backend.
+- iced **0.14.0 and cryoglyph 0.1.0 shipped 2025-12-07/05 and have had no
+  patch release since**. iced master, by contrast, is very active (300+
+  commits, pushed daily). Release cadence is not development pace.
+- Commit **`2c1a28fb` (2026-05-13), "Fix global `graphics::Cache`
+  invalidation"** makes a `Cache` stop serving **stale entries** — which
+  matches the observed symptom exactly (stale text wrong, live-reshaped line
+  right) and lives in the shared layer implicated above. It postdates 0.14.0
+  by five months, so the June attempt never had it.
+- **If the upgrade is retried, start by pinning a git rev on master at or
+  after `2c1a28fb`**, not crates.io 0.14.0. Also relevant on master: per-OS
+  default fonts (likely obviating the Segoe UI lyric-font hack) and
+  cosmic-text 0.15 → 0.19.
+- 0.14 needs Rust ≥1.88 and jumps wgpu 0.19 → 27, and does **not** fix the
+  `block 0.1.6` future-incompat warning (it arrives via `metal` →
+  `wgpu-hal`).
+- A UI-framework survey concluded **stay on iced**: there's no forced move, a
+  switch is a full rewrite of 20+ view modules, and the apparent abandonment
+  is release cadence rather than development. egui is the fallback. Revisit
+  only if 0.15 never ships *and* master proves unusable, or if an
+  accessibility requirement appears — that is iced's genuine weak spot.
+
+A `feature/iced-0.14` branch was created for this research and then deleted
+at the user's request; these notes are what survived it.

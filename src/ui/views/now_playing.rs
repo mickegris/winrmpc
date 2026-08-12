@@ -1,7 +1,7 @@
 use crate::mpd::types::*;
-use crate::ui::message::Message;
+use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::{link, link_accent};
+use crate::ui::widgets::link::{icon_btn, link, link_accent};
 use iced::widget::{button, column, container, image, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -21,12 +21,18 @@ pub fn view<'a>(
     lyrics: Option<Option<&'a crate::lyrics::Lyrics>>,
     show_lyrics: bool,
     lyrics_scroll_id: iced::widget::scrollable::Id,
+    playing_from: Option<&'a str>,
 ) -> Element<'a, Message> {
     // Toggle row is placed first in ALL branches so the outer column has a
     // stable skeleton regardless of current_song state. This prevents iced's
     // positional widget-state diffing from reusing the centered "None" layout
     // on the "Some" branches after a momentary None blip.
     let toggle_row = row![
+        link("Outputs", 12, Message::NavigateTo(View::Outputs)),
+        Space::with_width(12),
+        link("Partitions", 12, Message::NavigateTo(View::Partitions)),
+        Space::with_width(12),
+        link("\u{1F551} History", 12, Message::NavigateTo(View::RecentlyPlayed)),
         Space::with_width(Length::Fill),
         lyrics_toggle(show_lyrics),
     ]
@@ -74,10 +80,28 @@ pub fn view<'a>(
                 link(
                     song.display_album().to_string(),
                     18,
-                    Message::AlbumSelected(song.display_album().to_string()),
+                    Message::AlbumSelected(
+                        song.display_album().to_string(),
+                        Some(song.display_album_artist().to_string()),
+                    ),
                 ),
                 Space::with_height(12).into(),
             ];
+
+            if let Some(name) = playing_from {
+                info_items.push(link(
+                    format!("▤ Playing from {name}"),
+                    13,
+                    Message::PlaylistSelected(name.to_string()),
+                ));
+                info_items.push(Space::with_height(6).into());
+            }
+            info_items.push(link(
+                "+ Add to Playlist",
+                12,
+                Message::OpenAddToPlaylist(vec![song.file.clone()]),
+            ));
+            info_items.push(Space::with_height(10).into());
             if !tech_line.is_empty() {
                 info_items.push(
                     text(tech_line)
@@ -141,7 +165,7 @@ pub fn view<'a>(
             let current_key = song.art_key();
             let visible_recents: Vec<&RecentAlbum> = recent_albums
                 .iter()
-                .filter(|r| format!("{}\x1f{}", r.artist, r.album) != current_key)
+                .filter(|r| art_key_for(&r.artist, &r.album) != current_key)
                 .take(5)
                 .collect();
 
@@ -158,7 +182,24 @@ pub fn view<'a>(
                         .size(14)
                         .color(AppColors::TEXT_SECONDARY),
                     Space::with_height(10),
-                    row(thumbs).spacing(14),
+                    // Scrolled sideways, not wrapped and not squeezed. Five
+                    // 120px thumbs need ~700px, which the left column
+                    // doesn't have once the lyrics pane takes its share of a
+                    // narrower window. A plain row squeezes the overflow into
+                    // the last child (the right-most cover rendered as a
+                    // sliver); wrapping instead grows the strip downwards,
+                    // and since a column doesn't clip, the second line drew
+                    // straight over the player bar. A horizontal scrollable
+                    // is the only one of the three that stays exactly one
+                    // row tall whatever the width.
+                    scrollable(row(thumbs).spacing(14))
+                        .direction(scrollable::Direction::Horizontal(
+                            scrollable::Scrollbar::new()
+                                .width(4)
+                                .scroller_width(4)
+                                .margin(2),
+                        ))
+                        .width(Length::Fill),
                 ]
                 .into()
             };
@@ -243,7 +284,7 @@ fn recent_thumb<'a>(
     recent: &'a RecentAlbum,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
 ) -> Element<'a, Message> {
-    let key = format!("{}\x1f{}", recent.artist, recent.album);
+    let key = art_key_for(&recent.artist, &recent.album);
     let thumb_art: Element<'a, Message> = match art_handles.get(&key) {
         Some(handle) => image(handle.clone()).width(120).height(120).into(),
         None => container(text("").size(1))
@@ -272,7 +313,7 @@ fn recent_thumb<'a>(
         .align_x(Alignment::Center)
         .width(120),
     )
-    .on_press(Message::AlbumSelected(album_name))
+    .on_press(Message::AlbumSelected(album_name, Some(recent.artist.clone())))
     .padding(4)
     .style(|_t: &iced::Theme, status: button::Status| {
         let bg = match status {
@@ -370,7 +411,16 @@ fn lyrics_column<'a>(
                     .height(Length::Fill)
                     .into()
             } else if let Some(ref plain) = l.plain {
+                // Same id as the synced branch (only one of the two renders
+                // at a time). Without it this scrollable is unreachable by
+                // `snap_to` — and because iced matches widget state by
+                // (tree position, widget type) alone, with `scrollable::Id`
+                // playing no part in that matching, this one sits at the
+                // *same* path as the synced one and inherits its scroll
+                // offset. Synced lyrics are autoscrolled near the bottom, so
+                // a plain-lyrics track landing on that offset renders blank.
                 scrollable(text(plain).size(15).color(AppColors::TEXT_SECONDARY))
+                    .id(scroll_id)
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into()

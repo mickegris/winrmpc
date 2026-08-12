@@ -31,6 +31,16 @@ impl ArtCache {
         self.clone()
     }
 
+    /// Update the LRU budget after the user edits it in Settings.
+    ///
+    /// Only affects handles cloned *after* this call — `limit_bytes` is a
+    /// plain field, not shared state. That's fine: the limit is read when a
+    /// blob is stored, so at worst a fetch already in flight evicts against
+    /// the previous budget once.
+    pub fn set_limit_mb(&mut self, limit_mb: u32) {
+        self.limit_bytes = limit_mb as u64 * 1024 * 1024;
+    }
+
     pub async fn get(&self, key: &str) -> Option<Vec<u8>> {
         {
             let mem = self.memory.read().await;

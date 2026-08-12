@@ -24,6 +24,9 @@ pub fn view<'a>(
         .sum();
     let total_mins = total_duration / 60;
 
+    let max_disc = songs.iter().map(|s| s.effective_disc()).max().unwrap_or(1);
+    let is_multi_disc = max_disc > 1;
+
     // Fixed header
     let mut header = Column::new().spacing(2).padding(20);
 
@@ -66,21 +69,27 @@ pub fn view<'a>(
             }),
     );
     header = header.push(Space::with_height(4));
+    let track_count_line = if is_multi_disc {
+        format!("{max_disc} discs  |  {} tracks  |  {} min", songs.len(), total_mins)
+    } else {
+        format!("{} tracks  |  {} min", songs.len(), total_mins)
+    };
     header = header.push(
-        text(format!("{} tracks  |  {} min", songs.len(), total_mins))
+        text(track_count_line)
             .size(13)
             .color(AppColors::TEXT_MUTED),
     );
     header = header.push(Space::with_height(8));
 
+    let song_uris: Vec<String> = songs.iter().map(|s| s.file.clone()).collect();
     header = header.push(
         row![
             button(text("Play All").size(13))
-                .on_press(Message::PlayAlbum(album_name.to_string()))
+                .on_press(Message::PlayAlbum(song_uris.clone()))
                 .padding([6, 16]),
             Space::with_width(8),
             button(text("Queue All").size(13))
-                .on_press(Message::QueueAlbum(album_name.to_string()))
+                .on_press(Message::QueueAlbum(song_uris))
                 .padding([6, 16]),
         ]
         .spacing(4),
@@ -137,7 +146,26 @@ pub fn view<'a>(
         );
     }
 
+    let mut last_disc: Option<u32> = None;
     for (i, song) in songs.iter().enumerate() {
+        if is_multi_disc {
+            let d = song.effective_disc();
+            if last_disc != Some(d) {
+                last_disc = Some(d);
+                track_list = track_list.push(
+                    container(
+                        text(format!("Disc {d}")).size(12).color(AppColors::TEXT_MUTED),
+                    )
+                    .padding(iced::Padding {
+                        top: 10.0,
+                        right: 12.0,
+                        bottom: 4.0,
+                        left: 12.0,
+                    }),
+                );
+            }
+        }
+
         let bg = if i % 2 == 0 {
             AppColors::ROW_EVEN
         } else {
@@ -150,6 +178,8 @@ pub fn view<'a>(
                 row![
                     icon_btn("▶", Message::PlaySong(song.file.clone())),
                     icon_btn("+", Message::QueueAddOnly(song.file.clone())),
+                    icon_btn("⏭", Message::QueueAddNext(song.file.clone())),
+                    icon_btn("☰", Message::OpenAddToPlaylist(vec![song.file.clone()])),
                     text(track_num.to_string())
                         .size(13)
                         .width(30)

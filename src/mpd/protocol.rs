@@ -135,6 +135,11 @@ impl MpdConnection {
                 return Err(Self::parse_ack(trimmed));
             } else if let Some((k, v)) = trimmed.split_once(": ") {
                 match k {
+                    // A parse failure here is returned as `Parse`, which
+                    // `MpdError::is_connection_fatal` treats as fatal — we've
+                    // read a header announcing a payload we can no longer
+                    // locate, so the stream position is unknown and the
+                    // connection has to be dropped rather than reused.
                     "size" => {
                         total_size = v
                             .parse()
@@ -151,20 +156,28 @@ impl MpdConnection {
             }
         }
 
-        if binary_size == 0 {
-            return Ok(None);
-        }
+        // A zero-length chunk still has the trailing newline and the final
+        // `OK` line behind it. Returning early without consuming them left
+        // two lines in the buffer for the *next* command to misread — the
+        // start of a desync that never recovers.
+        let data = if binary_size == 0 {
+            Vec::new()
+        } else {
+            let mut data = vec![0u8; binary_size];
+            self.reader.read_exact(&mut data).await?;
+            data
+        };
 
-        // Read exactly binary_size bytes of data
-        let mut data = vec![0u8; binary_size];
-        self.reader.read_exact(&mut data).await?;
-
-        // Read trailing newline + OK line
+        // Trailing newline after the payload, then the terminating line.
+        // Both must be consumed on every path, including binary_size == 0.
         let mut nl = [0u8; 1];
         self.reader.read_exact(&mut nl).await?;
         let mut ok_line = String::new();
         self.reader.read_line(&mut ok_line).await?;
 
+        if data.is_empty() {
+            return Ok(None);
+        }
         Ok(Some((data, total_size)))
     }
 
