@@ -5,13 +5,13 @@ use crate::config::AppConfig;
 use crate::mpd::MpdClient;
 use crate::store::Store;
 use crate::mpd::types::{push_recent, *};
-use crate::ui::message::{Message, View};
+use crate::ui::message::{ArtOutcome, Message, View};
 use crate::ui::theme::AppColors;
 use crate::ui::views;
 use crate::ui::widgets;
 use iced::widget::{column, container, image::Handle as ImageHandle, row, scrollable};
 use iced::{Element, Length, Subscription, Task, Theme};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -77,6 +77,31 @@ pub struct App {
     /// an artist with many uncached albums fires one fetch task per album,
     /// unboundedly (see docs/plans/art-wikipedia-fetch-order-and-caching.md §3).
     art_fetch_gate: Arc<tokio::sync::Semaphore>,
+    /// Album covers still to fetch, as `(artist, base, variant-to-look-up)`,
+    /// in the order the albums appear on screen. Browsing a list enqueues
+    /// *every* album it shows; `drain_art_queue` keeps only
+    /// `ART_FETCH_CONCURRENCY` fetches running and starts the next as each
+    /// finishes, so a large library fills in progressively in the background
+    /// instead of stopping dead at a fixed cap.
+    art_queue: VecDeque<(String, String, String)>,
+    /// Keys queued or in flight in the **local** stage. Guards against
+    /// enqueuing the same album twice (re-entering a view, an album showing
+    /// up in two lists).
+    art_pending: HashSet<String>,
+    art_inflight: usize,
+    /// Second stage: albums the local stage found no art for, awaiting a
+    /// MusicBrainz lookup. Drained only once `art_queue` is empty and only
+    /// one at a time, because every entry costs 1.1–2.2s of globally
+    /// serialized throttle time (`MB_MIN_INTERVAL`, plus a possible second
+    /// search hop). Keys, not triples — `art_key_for` already carries
+    /// `artist\x1fbase`, which is exactly what the lookup needs.
+    mb_queue: VecDeque<String>,
+    mb_pending: HashSet<String>,
+    mb_inflight: usize,
+    /// Keys a full fetch resolved as "no cover anywhere". `art_handles` only
+    /// records hits, so without this every visit to a list would re-queue —
+    /// and re-fetch — every album that has no art.
+    art_missing: HashSet<String>,
 
     // Wikipedia bios. In-memory tri-state, mirroring `lyrics`: absent key =
     // never fetched this session, `Some(None)` = fetched, confirmed no bio,
@@ -112,6 +137,12 @@ pub struct App {
 
 
     // Settings UI
+    /// Armed state for the cache purge — a purge is cheap to trigger and
+    /// expensive to undo (every cover re-fetched, MusicBrainz re-crawled),
+    /// so it takes two presses.
+    confirm_clear_caches: bool,
+    /// Bytes of cached art on disk, refreshed on entering Settings.
+    cache_size_bytes: Option<u64>,
     settings_host: String,
     settings_port: String,
     settings_password: String,
@@ -120,6 +151,17 @@ pub struct App {
     active_server: String,
     settings_renaming: Option<String>,
     settings_rename_input: String,
+    /// Server whose connection details are open for editing, with the
+    /// in-progress field values. Separate from the "Add server" inputs so
+    /// a half-typed edit can't leak into a half-typed addition.
+    settings_editing: Option<String>,
+    settings_edit_host: String,
+    settings_edit_port: String,
+    settings_edit_password: String,
+    settings_edit_snap_host: String,
+    settings_edit_snap_port: String,
+    /// Art cache limit as typed, committed to `art_cache_size_mb` on Save.
+    settings_cache_size: String,
 
     // Recently played albums (most recent first, capped at 8)
     recent_albums: Vec<RecentAlbum>,
@@ -214,6 +256,13 @@ impl App {
             art_cache: ArtCache::new(store, config.art_cache_size_mb),
             art_handles: HashMap::new(),
             art_fetch_gate: Arc::new(tokio::sync::Semaphore::new(4)),
+            art_queue: VecDeque::new(),
+            art_pending: HashSet::new(),
+            art_inflight: 0,
+            mb_queue: VecDeque::new(),
+            mb_pending: HashSet::new(),
+            mb_inflight: 0,
+            art_missing: HashSet::new(),
 
             artist_bios: HashMap::new(),
             album_bios: HashMap::new(),
@@ -235,6 +284,8 @@ impl App {
             snapcast_show_inactive: false,
 
 
+            confirm_clear_caches: false,
+            cache_size_bytes: None,
             settings_host: String::new(),
             settings_port: String::new(),
             settings_password: String::new(),
@@ -242,6 +293,13 @@ impl App {
             settings_server_name: String::new(),
             active_server: active_server.clone(),
             settings_renaming: None,
+            settings_editing: None,
+            settings_edit_host: String::new(),
+            settings_edit_port: String::new(),
+            settings_edit_password: String::new(),
+            settings_edit_snap_host: String::new(),
+            settings_edit_snap_port: String::new(),
+            settings_cache_size: config.art_cache_size_mb.to_string(),
             settings_rename_input: String::new(),
 
             recent_albums: config.recent_albums.clone(),
@@ -797,7 +855,7 @@ impl App {
             }
             Message::AlbumsLoaded(a) => {
                 self.albums = a;
-                self.prefetch_album_art()
+                self.queue_album_art()
             }
             Message::GenresLoaded(g) => {
                 self.genres = g;
@@ -941,33 +999,18 @@ impl App {
                 Task::none()
             }
             Message::ArtistAlbumsLoaded(artist, albums) => {
-                let mut tasks = Vec::new();
-                for group in &albums {
-                    // group.base is already disc-stripped, so this is a
-                    // no-op re-strip — kept as art_key_for for consistency
-                    // with every other art-cache key site.
-                    let key = art_key_for(&group.artist, &group.base);
-                    if !self.art_handles.contains_key(&key) {
-                        // Use the first disc variant to find a song URI for
-                        // MPD art lookup.
-                        let variant = group
-                            .variants
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| group.base.clone());
-                        tasks.push(self.fetch_album_group_art(
-                            artist.clone(),
-                            group.base.clone(),
-                            variant,
-                        ));
-                    }
-                }
+                // Through the shared queue rather than one task per album:
+                // an artist with a deep discography used to fire every fetch
+                // at once, and they all then queued up on the connection
+                // behind the `art_fetch_gate` semaphore anyway.
+                //
+                // `album_art_targets` uses each group's own `artist`, which
+                // on this page is the artist whose albums these are, and its
+                // `base` (already disc-stripped) with the first disc variant
+                // as the tag to look a track up by.
+                let targets = Self::album_art_targets(&albums);
                 self.artist_albums.insert(artist, albums);
-                if tasks.is_empty() {
-                    Task::none()
-                } else {
-                    Task::batch(tasks)
-                }
+                self.enqueue_album_art(targets)
             }
             Message::AlbumSongsLoaded(album, songs) => {
                 if let Some(first) = songs.first() {
@@ -994,7 +1037,7 @@ impl App {
                     .map(|s| (s.display_album_artist().to_string(), s.display_album().to_string()))
                     .collect();
                 self.recently_added_albums = group_albums_by_artist(&pairs);
-                self.prefetch_album_art()
+                self.queue_album_art()
             }
             Message::RecentlyPlayedLoaded(entries) => {
                 self.recently_played = entries;
@@ -1017,9 +1060,62 @@ impl App {
             Message::ToggleAlbumGridView => {
                 self.config.album_grid_view = !self.config.album_grid_view;
                 self.config.save().ok();
-                // Grid mode shows covers, so make sure some are actually
-                // fetched for whatever list is on screen.
-                self.prefetch_album_art()
+                // Both layouts show covers (the list just shows them small),
+                // so this only matters when the queue was never started for
+                // this list — it's a no-op when it already was.
+                self.queue_album_art()
+            }
+            Message::ClearCaches => {
+                if !self.confirm_clear_caches {
+                    self.confirm_clear_caches = true;
+                    return Task::none();
+                }
+                self.confirm_clear_caches = false;
+
+                // In-memory first, so the UI stops showing what's about to
+                // stop existing. The art queues are dropped rather than left
+                // running: their in-flight fetches would otherwise re-populate
+                // the cache we're clearing, and their completions would
+                // decrement counters that no longer mean anything.
+                self.art_handles.clear();
+                self.art_missing.clear();
+                self.art_queue.clear();
+                self.art_pending.clear();
+                self.art_inflight = 0;
+                self.mb_queue.clear();
+                self.mb_pending.clear();
+                self.mb_inflight = 0;
+                self.lyrics.clear();
+                self.artist_bios.clear();
+                self.album_bios.clear();
+
+                let cache = self.art_cache.clone_inner();
+                let store = self.store.clone();
+                Task::perform(
+                    async move {
+                        cache.clear().await; // in-memory layer + art tables
+                        let _ = tokio::task::spawn_blocking(move || {
+                            store.clear_lookup_caches();
+                        })
+                        .await;
+                        tracing::info!("Cleared art, lyrics, bio and MusicBrainz caches");
+                    },
+                    |_| Message::CachesCleared,
+                )
+            }
+            Message::CancelClearCaches => {
+                self.confirm_clear_caches = false;
+                Task::none()
+            }
+            Message::CachesCleared => {
+                self.cache_size_bytes = Some(0);
+                // Refill whatever list is open, so the covers come back
+                // without needing a navigation.
+                Task::batch([self.queue_album_art(), self.fetch_cache_size()])
+            }
+            Message::CacheSizeLoaded(bytes) => {
+                self.cache_size_bytes = Some(bytes);
+                Task::none()
             }
             Message::ToggleRecentlyPlayedMode => {
                 self.recently_played_show_albums = !self.recently_played_show_albums;
@@ -1367,6 +1463,35 @@ impl App {
                 }
                 Task::none()
             }
+            Message::AlbumArtFetched(key, outcome) => {
+                // Which stage reported determines which counter to free.
+                // A key is in exactly one of the two pending sets.
+                if self.art_pending.remove(&key) {
+                    self.art_inflight = self.art_inflight.saturating_sub(1);
+                } else if self.mb_pending.remove(&key) {
+                    self.mb_inflight = self.mb_inflight.saturating_sub(1);
+                }
+
+                match outcome {
+                    ArtOutcome::Loaded(bytes) => {
+                        if let Some(handle) =
+                            widgets::art_image::bytes_to_handle(&bytes)
+                        {
+                            self.art_handles.insert(key, handle);
+                        }
+                    }
+                    // Nothing locally — hand it to the MusicBrainz stage.
+                    ArtOutcome::MpdMiss => {
+                        self.mb_pending.insert(key.clone());
+                        self.mb_queue.push_back(key);
+                    }
+                    ArtOutcome::Missing => {
+                        self.art_missing.insert(key);
+                    }
+                }
+
+                self.drain_art_queue()
+            }
 
             // =================================================================
             // Wikipedia Bios
@@ -1673,6 +1798,108 @@ impl App {
                 self.settings_rename_input.clear();
                 Task::none()
             }
+            Message::StartEditServer(name) => {
+                if let Some(s) = self.config.server(&name) {
+                    self.settings_edit_host = s.host.clone();
+                    self.settings_edit_port = s.port.to_string();
+                    self.settings_edit_password = s.password.clone().unwrap_or_default();
+                    self.settings_edit_snap_host = s.snapcast_host.clone().unwrap_or_default();
+                    self.settings_edit_snap_port = s
+                        .snapcast_port
+                        .map(|p| p.to_string())
+                        .unwrap_or_default();
+                    self.settings_editing = Some(name);
+                }
+                Task::none()
+            }
+            Message::EditServerHost(v) => {
+                self.settings_edit_host = v;
+                Task::none()
+            }
+            Message::EditServerPort(v) => {
+                self.settings_edit_port = v;
+                Task::none()
+            }
+            Message::EditServerPassword(v) => {
+                self.settings_edit_password = v;
+                Task::none()
+            }
+            Message::EditServerSnapHost(v) => {
+                self.settings_edit_snap_host = v;
+                Task::none()
+            }
+            Message::EditServerSnapPort(v) => {
+                self.settings_edit_snap_port = v;
+                Task::none()
+            }
+            Message::CancelEditServer => {
+                self.settings_editing = None;
+                Task::none()
+            }
+            Message::ConfirmEditServer => {
+                let Some(name) = self.settings_editing.take() else {
+                    return Task::none();
+                };
+                let host = self.settings_edit_host.trim().to_string();
+                if host.is_empty() {
+                    return Task::none();
+                }
+                // Keep the existing port on unparseable input rather than
+                // silently resetting it to 6600.
+                let port = self
+                    .settings_edit_port
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap_or_else(|_| {
+                        self.config.server(&name).map(|s| s.port).unwrap_or(6600)
+                    });
+                let password = Self::opt_string(&self.settings_edit_password);
+                let snap_host = Self::opt_string(&self.settings_edit_snap_host);
+                let snap_port = self.settings_edit_snap_port.trim().parse::<u16>().ok();
+
+                let addr_changed = self
+                    .config
+                    .server(&name)
+                    .is_some_and(|s| s.host != host || s.port != port || s.password != password);
+
+                if let Some(s) = self.config.server_mut(&name) {
+                    s.host = host;
+                    s.port = port;
+                    s.password = password;
+                    s.snapcast_host = snap_host;
+                    s.snapcast_port = snap_port;
+                }
+                self.config.save().ok();
+
+                // Editing the server we're talking to means reconnecting to
+                // the new address; SwitchServer already does exactly that,
+                // including mirroring the legacy fields.
+                if addr_changed && self.active_server == name {
+                    self.active_server.clear(); // force SwitchServer past its no-op guard
+                    return self.update(Message::SwitchServer(name));
+                }
+                // Snapcast host/port may have moved even when MPD didn't.
+                self.snapcast_client = None;
+                Task::none()
+            }
+            Message::ArtCacheSizeChanged(v) => {
+                self.settings_cache_size = v;
+                Task::none()
+            }
+            Message::SaveArtCacheSize => {
+                if let Ok(mb) = self.settings_cache_size.trim().parse::<u32>() {
+                    if mb > 0 {
+                        self.config.art_cache_size_mb = mb;
+                        self.config.save().ok();
+                        // Applies to the next store; already-cloned handles
+                        // keep the old limit for their remaining lifetime,
+                        // which only affects fetches already in flight.
+                        self.art_cache.set_limit_mb(mb);
+                    }
+                }
+                self.settings_cache_size = self.config.art_cache_size_mb.to_string();
+                Task::none()
+            }
             Message::SaveCdDevice => {
                 self.config.cd_device = if self.settings_cd_device.trim().is_empty() {
                     None
@@ -1802,6 +2029,22 @@ impl App {
                     self.config.default_partition = partition;
                 }
                 self.recently_played.clear();
+
+                // Abandon art still queued for the previous server's library
+                // — its lists are about to be replaced, and every pending
+                // fetch would run `find` against the new connection for an
+                // album that may not exist there. Loaded handles and known
+                // misses stay: both are keyed by artist/album, so they're
+                // server-agnostic. Zeroing `art_inflight` alongside
+                // `art_pending` keeps the two consistent — fetches already
+                // running now report as non-queue completions (their key is
+                // no longer pending) and so must not decrement it.
+                self.art_queue.clear();
+                self.art_pending.clear();
+                self.art_inflight = 0;
+                self.mb_queue.clear();
+                self.mb_pending.clear();
+                self.mb_inflight = 0;
 
                 // Drop the Snapcast client and its cached view state — it
                 // captured the *previous* server's address, and nothing
@@ -2440,78 +2683,167 @@ impl App {
     }
 
 
-    /// How many uncached albums a single grid/list view will fetch art for.
+    /// How many **local** album-art fetches run at once. Each is an MPD
+    /// `find` plus `readpicture`/`albumart` probes — single-digit
+    /// milliseconds each on a warm server — sharing one connection with the
+    /// 500ms status poll, so the useful knob is rate, not total work. Three
+    /// leaves headroom under `art_fetch_gate` (4) for the playing track.
     ///
-    /// Bounded on purpose, and deliberately small. Each uncached album costs
-    /// an MPD `find` to locate a track, then `readpicture` and `albumart`
-    /// probes, and on a miss a MusicBrainz lookup behind the global ~1 req/s
-    /// throttle. On a library with no embedded art *every* album takes the
-    /// full path, so this is the most connection pressure the app ever
-    /// generates — it was 60 and that was enough to make the shared
-    /// connection fall over. Art already in the cache always renders
-    /// regardless of this cap, so grids fill in as you browse.
-    const ALBUM_ART_PREFETCH_LIMIT: usize = 24;
+    /// This replaces a flat 24-album cap. The cap was the reason grid view
+    /// looked like it had stopped fetching: the first 24 covers appeared and
+    /// every album after them stayed a grey placeholder no matter how long
+    /// you waited, because nothing ever started the 25th fetch.
+    const ART_FETCH_CONCURRENCY: usize = 3;
 
-    /// Fetch one album's cover: MPD tag art, then MPD cover file, then
-    /// MusicBrainz — the order documented in CLAUDE.md. `variant` is the raw
-    /// album tag to look a track up by (a disc variant for multi-disc sets);
-    /// `base` is the disc-stripped name used for the cache key and the
-    /// MusicBrainz query.
-    fn fetch_album_group_art(&self, artist: String, base: String, variant: String) -> Task<Message> {
+    // The MusicBrainz stage is deliberately **unbounded** — it grinds
+    // through every album the local stage found nothing for, one at a time,
+    // for as long as it takes. There was a 50/session budget here; it was
+    // removed because the thing that actually needed fixing was the *stall*
+    // (a lookup blocking the local sweep), not the total number of lookups.
+    // Once the stages are separate, a slow background queue costs nothing
+    // visible, and every result — hit or miss — is cached permanently, so
+    // the work shrinks with every session.
+
+    /// **Stage 1 — local only.** MPD tag art (`readpicture`), then a cover
+    /// file beside the track (`albumart`). Never touches the network, so it
+    /// costs single-digit milliseconds and can run over a whole library.
+    /// `variant` is the raw album tag to look a track up by (a disc variant
+    /// for multi-disc sets); `base` is the disc-stripped name behind the key.
+    ///
+    /// Deliberately **not** gated by the negative cache. Local probing is
+    /// cheap and a negative here would be wrong the moment a `cover.jpg` is
+    /// dropped next to the music or a tag is fixed — the case where a user
+    /// most expects the client to notice. `art_missing` still stops it
+    /// repeating within a session. (mikMPD reaches the same place from the
+    /// other side: its `.miss` markers cover the whole chain, so they carry a
+    /// 7-day TTL.)
+    fn fetch_album_art_local(
+        &self,
+        artist: String,
+        base: String,
+        variant: String,
+    ) -> Task<Message> {
         let art_key = art_key_for(&artist, &base);
         let c = self.client.clone();
         let cache = self.art_cache.clone_inner();
-        let mb = self.mb_client.clone();
         let gate = self.art_fetch_gate.clone();
         Task::perform(
             async move {
                 if let Some(data) = cache.get(&art_key).await {
-                    return (art_key, Some(data));
+                    return (art_key, ArtOutcome::Loaded(data));
                 }
                 let _permit = gate.acquire().await;
-                let songs = c.find("Album", &variant).await.unwrap_or_default();
+
+                let songs = match c.find("Album", &variant).await {
+                    Ok(songs) => songs,
+                    // Couldn't ask. Report a miss so the album is retried on
+                    // the next visit, and persist nothing.
+                    Err(_) => return (art_key, ArtOutcome::MpdMiss),
+                };
                 if let Some(first) = songs.first() {
                     if let Ok(Some(data)) = c.tag_art(&first.file).await {
                         let _ = cache.store(&art_key, &data).await;
-                        return (art_key, Some(data));
+                        return (art_key, ArtOutcome::Loaded(data));
                     }
                     if let Ok(Some(data)) = c.cover_file_art(&first.file).await {
                         let _ = cache.store(&art_key, &data).await;
-                        return (art_key, Some(data));
+                        return (art_key, ArtOutcome::Loaded(data));
                     }
                 }
-                if let Some(data) = mb.fetch_album_art(&artist, &base).await {
-                    let _ = cache.store(&art_key, &data).await;
-                    return (art_key, Some(data));
+
+                // Nothing locally. One redb read decides whether stage 2 is
+                // worth queuing: a persisted negative means MusicBrainz was
+                // already asked about this album — in an earlier session,
+                // most likely — and had nothing. Answering `Missing` here is
+                // what keeps those albums from burning the session's
+                // MusicBrainz budget on a lookup whose answer is on disk.
+                if cache.is_known(&art_key).await {
+                    return (art_key, ArtOutcome::Missing);
                 }
-                cache.store_empty(&art_key).await;
-                (art_key, None)
+                (art_key, ArtOutcome::MpdMiss)
             },
-            |(key, data)| Message::ArtLoaded(key, data),
+            |(key, outcome)| Message::AlbumArtFetched(key, outcome),
         )
     }
 
-    /// Kick off art fetches for the album list currently on screen, capped at
-    /// `ALBUM_ART_PREFETCH_LIMIT`. No-op on views that aren't album lists.
-    fn prefetch_album_art(&self) -> Task<Message> {
+    /// **Stage 2 — MusicBrainz / Cover Art Archive.** Only ever reached for
+    /// an album stage 1 found nothing for, one at a time, and only once
+    /// `art_queue` has drained. The persisted negative written here is what
+    /// makes the answer stick across sessions.
+    fn fetch_album_art_remote(&self, art_key: String) -> Task<Message> {
+        let cache = self.art_cache.clone_inner();
+        let mb = self.mb_client.clone();
+        Task::perform(
+            async move {
+                // Stage 1 may have landed this album's cover in the meantime
+                // (another list, or the track started playing).
+                if let Some(data) = cache.get(&art_key).await {
+                    return (art_key, ArtOutcome::Loaded(data));
+                }
+
+                // Deliberately outside `art_fetch_gate`. This stage is
+                // already limited to one in flight and ~1 req/s by
+                // `MusicBrainzThrottle`, and a lookup holds its slot for
+                // seconds — long enough that taking one of the gate's four
+                // permits would make the playing track's own cover wait
+                // behind background work for an album nobody is looking at.
+
+                // The key *is* the query: `art_key_for` builds
+                // "artist\x1fdisc-stripped-album", which is exactly what the
+                // lookup wants. An empty artist degrades to a title-only
+                // search rather than guessing.
+                if let Some((artist, album)) = art_key.split_once('\x1f') {
+                    if let Some(data) = mb.fetch_album_art(artist, album).await {
+                        let _ = cache.store(&art_key, &data).await;
+                        return (art_key, ArtOutcome::Loaded(data));
+                    }
+                }
+                // Both stages have now asked; record it so no future session
+                // repeats either the lookup or the wait.
+                cache.store_empty(&art_key).await;
+                (art_key, ArtOutcome::Missing)
+            },
+            |(key, outcome)| Message::AlbumArtFetched(key, outcome),
+        )
+    }
+
+    /// A trimmed field, or `None` when it's blank — the shape every optional
+    /// `MpdServer` field wants ("" and "unset" mean the same thing in a form).
+    fn opt_string(s: &str) -> Option<String> {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    }
+
+    /// Read the on-disk art size for the Settings readout. Iterating
+    /// `art_meta` is a redb read, so it goes through `spawn_blocking` like
+    /// every other `Store` call.
+    fn fetch_cache_size(&self) -> Task<Message> {
+        let store = self.store.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || store.art_cache_bytes())
+                    .await
+                    .unwrap_or(0)
+            },
+            Message::CacheSizeLoaded,
+        )
+    }
+
+    /// Queue art for every album in the list currently on screen, at the
+    /// front of the queue. No-op on views that aren't album lists.
+    ///
+    /// Front, not back, because the list you just opened is the one you're
+    /// looking at: without it, opening Recently Added while an 800-album
+    /// Albums sweep is still queued put its covers behind all 800.
+    fn queue_album_art(&mut self) -> Task<Message> {
         // (artist, base, variant-to-look-up)
         let groups: Vec<(String, String, String)> = match &self.current_view {
-            View::Albums => self
-                .albums
-                .iter()
-                .map(|g| {
-                    let v = g.variants.first().cloned().unwrap_or_else(|| g.base.clone());
-                    (g.artist.clone(), g.base.clone(), v)
-                })
-                .collect(),
-            View::RecentlyAdded => self
-                .recently_added_albums
-                .iter()
-                .map(|g| {
-                    let v = g.variants.first().cloned().unwrap_or_else(|| g.base.clone());
-                    (g.artist.clone(), g.base.clone(), v)
-                })
-                .collect(),
+            View::Albums => Self::album_art_targets(&self.albums),
+            View::RecentlyAdded => Self::album_art_targets(&self.recently_added_albums),
             View::RecentlyPlayed => recently_played_albums(&self.recently_played)
                 .into_iter()
                 .map(|g| (g.artist.clone(), g.album.clone(), g.album.clone()))
@@ -2519,15 +2851,91 @@ impl App {
             _ => return Task::none(),
         };
 
-        let tasks: Vec<Task<Message>> = groups
+        self.enqueue_album_art(groups)
+    }
+
+    /// `(artist, base, first-variant)` triples for a list of album groups —
+    /// the variant is the raw album tag a track can actually be found by.
+    fn album_art_targets(groups: &[AlbumGroup]) -> Vec<(String, String, String)> {
+        groups
+            .iter()
+            .map(|g| {
+                let v = g.variants.first().cloned().unwrap_or_else(|| g.base.clone());
+                (g.artist.clone(), g.base.clone(), v)
+            })
+            .collect()
+    }
+
+    /// Put albums at the head of the local-stage queue, skipping any already
+    /// loaded or already resolved as missing this session, then start as many
+    /// fetches as the concurrency limit allows.
+    ///
+    /// Albums already queued are *moved* to the front rather than skipped —
+    /// that's what makes re-entering a view actually reprioritise it, since
+    /// `art_pending` would otherwise treat "queued 600 albums ago" as done.
+    fn enqueue_album_art(&mut self, groups: Vec<(String, String, String)>) -> Task<Message> {
+        let wanted: Vec<(String, String, String)> = groups
             .into_iter()
             .filter(|(artist, base, _)| {
-                !self.art_handles.contains_key(&art_key_for(artist, base))
+                let key = art_key_for(artist, base);
+                !self.art_handles.contains_key(&key) && !self.art_missing.contains(&key)
             })
-            .take(Self::ALBUM_ART_PREFETCH_LIMIT)
-            .map(|(artist, base, variant)| self.fetch_album_group_art(artist, base, variant))
             .collect();
-        Task::batch(tasks)
+        if wanted.is_empty() {
+            return Task::none();
+        }
+
+        // Drop any stale copies of these albums from further back in the
+        // queue before re-inserting them at the front, so an album can't sit
+        // in the queue twice.
+        let keys: HashSet<String> = wanted
+            .iter()
+            .map(|(artist, base, _)| art_key_for(artist, base))
+            .collect();
+        self.art_queue
+            .retain(|(artist, base, _)| !keys.contains(&art_key_for(artist, base)));
+
+        // Reverse, because each push_front lands ahead of the last — this
+        // leaves the list in its on-screen order.
+        for (artist, base, variant) in wanted.into_iter().rev() {
+            self.art_pending.insert(art_key_for(&artist, &base));
+            self.art_queue.push_front((artist, base, variant));
+        }
+        self.drain_art_queue()
+    }
+
+    /// Start fetches until `ART_FETCH_CONCURRENCY` local ones are in flight,
+    /// then — only once the local queue is empty — at most one MusicBrainz
+    /// lookup. Called after every enqueue and again as each fetch completes,
+    /// so both queues keep draining on their own.
+    ///
+    /// The ordering between the two is the whole point. A MusicBrainz lookup
+    /// blocks for 1.1–2.2s on a globally serialized throttle; when the stages
+    /// shared one queue, three such albums were enough to stall every local
+    /// cover behind them, so a grid filled in at roughly one album per second
+    /// and looked broken well before it reached anything you'd scrolled to.
+    fn drain_art_queue(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        while self.art_inflight < Self::ART_FETCH_CONCURRENCY {
+            let Some((artist, base, variant)) = self.art_queue.pop_front() else {
+                break;
+            };
+            self.art_inflight += 1;
+            tasks.push(self.fetch_album_art_local(artist, base, variant));
+        }
+
+        if self.art_queue.is_empty() && self.mb_inflight == 0 {
+            if let Some(key) = self.mb_queue.pop_front() {
+                self.mb_inflight += 1;
+                tasks.push(self.fetch_album_art_remote(key));
+            }
+        }
+
+        if tasks.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(tasks)
+        }
     }
 
     /// Fetch an album's Wikipedia bio — same shape as `fetch_artist_bio`.
@@ -2719,9 +3127,18 @@ impl App {
                 )
             }
             View::ServerStats => self.fetch_stats(),
+            View::Settings => {
+                // Leaving and returning shouldn't find the purge still armed
+                // or a half-finished edit still open.
+                self.confirm_clear_caches = false;
+                self.settings_editing = None;
+                self.settings_renaming = None;
+                self.settings_cache_size = self.config.art_cache_size_mb.to_string();
+                self.fetch_cache_size()
+            }
             // History is already in memory; nothing to load, but the covers
             // may not be cached yet.
-            View::RecentlyPlayed => self.prefetch_album_art(),
+            View::RecentlyPlayed => self.queue_album_art(),
             View::RecentlyAdded => {
                 let client = self.client.clone();
                 Task::perform(
@@ -3005,9 +3422,9 @@ fn settings_view(&self) -> Element<'_, Message> {
                         .into()
                 };
 
-                let rename_btn: Element<'_, Message> =
-                    button(text("Rename").size(10))
-                        .on_press(Message::StartRename(server.name.clone()))
+                let quiet_btn = |label: &'static str, msg: Message| {
+                    button(text(label).size(10))
+                        .on_press(msg)
                         .padding([3, 8])
                         .style(|_t: &iced::Theme, s: button::Status| button::Style {
                             background: None,
@@ -3020,7 +3437,12 @@ fn settings_view(&self) -> Element<'_, Message> {
                             border: iced::Border::default(),
                             shadow: iced::Shadow::default(),
                         })
-                        .into();
+                };
+
+                let edit_btn: Element<'_, Message> =
+                    quiet_btn("Edit", Message::StartEditServer(server.name.clone())).into();
+                let rename_btn: Element<'_, Message> =
+                    quiet_btn("Rename", Message::StartRename(server.name.clone())).into();
 
                 let remove_btn: Element<'_, Message> = if can_remove {
                     button(text("×").size(13))
@@ -3044,6 +3466,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                     Space::with_width(Length::Fill),
                     connect_btn,
                     default_btn,
+                    edit_btn,
                     rename_btn,
                     remove_btn,
                 ]
@@ -3051,6 +3474,68 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .spacing(4)
                 .into()
             };
+
+            // Connection details, expanded beneath the row being edited.
+            let row_content: Element<'_, Message> =
+                if self.settings_editing.as_deref() == Some(server.name.as_str()) {
+                    let field = |label: &'static str,
+                                 placeholder: &'static str,
+                                 value: &str,
+                                 width: u16,
+                                 on_input: fn(String) -> Message| {
+                        column![
+                            text(label).size(10).color(AppColors::TEXT_MUTED),
+                            text_input(placeholder, value)
+                                .on_input(on_input)
+                                .on_submit(Message::ConfirmEditServer)
+                                .padding([4, 8])
+                                .size(12)
+                                .width(width),
+                        ]
+                        .spacing(2)
+                    };
+
+                    column![
+                        row_content,
+                        Space::with_height(6),
+                        row![
+                            field("Host", "192.168.1.50", &self.settings_edit_host, 150,
+                                  Message::EditServerHost),
+                            field("Port", "6600", &self.settings_edit_port, 60,
+                                  Message::EditServerPort),
+                            field("Password", "(none)", &self.settings_edit_password, 110,
+                                  Message::EditServerPassword),
+                        ]
+                        .spacing(6),
+                        Space::with_height(4),
+                        row![
+                            field("Snapcast host", "same as MPD",
+                                  &self.settings_edit_snap_host, 150,
+                                  Message::EditServerSnapHost),
+                            field("Snapcast port", "1705",
+                                  &self.settings_edit_snap_port, 60,
+                                  Message::EditServerSnapPort),
+                            column![
+                                text(" ").size(10),
+                                row![
+                                    button(text("Save").size(11))
+                                        .on_press(Message::ConfirmEditServer)
+                                        .padding([4, 10]),
+                                    Space::with_width(4),
+                                    button(text("Cancel").size(11))
+                                        .on_press(Message::CancelEditServer)
+                                        .padding([4, 10]),
+                                ],
+                            ]
+                            .spacing(2),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::Alignment::Start),
+                    ]
+                    .into()
+                } else {
+                    row_content
+                };
 
             server_list = server_list.push(
                 container(row_content)
@@ -3125,6 +3610,80 @@ fn settings_view(&self) -> Element<'_, Message> {
         ]
         .spacing(4);
 
+        // --- Cache section ---
+        let size_label = match self.cache_size_bytes {
+            Some(bytes) => format!(
+                "{:.1} MB of {} MB limit",
+                bytes as f64 / (1024.0 * 1024.0),
+                self.config.art_cache_size_mb
+            ),
+            None => "…".to_string(),
+        };
+
+        let size_limit_row = row![
+            text("Limit").size(11).color(AppColors::TEXT_MUTED),
+            Space::with_width(8),
+            text_input("500", &self.settings_cache_size)
+                .on_input(Message::ArtCacheSizeChanged)
+                .on_submit(Message::SaveArtCacheSize)
+                .padding([4, 8])
+                .size(12)
+                .width(70),
+            Space::with_width(4),
+            text("MB").size(11).color(AppColors::TEXT_MUTED),
+            Space::with_width(8),
+            button(text("Save").size(11))
+                .on_press(Message::SaveArtCacheSize)
+                .padding([4, 10]),
+        ]
+        .align_y(iced::Alignment::Center);
+
+        let clear_row: Element<'_, Message> = if self.confirm_clear_caches {
+            row![
+                text("Clear all cached art, lyrics and biographies?")
+                    .size(12)
+                    .color(AppColors::TEXT_SECONDARY),
+                Space::with_width(10),
+                button(text("Clear").size(12).color(AppColors::ERROR))
+                    .on_press(Message::ClearCaches)
+                    .padding([4, 12]),
+                Space::with_width(6),
+                button(text("Cancel").size(12))
+                    .on_press(Message::CancelClearCaches)
+                    .padding([4, 12]),
+            ]
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else {
+            row![
+                text(size_label).size(12).color(AppColors::TEXT_MUTED),
+                Space::with_width(Length::Fill),
+                button(text("Clear cache").size(12))
+                    .on_press(Message::ClearCaches)
+                    .padding([4, 12]),
+            ]
+            .align_y(iced::Alignment::Center)
+            .into()
+        };
+
+        let cache_section = column![
+            text("Cache").size(16).color(AppColors::TEXT_PRIMARY),
+            Space::with_height(4),
+            text(
+                "Album art, lyrics and Wikipedia biographies are cached on disk. \
+                 Clearing frees the space and forces a fresh lookup — covers \
+                 re-download in the background, which for albums that need \
+                 MusicBrainz takes a while. Play history is not affected."
+            )
+            .size(11)
+            .color(AppColors::TEXT_MUTED),
+            Space::with_height(8),
+            size_limit_row,
+            Space::with_height(8),
+            clear_row,
+        ]
+        .spacing(2);
+
         let content = column![
             row![
                 text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
@@ -3139,6 +3698,8 @@ fn settings_view(&self) -> Element<'_, Message> {
             server_list,
             Space::with_height(12),
             add_form,
+            Space::with_height(24),
+            cache_section,
         ]
         .spacing(4)
         .padding(20)

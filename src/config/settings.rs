@@ -1,7 +1,7 @@
 use crate::mpd::types::RecentAlbum;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MpdServer {
@@ -42,6 +42,13 @@ impl MpdServer {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// Set when a config file existed but couldn't be parsed. Makes `save`
+    /// a no-op so a typo in the TOML isn't answered by silently replacing
+    /// the user's settings with defaults. Never serialized — it describes
+    /// this run, not the configuration.
+    #[serde(skip)]
+    pub load_failed: bool,
+
     // Legacy single-server fields — kept so old config files still load.
     // Mirrored from the active server after migration.
     //
@@ -159,6 +166,7 @@ impl Default for AppConfig {
             snapcast_port: None,
         };
         Self {
+            load_failed: false,
             mpd_host: "127.0.0.1".into(),
             mpd_port: 6600,
             mpd_password: None,
@@ -212,33 +220,85 @@ impl AppConfig {
     }
 
     pub fn load() -> Self {
-        if let Some(path) = Self::config_path() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut config) = toml::from_str::<Self>(&content) {
-                    // One-time migration: synthesise a server entry from legacy fields.
-                    if config.servers.is_empty() {
-                        let server = MpdServer {
-                            name: "Default".into(),
-                            host: config.mpd_host.clone(),
-                            port: config.mpd_port,
-                            password: config.mpd_password.clone(),
-                            default_partition: config.default_partition.clone(),
-                            snapcast_host: None,
-                            snapcast_port: None,
-                        };
-                        config.servers.push(server);
-                        config.default_server = Some("Default".into());
-                        config.save().ok();
-                    }
-                    return config;
+        Self::load_from(Self::config_path())
+    }
+
+    /// Path-injectable core of `load`, so all three cases can be tested
+    /// without touching the real user config.
+    ///
+    /// The distinction that matters is **missing vs. unparseable**:
+    /// - *Missing* (first launch) — write the defaults out. The file used to
+    ///   be created lazily, on whatever action next called `save()`, which
+    ///   left new users with no file and no folder to edit. That matters
+    ///   because `art_cache_size_mb`, `theme` and the per-server
+    ///   `snapcast_host`/`snapcast_port` have **no UI at all** — the file is
+    ///   the only way to set them.
+    /// - *Present but unparseable* — keep the defaults for this session,
+    ///   log loudly, and set `load_failed` so `save` refuses to write. One
+    ///   stray character in the TOML would otherwise be silently overwritten
+    ///   with defaults by the next setting change, taking every server,
+    ///   radio station and saved partition with it.
+    fn load_from(path: Option<PathBuf>) -> Self {
+        let Some(path) = path else {
+            return Self::default();
+        };
+
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            // No config yet: write one so there is something to edit.
+            let config = Self::default();
+            if let Err(e) = config.save_to(Some(&path)) {
+                tracing::warn!("could not create {}: {e}", path.display());
+            }
+            return config;
+        };
+
+        match toml::from_str::<Self>(&content) {
+            Ok(mut config) => {
+                // One-time migration: synthesise a server entry from legacy fields.
+                if config.servers.is_empty() {
+                    let server = MpdServer {
+                        name: "Default".into(),
+                        host: config.mpd_host.clone(),
+                        port: config.mpd_port,
+                        password: config.mpd_password.clone(),
+                        default_partition: config.default_partition.clone(),
+                        snapcast_host: None,
+                        snapcast_port: None,
+                    };
+                    config.servers.push(server);
+                    config.default_server = Some("Default".into());
+                    config.save_to(Some(&path)).ok();
+                }
+                config
+            }
+            Err(e) => {
+                tracing::error!(
+                    "{} could not be parsed ({e}) — running with defaults for \
+                     this session and leaving the file untouched. Fix or \
+                     delete it; settings will not be saved until then.",
+                    path.display()
+                );
+                Self {
+                    load_failed: true,
+                    ..Self::default()
                 }
             }
         }
-        Self::default()
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
-        if let Some(path) = Self::config_path() {
+        self.save_to(Self::config_path().as_deref())
+    }
+
+    fn save_to(&self, path: Option<&Path>) -> anyhow::Result<()> {
+        if self.load_failed {
+            tracing::warn!(
+                "not saving settings: the config file on disk is unparseable \
+                 and would be overwritten"
+            );
+            return Ok(());
+        }
+        if let Some(path) = path {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
@@ -367,6 +427,76 @@ dark_mode = false
         let config: AppConfig = toml::from_str(src).expect("partial theme must parse");
         assert!(!config.theme.dark_mode);
         assert_eq!(config.theme.accent_color, ThemeConfig::default().accent_color);
+    }
+
+    fn scratch_path(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir()
+            .join(format!("winrmpc-cfg-{}-{tag}-{n}", std::process::id()))
+            .join("config")
+            .join("config.toml")
+    }
+
+    /// First launch must leave a file behind. It used to be written lazily by
+    /// whatever action next called `save()`, so a new user had neither a file
+    /// nor a folder — and `art_cache_size_mb`, `theme` and the per-server
+    /// Snapcast fields had no other way in.
+    #[test]
+    fn load_creates_the_config_file_when_missing() {
+        let path = scratch_path("missing");
+        assert!(!path.exists());
+
+        let config = AppConfig::load_from(Some(path.clone()));
+
+        assert!(path.exists(), "first launch must write a config file");
+        assert!(!config.load_failed);
+        let written: AppConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).expect("valid TOML");
+        assert_eq!(written.servers.len(), 1);
+        assert_eq!(written.default_server.as_deref(), Some("Default"));
+        std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
+    }
+
+    /// A file that exists but doesn't parse must survive untouched. Defaults
+    /// are used for the session, and `save` is disarmed — otherwise one typo
+    /// is answered by silently replacing every server, station and saved
+    /// partition with defaults.
+    #[test]
+    fn unparseable_config_is_never_overwritten() {
+        let path = scratch_path("broken");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let broken = "this is not = valid toml [[[";
+        std::fs::write(&path, broken).unwrap();
+
+        let config = AppConfig::load_from(Some(path.clone()));
+
+        assert!(config.load_failed, "must remember that the file was bad");
+        assert_eq!(config.servers.len(), 1, "runs on defaults meanwhile");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+
+        // And a later settings change must not clobber it either.
+        config.save_to(Some(&path)).expect("save is a no-op, not an error");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
+    }
+
+    /// A legacy single-server file gets its `[[servers]]` entry written back.
+    #[test]
+    fn legacy_file_is_migrated_and_saved_once() {
+        let path = scratch_path("legacy");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "mpd_host = \"10.0.0.9\"\nmpd_port = 6601\n").unwrap();
+
+        let config = AppConfig::load_from(Some(path.clone()));
+
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].host, "10.0.0.9");
+        assert_eq!(config.servers[0].port, 6601);
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("[[servers]]"), "migration must persist");
+        std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
     }
 
     /// Round-tripping through `toml::to_string` (what `save()` does) must

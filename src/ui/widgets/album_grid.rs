@@ -12,7 +12,10 @@ use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
 
 pub const TILE_SIZE: u16 = 120;
-pub const TILES_PER_ROW: usize = 5;
+
+/// Cover edge length in list mode. Small enough that a long list still
+/// scrolls comfortably, big enough to recognise a cover.
+pub const LIST_THUMB: u16 = 36;
 
 /// One cover tile: art (or a placeholder block), title, and a muted
 /// subtitle. `caption` is an optional third line — "2 discs", "3d ago".
@@ -67,19 +70,46 @@ pub fn tile<'a>(
         .into()
 }
 
-/// Wraps tiles into rows. `Element` isn't `Clone`, so this consumes the
-/// iterator in fixed-size chunks rather than slicing a borrowed `Vec`.
-pub fn grid<'a>(tiles: Vec<Element<'a, Message>>) -> Element<'a, Message> {
-    let mut rows = column![].spacing(16);
-    let mut iter = tiles.into_iter();
-    loop {
-        let chunk: Vec<Element<'a, Message>> = (&mut iter).take(TILES_PER_ROW).collect();
-        if chunk.is_empty() {
-            break;
-        }
-        rows = rows.push(row(chunk).spacing(16));
+/// The list-mode counterpart to a tile's cover: the same art at `LIST_THUMB`,
+/// or the same placeholder block. Shared so that every view offering the
+/// Grid/List switch shows art in *both* layouts — switching layout should
+/// change the density, never which albums appear to have a cover.
+pub fn list_thumb<'a>(
+    art: Option<&'a iced::widget::image::Handle>,
+) -> Element<'a, Message> {
+    match art {
+        Some(handle) => image(handle.clone())
+            .width(LIST_THUMB)
+            .height(LIST_THUMB)
+            .into(),
+        None => container(text("").size(1))
+            .width(LIST_THUMB)
+            .height(LIST_THUMB)
+            .style(|_t: &iced::Theme| container::Style {
+                background: Some(AppColors::BG_SECONDARY.into()),
+                border: iced::Border {
+                    radius: 3.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into(),
     }
-    rows.into()
+}
+
+/// Flows tiles into as many columns as the window is currently wide enough
+/// for, via iced's wrapping row.
+///
+/// This used to chunk into a fixed 5 per row, which left a growing band of
+/// dead space on the right of any window wider than 5 tiles (and clipped on
+/// anything narrower). `Row::wrap` re-flows on every layout pass, so the
+/// column count follows the window instead of a constant.
+pub fn grid<'a>(tiles: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    row(tiles)
+        .spacing(16)
+        .width(Length::Fill)
+        .wrap()
+        .into()
 }
 
 /// The Grid/List switch. Shown in every view that supports both.

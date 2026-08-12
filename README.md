@@ -51,6 +51,7 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 - Fallback to **MusicBrainz** and **Cover Art Archive** for album covers
 - Artist images sourced from MusicBrainz
 - All art cached in an embedded database with a configurable size cap and LRU eviction — fast on subsequent loads, and "no art exists" is remembered too so it isn't re-fetched every launch
+- **Settings → Cache** shows how much art is on disk and can clear it (art, lyrics and biographies; play history is kept), forcing a fresh lookup
 
 ### Wikipedia Integration
 - Artist biographies and album descriptions fetched from English Wikipedia via MusicBrainz URL relations
@@ -68,6 +69,7 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 
 ### Multiple Servers
 - Save several MPD servers and switch between them from Settings
+- Edit any server's host, port, password and Snapcast address in place — editing the active one reconnects
 - Each server keeps its own partition and play history
 
 ### Snapcast Multiroom
@@ -216,7 +218,9 @@ so your real queue and playback are never touched.
 
 ## Configuration
 
-On first launch winrmpc connects to MPD at `127.0.0.1:6600`. Use the **Settings** view (bottom of the sidebar) to add servers and switch between them; the CD device path is set in the **CD** view and the database-update trigger lives in **Stats**.
+On first launch winrmpc connects to MPD at `127.0.0.1:6600` and writes a config file with those defaults, so there is always something to edit. Every setting is also editable in the app: servers (add, edit, rename, remove, set default) and the art-cache limit in **Settings**, the CD device path in the **CD** view, radio stations in **Radio**, and the database-update trigger in **Stats**.
+
+If the config file is ever left in a state that can't be parsed, winrmpc runs on defaults for that session, says so in the **Log** view, and will not save over the file — fix or delete it and settings will start saving again.
 
 Configuration file (Windows path shown; Linux and macOS use their own standard config directories):
 ```

@@ -18,15 +18,19 @@ cargo test <name>        # run tests whose name matches <name>
 cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 ```
 
-- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 150 offline tests cover the pure-logic core, all I/O-free:
+- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 181 offline tests; none touch the network or need an MPD server (the `store` ones do open a real redb, over `InMemoryBackend`):
   - `mpd/client.rs` — `escape` injection safety (quotes, backslashes, ordering)
   - `mpd/protocol.rs` — `pairs_to_map`, `split_groups`, `parse_ack`
   - `mpd/commands.rs` — every response parser (`parse_status`/`song`/`songs`/`outputs`/`partitions`/`directory_listing`/`stats`/`tag_list`); note the `Time`→`duration` fallback rule
   - `mpd/types.rs` — `Song` display fallbacks, `format_duration`, `art_key` (0x1f separator, hyphen-collision guard), `display_format` (codec from extension), `push_recent` (dedup/move-to-front/cap-at-8)
   - `lyrics/lrclib.rs` — `parse_lrc` (`[mm:ss.xx]` timestamps, sort-by-time, malformed-skip, empty input, integer seconds)
+  - `art/musicbrainz.rs` — `title_matches` acceptance rules (stopwords, 2/3 token overlap, single-token exactness), `lucene_escape`, `normalize_for_lookup` (smart punctuation, sort-order articles, multi-byte tails), `strip_edition_qualifier`/`is_edition_qualifier`, `lookup_title`, `release_title_matches`/`artist_credit_matches`/`search_queries`, and that `MusicBrainzThrottle` serializes across clones
+  - `store/mod.rs` — `bios`/`mb_ids`/`recently_played` round trips over an in-memory redb, including the absent-vs-`Some(None)` distinction and per-server key isolation
+  - `snapcast/types.rs` + `snapcast/protocol.rs` — `decode_snap_groups`/`decode_snap_streams` from fixtures, degrade-to-empty on unexpected JSON, `extract_result`'s error/null handling, and response-id matching among interleaved notification lines
   - Not yet covered (would need a mock `AsyncRead`/`AsyncWrite`): the `protocol.rs` read loops & EOF guards.
-  - `config/settings.rs` — TOML shapes: the README's multi-server example, a legacy single-server file, a minimal config, a partial `[theme]` table, and a `save()`→`load()` round trip. These exist because every legacy field is `#[serde(default)]` *by necessity*: `AppConfig::load()` falls back to `Self::default()` on any parse error and then overwrites the file on the next `save()`, so a config shape that fails to deserialize silently destroys the user's settings rather than reporting anything.
-  - `live_tests.rs` — integration tests against a **real** MPD/Snapcast server, all `#[ignore]`d so `cargo test` stays offline. Run with `WINRMPC_TEST_MPD=host:6600 WINRMPC_TEST_SNAPCAST=host:1705 cargo test -- --ignored --test-threads=1`. They cover `add_all`'s bulk enqueue and its stop-at-first-failure semantics, `group_albums_by_artist` against a real album list, and Snapcast `Server.GetStatus` decoding. Anything that mutates state creates a throwaway MPD **partition**, works there, and deletes it — the default partition's queue is never touched. Two Snapcast tests in this file are *not* ignored: they drive the client against a local `TcpListener` mock to prove a dead socket is dropped (so the view can reconnect) while an RPC error response is not.
+  - `config/settings.rs` — TOML shapes (the README's multi-server example, a legacy single-server file, a minimal config, a partial `[theme]` table, a `save()`→`load()` round trip) plus the three `load_from` cases against a scratch path: a missing file is **created**, an unparseable one is **never overwritten**, a legacy one is **migrated and persisted**. Every legacy field is `#[serde(default)]` *by necessity* — a shape that fails to deserialize used to cost the user their settings, since `load` fell back to defaults and the next `save` wrote them over the file. `load_failed` now disarms `save` instead, but the defaults are still what keeps a valid-but-old file parsing at all.
+  - `live_tests.rs` — integration tests against a **real** MPD/Snapcast server, all `#[ignore]`d so `cargo test` stays offline. Run with `WINRMPC_TEST_MPD=host:6600 WINRMPC_TEST_SNAPCAST=host:1705 cargo test -- --ignored --test-threads=1`. They cover `add_all`'s bulk enqueue and its stop-at-first-failure semantics, `group_albums_by_artist` against a real album list, and Snapcast `Server.GetStatus` decoding. Anything that mutates state creates a throwaway MPD **partition**, works there, and deletes it — the default partition's queue is never touched.
+  - Four of them are **diagnostics rather than assertions**, and they are the fastest way to answer "why is this album's cover blank" — reach for them before theorising: `live_diagnose_album_art_sources` prints, per album, which stage answers (`readpicture` / `albumart` / nothing) plus the raw artist tags; `live_probe_cue_album_art_fallback` checks whether a CUE-sheet track's cover is reachable via the `.cue` path (on this library: no); `live_musicbrainz_resolves_locally_artless_albums` and `live_wikipedia_bios_for_awkward_tags` run the real external lookups over the tag shapes that used to defeat them. The last two need **`WINRMPC_TEST_MUSICBRAINZ=1`** on top of `--ignored`, so a routine sweep can't start hammering a free community service. Two Snapcast tests in this file are *not* ignored: they drive the client against a local `TcpListener` mock to prove a dead socket is dropped (so the view can reconnect) while an RPC error response is not.
 - Icon embedding (`build.rs` → `winres`) needs `rc.exe`/`windres` on PATH; if absent it's skipped with a `cargo:warning`, build still succeeds.
 
 ## Tech Stack
@@ -44,11 +48,12 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 ## Project Structure
 
 ```
+build.rs                     (repo root, not src/) Generates 16×16+32×32 BMP-in-ICO, embeds via winres on Windows
 src/
   main.rs                    Entry point: windows_subsystem, tracing layers, window icon, launches iced
   logger.rs                  InAppLayer (tracing Layer) + static ring-buffer; get_entries() / clear_entries()
   icon.rs                    Programmatic 32×32 RGBA icon (equalizer bars); make_icon() → iced::window::Icon
-  build.rs                   Generates 16×16+32×32 BMP-in-ICO, embeds via winres on Windows
+  live_tests.rs              Opt-in #[ignore]d integration tests against a real MPD/Snapcast server
   config/
     mod.rs                   Re-exports AppConfig
     settings.rs              AppConfig struct + load/save (TOML, platform dirs)
@@ -90,6 +95,7 @@ src/
       album.rs
       genres_list.rs
       genre_detail.rs
+      recently_played.rs
       browser.rs
       search.rs
       radio.rs
@@ -105,7 +111,7 @@ src/
       mod.rs
     widgets/
       player_bar.rs          Transport controls bar (play/pause/stop/prev/next, seek, volume)
-      sidebar.rs             Navigation sidebar — wrapped in a `scrollable`; with 17 entries and a `Length::Fill` spacer the bottom group (Settings/Log/Stats) used to be pushed off a short window with no way to reach it
+      sidebar.rs             Navigation sidebar — fixed `SIDEBAR_WIDTH` (132px), wrapped in a `scrollable` with a slimmed 4px scrollbar; with a `Length::Fill` spacer the bottom group (Settings/Log/Stats) used to be pushed off a short window with no way to reach it, and at the old 90px width "Recently Added" wrapped to two lines and the connection line was clipped
       art_image.rs           Bytes → iced ImageHandle helper
       link.rs                Clickable hyperlink widget (opens URLs via `open`)
       album_grid.rs          Shared cover-grid: tile/grid/layout_toggle/art_for, used by Albums, Recently Added and Recently Played
@@ -125,6 +131,30 @@ Fields saved to TOML via `directories` (Windows: `%APPDATA%\winrmpc\winrmpc\conf
 
 **Migration** (`AppConfig::load`): if `servers` is empty after deserialize, synthesize `MpdServer { name: "Default", … }` from the legacy fields, set `default_server`, and `save()` once so the file upgrades. All new optional fields must carry `#[serde(default)]` so existing config files still load.
 
+**`load` distinguishes missing from unparseable, and that distinction is the point.** `load_from(Option<PathBuf>)` / `save_to(Option<&Path>)` are the path-injectable cores so all three cases are testable without touching the real user config.
+- *Missing* (first launch) → write the defaults out. Previously the file was created lazily by whatever action next called `save()`, so a new user had **no file and no folder** — which matters because `art_cache_size_mb`, `theme` and the per-server `snapcast_host`/`snapcast_port` had no other way in.
+- *Present but unparseable* → keep defaults for the session, log at ERROR, and set `load_failed`, which makes `save` a **no-op**. Without it, one stray character in the TOML was answered by silently overwriting every server, radio station and saved partition with defaults on the next setting change. This is the hazard the `config/settings.rs` tests were written for; nothing actually prevented it until now.
+
+**Everything in the config now has a UI** except `theme` — see "Settings UI coverage" below.
+
+## Settings UI coverage
+Every persisted option is editable in the app, so the config file is a convenience rather than a requirement:
+| Option | Where |
+|---|---|
+| `servers[]` name | Settings → server row → **Rename** |
+| `servers[]` host / port / password / `snapcast_host` / `snapcast_port` | Settings → server row → **Edit** (inline expansion) |
+| `default_server` | Settings → **Set as default** |
+| `art_cache_size_mb` | Settings → Cache → **Limit** |
+| `cd_device` | CD view |
+| `radio_stations` | Radio view |
+| `album_grid_view` | the ▦ Grid / ☰ List toggle |
+| `default_partition` (per server) | Partitions view (saved on switch) |
+| `recent_albums` | not a setting — session state |
+
+- **Editing a server that is the active one reconnects**, by delegating to `SwitchServer` (which mirrors the legacy fields and restores the partition). `active_server` is cleared first so `SwitchServer` doesn't short-circuit on its "same name" guard. Snapcast's client is dropped either way, since its host/port may have moved even when MPD's didn't.
+- **A bad port keeps the old one** instead of silently resetting to 6600 — a half-typed port shouldn't be committed as a real change.
+- **`theme` (`dark_mode`, `accent_color`) is the one exception, and it is dead config**: `App::theme()` returns `Theme::Dark` unconditionally and nothing reads `accent_color` — every colour comes from the `AppColors` constants. It deliberately has **no UI**, because a toggle that does nothing is worse than none. Making it real means adding a light `AppColors` palette and threading it through every view (the constants are `const`, referenced directly by all 20+ view modules); until someone wants that, the field is either a future feature or a deletion.
+
 ## MPD protocol reference
 **<https://mpd.readthedocs.io/en/stable/protocol.html>** — the authoritative command reference. Check it before adding or changing any command; exact spelling matters and MPD rejects anything else outright with `ACK [5@0] {} unknown command` (see the `replay_gain_mode` note under "Playback options"). Underscore conventions are inconsistent across the protocol — `replay_gain_mode` and `list_OK` have them, `setvol`, `playid`, `seekcur`, `listplaylistinfo`, `delpartition` don't — so guessing is unreliable.
 
@@ -135,6 +165,8 @@ Fields saved to TOML via `directories` (Windows: `%APPDATA%\winrmpc\winrmpc\conf
 - Key methods: `status()`, `current_song()`, `queue()`, `add()`, `add_id()`, `find()`, `find_add()`, `lsinfo()`, `tag_art()`/`cover_file_art()`, `switch_partition()`, etc.
 
 ## Iced App Architecture (`src/ui/app.rs`)
+`app.rs` is ~3200 lines and holds the whole Elm loop: `App`'s state, every `Message` handler, `view`, `subscription`, and all the `fetch_*` task builders. Note that despite the `ui/views/` directory, **Settings has no view module** — it's `App::settings_view()`, a method on `App` (it reads and writes a lot of `settings_*` state fields). Every other view is its own module.
+
 ### Subscription
 - **Connected**: `every(500ms)` → `Message::Tick` → `refresh_status()`
 - **Disconnected**: `every(3s)` → `Message::ConnectionTick` → reconnect attempt
@@ -219,7 +251,8 @@ Single `winrmpc.redb` file under the platform cache dir. Tables: `art` (blobs), 
 - `ArtCache` (`art/cache.rs`) is an in-memory `HashMap` hot layer over `Store`; `Store` is the source of truth. `store()` downscales to a 500px JPEG before persisting.
 - **LRU eviction**: `art_put` calls `art_evict(limit_bytes)` — removes oldest `last_access` entries until under `art_cache_size_mb`. Negative entries (`is_empty`, no blob) are exempt.
 - **Negative caching**: `art_put_empty` / `store_empty` records "known missing" so art isn't refetched every launch. `art_known` / `is_known` gate whether to fetch. Lyrics use `Some(None)` for "cached: no lyrics exist".
-- **Startup housekeeping** (`open`): recreates tables; `purge_poisoned_negatives` (one-time, `neg_purge_v1` marker) clears stale negatives that blocked embedded-art lookups; `cleanup_legacy` deletes the pre-DB flat `*.jpg` + `lyrics/` caches. On DB-open failure it wipes+rebuilds, falling back to an in-memory backend so the app still runs.
+- **Manual purge** (Settings → Cache): `Message::ClearCaches` calls `ArtCache::clear` (in-memory layer + `art`/`art_meta`) and `Store::clear_lookup_caches` (`lyrics`/`bios`/`mb_ids`). It deliberately spares `recently_played` — app-generated history that nothing could re-derive — and `meta`, whose migration markers would otherwise re-run one-time purges. The handler also drops both art queues and zeroes their counters: in-flight fetches would otherwise re-populate the cache being cleared and then decrement counters that no longer mean anything. **It takes two presses** (`confirm_clear_caches`, disarmed on view enter) because a purge is one click to trigger and hours to undo — every cover re-downloads, and the MusicBrainz stage re-crawls. `Store::art_cache_bytes` backs the "N MB of M MB limit" readout beside it.
+- **Startup housekeeping** (`open`): recreates tables; `purge_poisoned_negatives` clears "we looked and found nothing" records whenever the lookup rules change enough to invalidate them — **bump its marker to re-run it** (`neg_purge_v1`: negatives written by the empty-URI recents fetch; `neg_purge_v2`: everything recorded before the MusicBrainz matching fixes). It purges negative `art_meta` entries **and** `Some(None)` `mb_ids`; leaving the latter would have `search_release_group` return the cached "no match" without ever issuing the corrected query, so the art fix would be invisible on any existing cache. `cleanup_legacy` deletes the pre-DB flat `*.jpg` + `lyrics/` caches. On DB-open failure it wipes+rebuilds, falling back to an in-memory backend so the app still runs.
 
 ## Server switching (`src/ui/app.rs`, `src/ui/message.rs`)
 `active_server: String` tracks the current server by name. `SwitchServer(name)` rebuilds `MpdClient`, sets `connected = false`, emits `Connect`, and restores that server's `default_partition` on `Connected`. It also reloads `recently_played` history for the new server (`recently_played_get`, via `spawn_blocking`) and clears the in-memory list first so a slow load can't briefly show the old server's history. `SetDefaultServer` / `AddServer` / `RemoveServer` manage the list from the Settings view; `RemoveServer` also deletes the removed server's `recently_played` key. Startup connects to `default_server`.
@@ -237,11 +270,26 @@ Two distinct features sharing one plan (`docs/plans/recently-added-and-played-hi
 - **Recently Played** (`View::RecentlyPlayed`, opened via a "🕐 History" link in Now Playing's toggle row, not the sidebar): per-server track-level history, distinct from `recent_albums`. `PlayRecorder` (`types.rs`) is a self-contained tick-based reducer — call `tick(file, is_playing, elapsed_secs, duration_secs)` on every `StatusUpdated`; it tracks its own last-seen elapsed internally (no caller-side delta bookkeeping needed) and returns `true` the moment a play should commit: `accumulated >= min(30, max(5, duration/2))` seconds of actual playback, capping any single delta at 5s so a seek or coarse poll gap can't fast-forward the threshold. A commit pushes a `RecentlyPlayedEntry` to `self.recently_played`, prunes to 30 days / 100 entries (`prune_recently_played`), and persists via `spawn_blocking`. **CD tracks are skipped** (no recording at all while `cdda://` is playing); radio streams are recorded (unlike `recent_albums`, which effectively excludes them via its "Unknown Album" filter). The view's Albums mode **derives** groups from track history (`recently_played_albums` — first occurrence per (artist, album) wins, since entries are already newest-first) rather than recording albums separately, so there's one source of truth. `RecentlyPlayedEntry` carries **both** artists: `artist` (`display_artist()`, the track artist, shown per row) and `album_artist` (`display_album_artist()`, `#[serde(default)]` for pre-existing history). `RecentlyPlayedEntry::art_artist()` returns `album_artist` when set and falls back to `artist`, and it's what `recently_played_albums` groups and labels by — art is only ever cached under `Song::art_key()`, i.e. the *album* artist, so grouping by the track artist both split compilations into one tile per guest artist and made every one of those tiles miss the art cache.
 
 ## Album cover grid vs list (`src/ui/widgets/album_grid.rs`)
-The Albums list, Recently Added and Recently Played (Albums mode) all render through one shared widget, so they look and behave identically. `album_grid` exposes `tile()` (cover + title + subtitle + optional caption), `grid()` (chunks tiles into rows — `Element` isn't `Clone`, so it consumes the iterator rather than slicing), `layout_toggle()` (the ▦ Grid / ☰ List button) and `art_for()` (cache lookup via `art_key_for`).
+The Albums list, Recently Added and Recently Played (Albums mode) all render through one shared widget, so they look and behave identically. `album_grid` exposes `tile()` (cover + title + subtitle + optional caption), `grid()`, `list_thumb()` (the list-mode cover), `layout_toggle()` (the ▦ Grid / ☰ List button) and `art_for()` (cache lookup via `art_key_for`).
 - **One flag for all three views**: `AppConfig::album_grid_view` (`#[serde(default)]`, persisted), toggled by `Message::ToggleAlbumGridView`. Deliberately not per-view — three independent layout memories would feel arbitrary.
-- **List mode also shows art**, as a 36px thumbnail, so switching layouts never changes *which* albums appear to have covers.
-- **Art prefetch is bounded** — `App::ALBUM_ART_PREFETCH_LIMIT` (24). Each uncached album costs an MPD `find` to locate a track plus, on a miss, a MusicBrainz lookup behind the global ~1 req/s throttle; an unbounded prefetch over an 800-album library would hammer the server for a quarter of an hour. On a library with **no embedded art** every album takes the full `find` → `readpicture` → `albumart` → MusicBrainz path, which is the heaviest load the app ever puts on the single shared connection — the cap was 60 and that coincided with the connection falling over (see "Connection desync"). `prefetch_album_art()` picks the list matching the current view, skips anything already in `art_handles`, and takes the first 24. Cached art always renders regardless of the cap, so grids fill in as you browse. **Known limitation**: there's no visible-range/lazy fetch (iced 0.13 doesn't expose scroll position per item), so past the first 24 uncached entries tiles show the placeholder block until visited. Grid mode also builds ~4 widgets per album with **no virtualisation** — on an 800-album library that is ~3200 widgets laid out every frame, which is untested for responsiveness.
-- `fetch_album_group_art(artist, base, variant)` is the single per-album fetch (tag → cover file → MusicBrainz), shared by `prefetch_album_art` and the `ArtistAlbumsLoaded` handler.
+- **List mode also shows art** in all three, via the shared `list_thumb()` (36px), so switching layouts changes the density and never *which* albums appear to have a cover.
+- **`grid()` is a wrapping row** (`row(tiles).width(Fill).wrap()`), so the column count follows the window width. It used to chunk into a fixed 5 per row, which left a widening band of dead space to the right on any window wider than 5 tiles.
+- **Now Playing's recents strip is a *horizontal scrollable*, not a wrapping row** — the one place where wrapping is wrong. All three of the obvious options fail differently: a plain `row` squeezes the overflow into its last child (the right-most cover rendered as a sliver), and `.wrap()` grows the strip downwards where, because a `column` doesn't clip its children, the second line drew straight over the player bar. A horizontal scrollable is the only one that stays exactly one row tall at any width.
+- **`window::Settings::min_size` is 1000×700** (`main.rs`). iced widgets don't clip to their parent, so a too-small window doesn't degrade — it overlaps.
+- Grid mode builds ~4 widgets per album with **no virtualisation** — on an 800-album library that is ~3200 widgets laid out every frame, which is untested for responsiveness.
+
+### Background album-art fetching — two stages (`App::drain_art_queue`)
+Art fetching is a **two-stage queue with bounded concurrency**, not a capped prefetch. The split between stages is the single most important thing in this section: **a local probe costs milliseconds, a MusicBrainz lookup costs 1.1–2.2 seconds of globally serialized throttle time**, so anything that lets them share a queue converts the whole sweep into a ~1 album/second crawl.
+- **Stage 1, `fetch_album_art_local`** — MPD `readpicture` then `albumart`, no network. `art_queue: VecDeque<(artist, base, variant)>`, `ART_FETCH_CONCURRENCY` (3) in flight. Reports `ArtOutcome::Loaded` / `MpdMiss` / `Missing`.
+- **Stage 2, `fetch_album_art_remote`** — MusicBrainz/CAA, keyed by the same `art_key` (which already *is* `artist\x1fbase`, i.e. the query). `mb_queue`, **one** in flight, and only started once `art_queue` is empty. Runs **outside `art_fetch_gate`** on purpose: it is already limited to 1 concurrent + ~1 req/s, and holding one of the gate's 4 permits for seconds would make the playing track's own cover queue behind background work.
+- **`Message::AlbumArtFetched(key, ArtOutcome)`** is the queue's own message; `ArtLoaded` is now only for one-off fetches (playing track, artist images, recents). This replaced an earlier trick of inferring the source from `art_pending` membership — the stage split needs a real tri-state (`MpdMiss` is "not found yet", `Missing` is "final"), which a bare `Option<Vec<u8>>` can't carry.
+- **Stage 2 is unbounded** — it grinds through every locally-artless album for as long as it takes. A 50/session budget was tried and removed: the thing that actually needed fixing was the *stall* (a lookup blocking the local sweep), not the number of lookups. Once the stages are separate, a slow background queue costs nothing visible, and every result caches permanently, so the work shrinks each session.
+- **Stage 1 is deliberately NOT gated by the negative cache.** Local probing is cheap and a persisted negative would be wrong the moment a `cover.jpg` appears next to the music or a tag is fixed. Only stage 2 reads the negative — and stage 1 checks `is_known` at the *end*, on the miss path only, so an album MusicBrainz already answered "no" for doesn't burn a budget slot. (mikMPD lands in the same place from the other side: its `.miss` markers cover the whole chain, so they carry a 7-day TTL.)
+- **`art_missing`** (session-local) exists because `art_handles` only records hits; without it every re-entry to a list re-queues every coverless album.
+- **Enqueue is front-insertion, and re-queues albums already in the queue.** `enqueue_album_art` pulls matching entries out of `art_queue` and pushes the current view's list back on at the head (reversed, so on-screen order survives). Skipping already-queued albums instead — the obvious implementation — meant opening Recently Added mid-sweep put its covers behind the 800 albums still queued from the Albums list.
+- `Message::SwitchServer` clears both queues, both pending sets, and zeroes both inflight counters (fetches still running then find their key absent from the pending sets, so they must not decrement). `art_handles`/`art_missing` stay — keyed by artist/album, so server-agnostic.
+- **Known limitation**: no visible-range fetch. mikMPD gets this free from SwiftUI (`.task(id:)` per tile, cancelled on scroll away); iced 0.13 exposes no per-item scroll position, so the queue works from the top of the list down. Stage 1 finishing a whole library in seconds is what makes that acceptable.
+- Everything goes through the queue, including `ArtistAlbumsLoaded`, which previously fired one task per album at once.
 
 ## Stored Playlists (`src/mpd/client.rs`, `src/ui/views/{playlists_list,playlist_detail,add_to_playlist}.rs`)
 Mirrors mikMPD's setup. `PlaylistInfo` (`src/mpd/types.rs`) backs `View::Playlists` / `View::PlaylistDetail(name)` / `View::AddToPlaylist`, driven by `on_view_enter` (`View::Playlists` → `list_playlists`).
@@ -267,7 +315,20 @@ Mirrors mikMPD's setup. `PlaylistInfo` (`src/mpd/types.rs`) backs `View::Playlis
 - **MusicBrainz ID caching**: `search_artist`/`search_release_group` check the redb `mb_ids` table (`"artist:{name}"` / `"{artist}\x1falbum"` → MBID, `Some(None)` = confirmed no match) before hitting the network — both the art path and the bio path resolve the same entity's MBID, so this cache removes a duplicate search per artist/album visit.
 - **Artist bio**: 1) MusicBrainz Wikipedia URL relation; 2) suffix fallback `["(band)", "(musician)", …]`; 3) Wikipedia's own search API (`search_wikipedia`) as a last resort.
 - **Album bio**: same three-step shape, keyed on the release-group. Album lookup titles go through `strip_edition_qualifier` first (strips a trailing `[24-bit Remaster]`/`(Deluxe Edition)`-style bracket) — lookup-only, never touches the art cache key.
-- **`try_bio_candidate(title, target)`**: fetches the summary, then accepts it if `title_matches(title, target)` (word-token overlap ≥2/3, mirrors mikMPD's `titleTokensMatch`) wins immediately, else falls back to the weaker `is_music_article(text, name)` keyword check. Applied uniformly at every candidate stage (MB canonical link, suffix guesses, search fallback).
+- **External-lookup string handling is ported from mikMPD** (`normalizedForLookup` / `luceneEscape` / `albumLookupTitle` / result validation), which had a round of real-library fixes winrmpc never got:
+  - **`lucene_escape`** backslash-escapes `\ " + - ! ( ) { } [ ] ^ ~ * ? : /`. It replaced a `sanitize` that *deleted* brackets and quotes and ignored the rest — including `/`, which opens a Lucene regex, so **every `AC/DC` lookup had been sending a malformed query**.
+  - **`normalize_for_lookup`** folds ellipsis, smart quotes and en/em dash/minus, collapses whitespace runs (a real tag here reads `"Blue  Oyster Cult"` with two spaces), and moves a sort-order article to the front (`"Beatles, The"` → `"The Beatles"`). Applied to both sides of every lookup — the query *and* the candidate title. `title_matches` is already immune (it tokenizes on non-alphanumerics) but query strings and `is_music_article`'s substring test are not. Uses `str::get` for the article check: indexing from the end panics on a multi-byte tail.
+  - **`is_edition_qualifier`** matches whole tokens, not substrings — the old `lower.contains("bit")` also fired on "Rabbit". It additionally recognizes a year (1900–2099), an audio spec (`24-bit`, `96 kHz`), a catalogue number (4+ digit run, `VICP-60852`), and a short **all-caps** token as a region/format marker (`[UK]`, `[US]`, `[EP]` — this library's whole Depeche Mode discography is tagged `… [UK]`), while a short digit run keeps `(Part 2)`/`(Volume 3)` intact and mixed case keeps `(Rain)`.
+  - **`artist_credit_matches` compares two fingerprints**, accepting either: diacritics **folded** to ASCII (`Motörhead` ↔ `Motorhead`), and non-ASCII letters **dropped** entirely. The second exists for mis-encoded tags, where the two sides disagree about *which* accented letter it is — this library holds `"Blue Îyster Cult"`, mojibake of `"Blue Öyster Cult"`, where folding gives i-vs-o and still misses but dropping leaves `blueystercult` both ways. Length-guarded at 6 so short names can't collide. `lookup_title` now loops until stable, so stacked suffixes (`"Album (Deluxe Edition) [2011 Remaster]"`) fully strip.
+  - **MusicBrainz results are validated, not just scored.** `release_title_matches` (normalized containment or `title_matches`) plus `artist_credit_matches` (letters-only, containment either way, so `ACDC` matches `AC/DC`) filter every candidate. Previously the top-scoring hit was taken unchecked, which is how "Best of the Doors" could come back with the debut album's cover.
+  - **`search_queries`** builds mikMPD's three-step ladder — exact quoted, unquoted/tokenized, album-only — and every result is validated regardless of which query found it, so loosening the query can't loosen correctness. With no artist known, only the album-only form is issued.
+- **`try_bio_candidate(title, target)`**: fetches the summary, then accepts it if `title_matches(title, target)` (word-token overlap ≥2/3, mirrors mikMPD's `titleTokensMatch`) wins immediately, else falls back to the weaker `is_music_article(text, name)` keyword check. Used by the artist path at every candidate stage.
+- **The album bio path is stricter than that, and has to be** (also ported from mikMPD's `WikipediaService`):
+  - **`album_result_matches(title, extract, album, artist)`** gates every candidate. Token overlap counts only toward the *title*; the **extract must contain the album name outright** (a sequel or sibling compilation cites enough of the words to fool a token match) **and must name the artist**. That artist half didn't exist before — a search hit for a different artist's same-titled album passed on "mentions music" alone.
+  - **`is_generic_album_title`** — a curated set ("greatest hits", "gold", "live", "best of", "unplugged", …). mikMPD's comment explains why it's a list and not a token-count heuristic: a count also catches distinctive short titles like Depeche Mode's "101". When it fires: the plain-title step is skipped (unless the album name carries the artist), the artist-free search query is dropped, and the extract-only fallback is suppressed.
+  - **Naming-pattern hits are validated too, not taken on trust.** `"{album} (album)"` looks self-validating and isn't: **`Greatest Hits (album)` redirects to Wikipedia's article about the *concept* of a greatest-hits record**, which was duly served as Bob Dylan's album bio until every step-2 hit went through `album_result_matches`. Verified by `live_wikipedia_bios_for_awkward_tags`.
+- **`fold_for_compare`** is the shared comparison form (punctuation folded, lowercased, diacritics folded) behind `title_matches`, `is_music_article`, `release_title_matches` and `album_result_matches`. Diacritic folding is what makes the Wikipedia path as forgiving as the MusicBrainz one: article titles keep their accents ("Motörhead", "Blue Öyster Cult") where tags don't, and `title_matches` requires an *exact* match for a single-token target — so every accented one-word band name used to fail its own article.
+- **`fetch_artist_bio` normalizes its input** like the album path. Without it a sort-order tag ("Alan Parsons Project, The") was fed to the title guesses, the search query *and* the match target — three chances to fail on one unfolded string.
 - **Bios persist** in the redb `bios` table (`App::fetch_artist_bio`/`fetch_album_bio`, mirroring `fetch_lyrics`'s cache-then-network shape exactly) — `artist_bios`/`album_bios` in-memory maps are `HashMap<String, Option<String>>` (tri-state, like `lyrics`), so a confirmed "no bio" is remembered too, not just a hit.
 
 ## Common Pitfalls
@@ -310,54 +371,12 @@ Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer fo
 Build dependency: `winres = "0.1"` in `[build-dependencies]`.
 
 ## Planning Docs (`docs/plans/`)
-Design docs written before implementing a feature — read the relevant one before starting related work, and add new ones there for anything non-trivial. `mikmpd-parity-overview.md` tracks the gap between winrmpc and its sibling iOS client [mikMPD](https://github.com/mickegris/mikMPD) (`../mikMPD`), with one linked plan file per gap (queue editing, multi-disc album grouping, recently-added/played history, server stats & diagnostics, Snapcast control, Now Playing quick controls). `server-discovery.md` is kept only as a record — that feature was **removed** in 0.4.1. `playlists.md` and `enhancements.md` (playlists, MPD log, lyrics) are earlier plans from this same parity effort — already shipped.
+Design docs written before implementing a feature — read the relevant one before starting related work, and add new ones there for anything non-trivial. `mikmpd-parity-overview.md` tracks the gap between winrmpc and its sibling iOS client [mikMPD](https://github.com/mickegris/mikMPD) (`../mikMPD`), with one linked plan file per gap (queue editing, multi-disc album grouping, recently-added/played history, server stats & diagnostics, Snapcast control, Now Playing quick controls). `server-discovery.md` is kept only as a record — that feature was **removed** in 0.4.1. `playlists.md` and `enhancements.md` (playlists, MPD log, lyrics) are earlier plans from this same parity effort — already shipped. Others not covered by the parity overview: `art-wikipedia-fetch-order-and-caching.md` (the tag → cover-file → internet order and the fetch gate), `local-database.md` (the redb store), `review-fixes-correctness.md` / `review-fixes-performance.md` (the two code-review rounds, including the deferrals listed in `docs/status.md`), and `iced-0.14-migration.md` — whose **§9 post-mortem is the part that matters**: the migration was tried and reverted, and §§0–8 predate that.
 
 ## Current Version
 `0.4.1` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
 
 `Cargo.lock` **is committed** (`.gitignore` has `*.lock` with a `!Cargo.lock` exception). This is a binary crate, so the lockfile belongs in version control: without it every machine resolves its own versions, builds aren't reproducible, and a bad upstream patch release can't be pinned back.
 
----
-
-# Current state — session handoff
-
-Everything below reflects `release/v0.4.1` at the time of writing. **Not yet merged to `main` and not yet tagged/released.**
-
-## Where things stand
-
-`release/v0.4.1` is pushed and green: **150 offline tests, 8 live tests, zero build warnings**, debug and release both build. The branch contains a long run of post-parity fix work: two rounds of code review and their fixes, real-library album-matching improvements, live integration tests, and a batch of user-requested UI/behaviour changes.
-
-## Verified against a real server
-
-A live MPD **0.24.0** at `10.0.1.3` (9846 songs, 802 albums, 4 partitions) plus a Snapcast server on `1705`. Run the opt-in suite with:
-
-```bash
-WINRMPC_TEST_MPD=10.0.1.3:6600 WINRMPC_TEST_SNAPCAST=10.0.1.3:1705 \
-  cargo test -- --ignored --test-threads=1
-```
-
-Anything that mutates state uses a throwaway MPD partition and deletes it; the default partition's queue is never touched. Confirmed clean after every run.
-
-## Open / unverified — read this before continuing
-
-1. **No UI change in this branch has been seen rendered.** There is no display in the dev sandbox these were written in. Control placement, sizing, the album grid and the lyrics fix all compile and are reasoned from code, but only the Windows/macOS build shows whether they actually look right.
-2. **The MPD connection desync trigger is still unknown.** The *recovery* failure is confirmed and fixed (see "Connection desync"). The original cause is not reproduced: the test server has no embedded album art, so the binary path only ever returns `OK` or `ACK`, never multi-chunk data — `live_concurrent_art_fetches_do_not_desync_the_connection` passes because it cannot exercise the risky path. If it recurs, the new `WARN connection desynced on <verb> …` line names the command responsible; that is the thread to pull.
-3. **Album grid may not be usable at library scale.** ~4 widgets per album, no virtualisation, ~3200 widgets on an 800-album library. If the Albums view feels slow or freezes (as opposed to erroring), this is the suspect, not the connection. Options: cap/page the grid, or only build tiles for albums with cached art.
-4. **`docs/plans/review-fixes-correctness.md` lists two deliberate deferrals**: punctuation-folding the album grouping key (en/em-dash, smart quotes — the *case*-folding half is done), and de-duping `recent_albums` on the disc-stripped base.
-5. **Grouping-matcher gap, with a ready test corpus**: `Volume 3 Disc3 (Rem.2007)` — a marker followed by a non-marker bracket — is deliberately not handled, since stripping from the middle of a name is materially riskier. Same doc has the six real album names that motivated the rules.
-
-## iced 0.14 upgrade — researched, branch deleted
-
-`feature/iced-0.14` was created, planned, then deleted at the user's request. Keep the findings, they cost real work:
-
-- iced **0.14.0 and cryoglyph 0.1.0 shipped 2025-12-07/05 and have had no patch release since**, but iced master is very active (300+ commits, pushed daily).
-- The 2026-06 migration attempt (`79b960b`) was reverted (`31c7dba`) for glyph corruption after atlas growth on resize. The revert blamed cryoglyph, but it also reproduced under **tiny-skia**, which doesn't link cryoglyph — so the real layer is `iced_graphics`/`cosmic-text`.
-- Commit **`2c1a28fb` (2026-05-13), "Fix global `graphics::Cache` invalidation"**, makes a `Cache` stop serving **stale entries** — matching the reported symptom (stale text wrong, live-reshaped line right) and living in the shared layer. It postdates 0.14.0 by five months, so the June attempt never had it.
-- **If the upgrade is retried, start by pinning a git rev on master at or after `2c1a28fb`**, not crates.io 0.14.0. Also relevant on master: per-OS default fonts (likely obviating the Segoe UI lyric-font hack) and cosmic-text 0.15 → 0.19. Note 0.14 needs Rust ≥1.88 and jumps wgpu 0.19 → 27, and does **not** fix the `block 0.1.6` future-incompat warning (still arrives via `metal` → `wgpu-hal`).
-- A UI-framework survey concluded **stay on iced** (no forced move; a switch is a full rewrite of 20+ view modules; the apparent abandonment is release cadence, not development). egui would be the fallback. Revisit only if 0.15 never ships *and* master proves unusable, or an accessibility requirement appears — iced's genuine weak spot.
-
-## Suggested next steps
-
-1. Build and run on Windows/macOS; check the reported issues are actually resolved (player-bar layout, Log reachable in the sidebar, Albums view usable).
-2. If Albums is slow rather than broken, address item 3 above.
-3. Then `main` merge + tag via the `release` skill.
+## Session state
+**`docs/status.md`** — where the current branch stands, what's verified against a real server, what's still unverified, and the suggested next steps. That file is the one that goes stale; keep it there rather than here, and update it at the end of a working session.

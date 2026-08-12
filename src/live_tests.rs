@@ -521,3 +521,240 @@ async fn live_concurrent_art_fetches_do_not_desync_the_connection() {
     let stats = client.stats().await.expect("stats must still work");
     assert!(stats.songs > 0, "a framed response should carry real data");
 }
+
+/// Diagnostic for "this album shows no cover in the grid".
+///
+/// Read-only. For each album named below it runs exactly what
+/// `App::fetch_album_art_local` runs — `find Album <tag>`, then `readpicture`
+/// and `albumart` on the first track — and prints which stage answered. That
+/// separates the two explanations a blank tile has: the library genuinely
+/// holds no local art for it (so only MusicBrainz can help), or the lookup
+/// itself is failing (wrong tag, escaping, no tracks found).
+///
+/// Not an assertion of coverage — it asserts only that every album resolves
+/// to at least one track, which is the part that would be *our* bug.
+#[tokio::test]
+#[ignore]
+async fn live_diagnose_album_art_sources() {
+    let Some(addr) = mpd_addr() else { return };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    // Albums reported as showing no cover, plus a few known-good controls.
+    let albums = [
+        "'74 Jailbreak",
+        "Powerage",
+        "Pyramid",
+        "Jackie Brown",
+        "A Long Day's Night (Live)",
+        "Fire Of Unknown Origin",
+        "Curse Of The Hidden Mirror",
+        "Greatest Hits",
+        "A Broken Frame [UK]",
+        "Speak & Spell [UK]",
+        "The Singles 81>85",
+        "Songs of Faith and Devotion",
+        "Sounds of the Universe",
+        "Like An Ever Flowing Stream",
+        "Dream Evil",
+        "Le som en fotomodell",
+        // Controls — these do render art in the grid.
+        "The Razor's Edge",
+        "Master Of Reality",
+    ];
+
+    let mut no_tracks = Vec::new();
+    for album in albums {
+        let songs = client.find("Album", album).await.unwrap_or_default();
+        let Some(first) = songs.first() else {
+            println!("{album:40} NO TRACKS FOUND");
+            no_tracks.push(album);
+            continue;
+        };
+        let tag = client.tag_art(&first.file).await;
+        let cover = client.cover_file_art(&first.file).await;
+        let verdict = match (&tag, &cover) {
+            (Ok(Some(d)), _) => format!("readpicture {} KB", d.len() / 1024),
+            (_, Ok(Some(d))) => format!("albumart {} KB", d.len() / 1024),
+            (Err(e), _) => format!("ERROR readpicture: {e}"),
+            (_, Err(e)) => format!("ERROR albumart: {e}"),
+            _ => "no local art (MusicBrainz only)".to_string(),
+        };
+        println!(
+            "{album:40} {verdict}\n{:44}artist={:?} albumartist={:?}\n{:44}{}",
+            "",
+            first.artist.as_deref().unwrap_or("-"),
+            first.album_artist.as_deref().unwrap_or("-"),
+            "",
+            first.file
+        );
+    }
+
+    assert!(
+        no_tracks.is_empty(),
+        "these albums resolved to no tracks at all, which is a lookup bug on our side: {no_tracks:?}"
+    );
+}
+
+/// Probe: can `albumart` find a cover for a CUE-sheet track if we ask about
+/// the `.cue` file itself rather than the virtual `…/track0001` inside it?
+///
+/// MPD derives the directory to search from the URI's parent. For a cue
+/// track that parent is the `.cue` file, which isn't a real directory, so the
+/// lookup can only fail. Truncating to the `.cue` path makes the parent the
+/// actual album folder.
+#[tokio::test]
+#[ignore]
+async fn live_probe_cue_album_art_fallback() {
+    let Some(addr) = mpd_addr() else { return };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    for album in ["A Broken Frame [UK]", "Speak & Spell [UK]", "Songs of Faith and Devotion"] {
+        let songs = client.find("Album", album).await.unwrap_or_default();
+        let Some(first) = songs.first() else { continue };
+        let uri = &first.file;
+        let Some(cue_end) = uri.to_lowercase().find(".cue/") else {
+            println!("{album:34} not a cue track");
+            continue;
+        };
+        let cue_path = &uri[..cue_end + 4];
+        let direct = client.cover_file_art(uri).await;
+        let via_cue = client.cover_file_art(cue_path).await;
+        println!(
+            "{album:34} direct={:24} via .cue={}",
+            match &direct {
+                Ok(Some(d)) => format!("{} KB", d.len() / 1024),
+                Ok(None) => "none".into(),
+                Err(_) => "ACK".into(),
+            },
+            match &via_cue {
+                Ok(Some(d)) => format!("{} KB  <-- WORKS", d.len() / 1024),
+                Ok(None) => "none".into(),
+                Err(e) => format!("ACK ({e})"),
+            }
+        );
+    }
+}
+
+/// End-to-end check of the *external* lookup path for albums this library
+/// has no local art for. Hits MusicBrainz and the Cover Art Archive for
+/// real, so it needs its own opt-in (`WINRMPC_TEST_MUSICBRAINZ=1`) on top of
+/// `#[ignore]` — a plain `--ignored` sweep must not start hammering a free
+/// community service.
+///
+/// The artist strings are the exact tags from this library, mojibake and
+/// double spaces included: they are the input the matching rules have to
+/// cope with. Uses a throwaway cache dir so a previous run's negatives
+/// can't make a broken lookup look fixed.
+#[tokio::test]
+#[ignore]
+async fn live_musicbrainz_resolves_locally_artless_albums() {
+    if std::env::var("WINRMPC_TEST_MUSICBRAINZ").ok().as_deref() != Some("1") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "winrmpc-mb-livetest-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).ok();
+    let store = crate::store::Store::open(&dir);
+    let mb = crate::art::MusicBrainzClient::new(store);
+
+    // (album tag, artist tag) exactly as they appear in the library.
+    let cases = [
+        ("'74 Jailbreak", "ACDC"),
+        ("Powerage", "ACDC"),
+        ("Pyramid", "Alan Parsons Project, The"),
+        ("A Long Day's Night (Live)", "Blue Oyster Cult"),
+        ("Fire Of Unknown Origin", "Blue  Oyster Cult"),
+        ("Curse Of The Hidden Mirror", "Blue Îyster Cult"),
+        ("A Broken Frame [UK]", "Depeche Mode"),
+        ("Speak & Spell [UK]", "Depeche Mode"),
+        ("The Singles 81>85", "Depeche Mode"),
+        ("Songs of Faith and Devotion", "Depeche Mode"),
+        ("Sounds of the Universe", "Depeche Mode"),
+        ("Dream Evil", "Dio"),
+        ("Master Of Reality", "Black Sabbath"),
+        ("Jackie Brown", ""),
+    ];
+
+    let mut missing = Vec::new();
+    for (album, artist) in cases {
+        match mb.fetch_album_art(artist, album).await {
+            Some(data) => println!("  OK    {album:32} [{artist}] {} KB", data.len() / 1024),
+            None => {
+                println!("  MISS  {album:32} [{artist}]");
+                missing.push(album);
+            }
+        }
+    }
+    println!("\n{} of {} resolved", cases.len() - missing.len(), cases.len());
+    if !missing.is_empty() {
+        println!("still missing: {missing:?}");
+    }
+}
+
+/// End-to-end check of the Wikipedia bio path over the same awkward tags the
+/// art path is tested against. Same opt-in as the MusicBrainz test
+/// (`WINRMPC_TEST_MUSICBRAINZ=1`), since it hits MusicBrainz for the curated
+/// URL relation before it ever reaches Wikipedia.
+///
+/// Prints the first line of each bio so a *wrong* match is visible — the
+/// failure mode here isn't an empty result, it's confidently returning the
+/// article for somebody else's identically-titled record.
+#[tokio::test]
+#[ignore]
+async fn live_wikipedia_bios_for_awkward_tags() {
+    if std::env::var("WINRMPC_TEST_MUSICBRAINZ").ok().as_deref() != Some("1") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "winrmpc-wiki-livetest-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).ok();
+    let store = crate::store::Store::open(&dir);
+    let mb = crate::art::MusicBrainzClient::new(store);
+
+    println!("\n-- artists --");
+    for artist in [
+        "ACDC",
+        "Alan Parsons Project, The",
+        "Blue  Oyster Cult",
+        "Motorhead",
+        "Depeche Mode",
+    ] {
+        match mb.fetch_artist_bio(artist).await {
+            Some(bio) => println!("  OK    {artist:28} {}", first_sentence(&bio)),
+            None => println!("  MISS  {artist:28}"),
+        }
+    }
+
+    println!("\n-- albums --");
+    for (album, artist) in [
+        ("A Broken Frame [UK]", "Depeche Mode"),
+        ("Powerage", "ACDC"),
+        ("Fire Of Unknown Origin", "Blue  Oyster Cult"),
+        ("Pyramid", "Alan Parsons Project, The"),
+        // The generic-title guard: this must not return a generic
+        // "Greatest Hits" article, and must not attribute someone else's.
+        ("Greatest Hits", "Bob Dylan"),
+    ] {
+        match mb.fetch_album_bio(artist, album).await {
+            Some(bio) => println!("  OK    {album:28} [{artist}] {}", first_sentence(&bio)),
+            None => println!("  MISS  {album:28} [{artist}]"),
+        }
+    }
+}
+
+fn first_sentence(s: &str) -> String {
+    let cut = s.find(". ").map(|i| i + 1).unwrap_or(s.len().min(150));
+    s[..cut.min(s.len()).min(180)].replace('\n', " ")
+}

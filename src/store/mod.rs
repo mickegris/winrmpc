@@ -103,13 +103,27 @@ impl Store {
         }
     }
 
-    /// One-time cleanup: builds before 2026-06-10 let the empty-URI
-    /// recently-played art fetch persist negative entries even though it could
-    /// only try MusicBrainz, permanently blocking the MPD embedded-art path
-    /// for those albums. Purge all negative entries once so they re-resolve;
-    /// genuinely missing art just gets re-recorded on the next real lookup.
+    /// One-time cleanup of "we looked and found nothing" records, re-run
+    /// whenever the lookup rules change enough that those records are no
+    /// longer trustworthy. Bump the marker to trigger it again.
+    ///
+    /// - `neg_purge_v1` (2026-06-10): the empty-URI recently-played fetch was
+    ///   persisting negatives even though it could only try MusicBrainz,
+    ///   permanently blocking the MPD embedded-art path for those albums.
+    /// - `neg_purge_v2` (2026-08-12): the MusicBrainz matching rules changed
+    ///   materially — Lucene escaping (`AC/DC` had been sending a malformed
+    ///   query), Unicode folding, sort-order artist names, region-tag
+    ///   stripping, and result validation. Every negative recorded before
+    ///   that is an answer to a question we no longer ask, and because the
+    ///   remote stage short-circuits on a stored negative, those albums would
+    ///   never be retried.
+    ///
+    /// Purges **both** the negative art entries and the "confirmed no
+    /// match" MBIDs — leaving the latter would have `search_release_group`
+    /// return the cached `None` without ever issuing the corrected query.
+    /// Genuinely missing art is simply re-recorded on the next lookup.
     fn purge_poisoned_negatives(&self) {
-        const MARKER: &str = "neg_purge_v1";
+        const MARKER: &str = "neg_purge_v2";
         let already_done = (|| {
             let rtx = self.db.begin_read().ok()?;
             let table = rtx.open_table(META).ok()?;
@@ -135,10 +149,29 @@ impl Store {
             }
         }
 
+        // "Confirmed no match" MBIDs, recorded under the old query rules.
+        let mut stale_ids: Vec<String> = Vec::new();
+        if let Ok(rtx) = self.db.begin_read() {
+            if let Ok(table) = rtx.open_table(MB_IDS) {
+                if let Ok(iter) = table.iter() {
+                    for (k, v) in iter.flatten() {
+                        if let Ok(None) = serde_json::from_slice::<Option<String>>(v.value()) {
+                            stale_ids.push(k.value().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
         if let Ok(wtx) = self.db.begin_write() {
             {
                 if let Ok(mut table) = wtx.open_table(ART_META) {
                     for k in &empties {
+                        let _ = table.remove(k.as_str());
+                    }
+                }
+                if let Ok(mut table) = wtx.open_table(MB_IDS) {
+                    for k in &stale_ids {
                         let _ = table.remove(k.as_str());
                     }
                 }
@@ -147,10 +180,11 @@ impl Store {
                 }
             }
             let _ = wtx.commit();
-            if !empties.is_empty() {
+            if !empties.is_empty() || !stale_ids.is_empty() {
                 tracing::info!(
-                    "Purged {} stale negative art-cache entries",
-                    empties.len()
+                    "Purged {} negative art-cache entries and {} stale MBID misses",
+                    empties.len(),
+                    stale_ids.len()
                 );
             }
         }
@@ -272,6 +306,40 @@ impl Store {
             let _ = wtx.commit();
         }
         self.ensure_tables();
+    }
+
+    /// Drop the lookup caches that sit alongside art: lyrics, Wikipedia bios
+    /// and resolved MusicBrainz IDs.
+    ///
+    /// Deliberately leaves `recently_played` (app-generated history, not a
+    /// cache — nothing could re-derive it) and `meta` (migration markers;
+    /// clearing those would re-run one-time purges pointlessly). Pair with
+    /// `ArtCache::clear` for a full "forget everything re-fetchable".
+    pub fn clear_lookup_caches(&self) {
+        if let Ok(wtx) = self.db.begin_write() {
+            let _ = wtx.delete_table(LYRICS);
+            let _ = wtx.delete_table(BIOS);
+            let _ = wtx.delete_table(MB_IDS);
+            let _ = wtx.commit();
+        }
+        self.ensure_tables();
+    }
+
+    /// Bytes currently held by cached art blobs, for display next to the
+    /// configured limit. Negative entries carry no bytes.
+    pub fn art_cache_bytes(&self) -> u64 {
+        (|| {
+            let rtx = self.db.begin_read().ok()?;
+            let table = rtx.open_table(ART_META).ok()?;
+            let mut total = 0u64;
+            for (_, v) in table.iter().ok()?.flatten() {
+                if let Ok(m) = serde_json::from_slice::<ArtMeta>(v.value()) {
+                    total = total.saturating_add(m.size);
+                }
+            }
+            Some(total)
+        })()
+        .unwrap_or(0)
     }
 
     /// Evict least-recently-accessed art until the total stored size is within
@@ -577,5 +645,33 @@ mod tests {
         store.mb_id_put("artist:Obscure", &None);
         assert_eq!(store.mb_id_get("artist:Obscure"), Some(None));
         assert_eq!(store.mb_id_get("artist:NeverLookedUp"), None);
+    }
+
+    #[test]
+    fn clear_lookup_caches_drops_lookups_but_keeps_play_history() {
+        let store = temp_store();
+        store.bio_put("artist:X", &Some("bio".to_string()));
+        store.mb_id_put("artist:X", &Some("mbid".to_string()));
+        store.lyrics_put("X\x1fAlbum", &None);
+        store.recently_played_put("srv", &[entry("f.flac", 1)]);
+
+        store.clear_lookup_caches();
+
+        assert_eq!(store.bio_get("artist:X"), None);
+        assert_eq!(store.mb_id_get("artist:X"), None);
+        assert!(store.lyrics_get("X\x1fAlbum").is_none());
+        // History is app-generated state, not a cache — nothing could
+        // re-derive it, so purging caches must leave it alone.
+        assert_eq!(store.recently_played_get("srv").len(), 1);
+    }
+
+    #[test]
+    fn art_cache_bytes_sums_blobs_and_ignores_negatives() {
+        let store = temp_store();
+        let limit = 100 * 1024 * 1024;
+        store.art_put("A\x1fOne", &[7u8; 512], limit);
+        store.art_put("A\x1fTwo", &[7u8; 256], limit);
+        store.art_put_empty("A\x1fNone");
+        assert_eq!(store.art_cache_bytes(), 768);
     }
 }

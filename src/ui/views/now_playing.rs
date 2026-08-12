@@ -182,7 +182,24 @@ pub fn view<'a>(
                         .size(14)
                         .color(AppColors::TEXT_SECONDARY),
                     Space::with_height(10),
-                    row(thumbs).spacing(14),
+                    // Scrolled sideways, not wrapped and not squeezed. Five
+                    // 120px thumbs need ~700px, which the left column
+                    // doesn't have once the lyrics pane takes its share of a
+                    // narrower window. A plain row squeezes the overflow into
+                    // the last child (the right-most cover rendered as a
+                    // sliver); wrapping instead grows the strip downwards,
+                    // and since a column doesn't clip, the second line drew
+                    // straight over the player bar. A horizontal scrollable
+                    // is the only one of the three that stays exactly one
+                    // row tall whatever the width.
+                    scrollable(row(thumbs).spacing(14))
+                        .direction(scrollable::Direction::Horizontal(
+                            scrollable::Scrollbar::new()
+                                .width(4)
+                                .scroller_width(4)
+                                .margin(2),
+                        ))
+                        .width(Length::Fill),
                 ]
                 .into()
             };

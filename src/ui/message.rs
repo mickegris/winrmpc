@@ -1,6 +1,25 @@
 use crate::mpd::types::*;
 use crate::snapcast::{SnapGroup, SnapStream};
 
+/// How one background album-art fetch ended.
+///
+/// The two stages are deliberately separate messages-worth of information.
+/// The local stage (MPD `readpicture`/`albumart`) costs single-digit
+/// milliseconds; a MusicBrainz lookup costs 1.1–2.2 seconds of *globally
+/// serialized* throttle time. Reporting "MPD had nothing" as its own outcome
+/// is what lets the queue finish every local cover first and defer the
+/// network work, instead of letting one artless album stall the sweep.
+#[derive(Debug, Clone)]
+pub enum ArtOutcome {
+    /// Cover bytes, from either stage.
+    Loaded(Vec<u8>),
+    /// MPD answered and had no art (or couldn't be reached). MusicBrainz has
+    /// *not* been asked yet, and no negative has been persisted.
+    MpdMiss,
+    /// Final: nothing anywhere, or a persisted negative already said so.
+    Missing,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     // === Connection ===
@@ -79,6 +98,31 @@ pub enum Message {
     /// grid and the compact list. Shared by all three; persisted.
     ToggleAlbumGridView,
 
+    // === Editing an existing server (Settings) ===
+    /// Opens the inline editor for a server's connection details. Adding a
+    /// server was already possible; changing one wasn't, so a moved host
+    /// meant delete-and-re-add (losing its saved partition).
+    StartEditServer(String),
+    EditServerHost(String),
+    EditServerPort(String),
+    EditServerPassword(String),
+    EditServerSnapHost(String),
+    EditServerSnapPort(String),
+    ConfirmEditServer,
+    CancelEditServer,
+
+    // === Cache maintenance (Settings) ===
+    ArtCacheSizeChanged(String),
+    SaveArtCacheSize,
+    /// First press arms the confirmation, second press purges. Clearing costs
+    /// a full re-fetch — including a slow MusicBrainz crawl — so it isn't a
+    /// single-click action.
+    ClearCaches,
+    CancelClearCaches,
+    CachesCleared,
+    /// On-disk art size, for the readout next to the purge button.
+    CacheSizeLoaded(u64),
+
     // === Browser ===
     BrowsePath(String),
     BrowseLoaded(String, Vec<crate::mpd::DirectoryEntry>),
@@ -91,7 +135,12 @@ pub enum Message {
     SearchAddToQueue(String),
 
     // === Album Art ===
+    /// A one-off fetch: the playing track's cover, an artist image, a
+    /// recently-played thumb. Not part of the background queue.
     ArtLoaded(String, Option<Vec<u8>>),
+    /// One album's cover from the background queue, carrying which stage it
+    /// came from so the queue knows what to do next. Keyed by `art_key_for`.
+    AlbumArtFetched(String, ArtOutcome),
 
     // === Wikipedia info ===
     ArtistBioLoaded(String, Option<String>),

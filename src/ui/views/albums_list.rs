@@ -2,13 +2,9 @@ use crate::mpd::types::AlbumGroup;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::album_grid;
-use iced::widget::{button, column, container, image, row, scrollable, text, Space};
+use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
-
-/// Thumbnail edge length in list mode. Small enough that a long list still
-/// scrolls comfortably, big enough to recognise a cover.
-const LIST_THUMB: u16 = 36;
 
 pub fn view<'a>(
     albums: &'a [AlbumGroup],
@@ -44,25 +40,11 @@ pub fn view<'a>(
 
             // Same cover as the grid, just small — so switching layouts
             // doesn't change which albums appear to have art.
-            let thumb: Element<'a, Message> =
-                match album_grid::art_for(art_handles, &group.artist, &group.base) {
-                    Some(handle) => image(handle.clone())
-                        .width(LIST_THUMB)
-                        .height(LIST_THUMB)
-                        .into(),
-                    None => container(text("").size(1))
-                        .width(LIST_THUMB)
-                        .height(LIST_THUMB)
-                        .style(|_t: &iced::Theme| container::Style {
-                            background: Some(AppColors::BG_SECONDARY.into()),
-                            border: iced::Border {
-                                radius: 3.0.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
-                        .into(),
-                };
+            let thumb = album_grid::list_thumb(album_grid::art_for(
+                art_handles,
+                &group.artist,
+                &group.base,
+            ));
 
             let mut label = row![
                 thumb,

@@ -55,6 +55,13 @@ struct MbRelease {
     id: String,
     title: Option<String>,
     score: Option<u32>,
+    #[serde(rename = "artist-credit")]
+    artist_credit: Option<Vec<MbArtistCredit>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MbArtistCredit {
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +75,8 @@ struct MbReleaseGroup {
     id: String,
     title: Option<String>,
     score: Option<u32>,
+    #[serde(rename = "artist-credit")]
+    artist_credit: Option<Vec<MbArtistCredit>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,7 +156,8 @@ impl MusicBrainzClient {
         artist: &str,
         album: &str,
     ) -> Option<Vec<u8>> {
-        let lookup_album = Self::lookup_title(album);
+        let lookup_album = Self::album_query_title(album);
+        let artist = &Self::normalize_for_lookup(artist);
 
         // Try release-group search first (more reliable for cover art)
         let rg_id = self.search_release_group(artist, &lookup_album).await?;
@@ -229,53 +239,201 @@ impl MusicBrainzClient {
         result
     }
 
+    /// Does a MusicBrainz result actually name the album we asked about?
+    ///
+    /// A score alone doesn't say this: MusicBrainz will happily return "The
+    /// Doors" as a strong hit for "Best of the Doors", and the old code took
+    /// the top-scoring result unchecked, so that album got the wrong cover
+    /// with no way to tell. Both sides are normalized first, then it's an
+    /// exact-containment or word-overlap test — the same `title_matches`
+    /// used for Wikipedia article titles, which is mikMPD's rule too.
+    fn release_title_matches(candidate: &str, expected: &str) -> bool {
+        if expected.is_empty() {
+            return true; // nothing to check against
+        }
+        let c = Self::fold_for_compare(candidate);
+        let e = Self::fold_for_compare(expected);
+        c.contains(&e) || Self::title_matches(&c, &e)
+    }
+
+    /// The comparison form for two strings that came from different sources:
+    /// punctuation folded, lowercased, diacritics folded to ASCII.
+    ///
+    /// Diacritic folding is what makes the *Wikipedia* path as forgiving as
+    /// the MusicBrainz one. Article titles keep their accents ("Motörhead",
+    /// "Blue Öyster Cult") while library tags routinely don't, and
+    /// `title_matches` treats a single-token target as needing an exact
+    /// match — so without folding, every accented single-word band name
+    /// failed its own article.
+    fn fold_for_compare(s: &str) -> String {
+        Self::normalize_for_lookup(s)
+            .to_lowercase()
+            .chars()
+            .map(|c| Self::fold_diacritic(c).unwrap_or(c))
+            .collect()
+    }
+
+    /// Does a MusicBrainz artist credit match the artist we asked about?
+    ///
+    /// Letters only, containment either way: that is what lets the very
+    /// common mis-tagging `ACDC` match `AC/DC`, and `Beatles` match `The
+    /// Beatles`, without accepting an unrelated artist.
+    fn artist_credit_matches(credit: Option<&Vec<MbArtistCredit>>, expected: &str) -> bool {
+        let (exp_folded, exp_stripped) = Self::artist_fingerprints(expected);
+        if exp_folded.is_empty() {
+            return true;
+        }
+        let Some(name) = credit.and_then(|c| c.first()).and_then(|c| c.name.as_deref())
+        else {
+            return true; // absent data isn't a mismatch
+        };
+        let (got_folded, got_stripped) = Self::artist_fingerprints(name);
+
+        let contains_either = |a: &str, b: &str| !a.is_empty() && (a.contains(b) || b.contains(a));
+        if contains_either(&got_folded, &exp_folded) {
+            return true;
+        }
+        // Second chance with accented letters *removed* rather than folded.
+        // This library has "Blue Îyster Cult" — mojibake of "Blue Öyster
+        // Cult" — where folding gives i-vs-o and still misses, but dropping
+        // the accented letter on both sides leaves "blueystercult" either
+        // way. Length-guarded so short names can't collide.
+        exp_stripped.len() >= 6 && contains_either(&got_stripped, &exp_stripped)
+    }
+
+    /// Two comparable forms of an artist name, both lowercase ASCII letters
+    /// only: one with diacritics **folded** to their base letter, one with
+    /// non-ASCII letters **dropped** entirely.
+    ///
+    /// Folding is what matches a library's "Motörhead" to MusicBrainz's; the
+    /// dropped form is the escape hatch for mis-encoded tags, where the two
+    /// sides disagree about *which* accented letter it is.
+    fn artist_fingerprints(s: &str) -> (String, String) {
+        let lower = Self::normalize_for_lookup(s).to_lowercase();
+        let folded: String = lower
+            .chars()
+            .filter_map(|c| {
+                Self::fold_diacritic(c).or(if c.is_ascii_alphabetic() { Some(c) } else { None })
+            })
+            .collect();
+        let stripped: String = lower.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+        (folded, stripped)
+    }
+
+    /// A Latin letter with a diacritic → its ASCII base. Covers Latin-1 and
+    /// the common Latin Extended-A letters that turn up in band names.
+    fn fold_diacritic(c: char) -> Option<char> {
+        Some(match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+            'ç' | 'ć' | 'č' => 'c',
+            'ď' | 'đ' => 'd',
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => 'e',
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' => 'i',
+            'ñ' | 'ń' | 'ň' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => 'o',
+            'ř' => 'r',
+            'ś' | 'š' | 'ş' => 's',
+            'ť' | 'ţ' => 't',
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' => 'u',
+            'ý' | 'ÿ' => 'y',
+            'ź' | 'ż' | 'ž' => 'z',
+            _ => return None,
+        })
+    }
+
+    /// The three query shapes, loosest last, mirroring mikMPD's ladder.
+    /// Every result is validated regardless of which query found it, so
+    /// loosening the query can't loosen correctness.
+    fn search_queries(field: &str, artist: &str, album: &str) -> Vec<String> {
+        let esc_album = Self::lucene_escape(album);
+        let esc_artist = Self::lucene_escape(artist);
+        if artist.is_empty() {
+            return vec![format!("{field}:\"{esc_album}\"")];
+        }
+        vec![
+            // Exact, quoted.
+            format!("{field}:\"{esc_album}\" AND artist:\"{esc_artist}\""),
+            // Unquoted, so MusicBrainz tokenizes: lets "AC/DC Live" find
+            // "Live" credited to AC/DC.
+            format!("{field}:{esc_album} AND artist:{esc_artist}"),
+            // Album alone: the artist tag may simply be wrong ("ACDC"), and
+            // artist validation is lenient enough to still accept the hit.
+            format!("{field}:\"{esc_album}\""),
+        ]
+    }
+
     async fn search_release_group_network(&self, artist: &str, album: &str) -> Option<String> {
-        let query = format!(
-            "releasegroup:\"{}\" AND artist:\"{}\"",
-            Self::sanitize(album),
-            Self::sanitize(artist)
-        );
-        let url = format!(
-            "{MB_BASE}/release-group/?query={}&limit=3&fmt=json",
-            urlencoding::encode(&query)
-        );
+        for query in Self::search_queries("releasegroup", artist, album) {
+            let url = format!(
+                "{MB_BASE}/release-group/?query={}&limit=5&fmt=json",
+                urlencoding::encode(&query)
+            );
 
-        self.throttle.wait().await;
+            self.throttle.wait().await;
 
-        let resp = self.http.get(&url).send().await.ok()?;
-        let result: MbReleaseGroupSearchResult = resp.json().await.ok()?;
-        let groups = result.release_groups?;
+            let Some(resp) = self.http.get(&url).send().await.ok() else {
+                continue;
+            };
+            let Ok(result) = resp.json::<MbReleaseGroupSearchResult>().await else {
+                continue;
+            };
+            let Some(groups) = result.release_groups else {
+                continue;
+            };
 
-        // Take the highest scoring result
-        groups
-            .into_iter()
-            .filter(|rg| rg.score.unwrap_or(0) > 50)
-            .max_by_key(|rg| rg.score.unwrap_or(0))
-            .map(|rg| rg.id)
+            let mut candidates: Vec<MbReleaseGroup> = groups
+                .into_iter()
+                .filter(|rg| rg.score.unwrap_or(0) > 50)
+                .filter(|rg| {
+                    rg.title
+                        .as_deref()
+                        .is_none_or(|t| Self::release_title_matches(t, album))
+                })
+                .filter(|rg| Self::artist_credit_matches(rg.artist_credit.as_ref(), artist))
+                .collect();
+            candidates.sort_by_key(|rg| std::cmp::Reverse(rg.score.unwrap_or(0)));
+            if let Some(rg) = candidates.into_iter().next() {
+                return Some(rg.id);
+            }
+        }
+        None
     }
 
     async fn search_release(&self, artist: &str, album: &str) -> Option<String> {
-        let query = format!(
-            "release:\"{}\" AND artist:\"{}\"",
-            Self::sanitize(album),
-            Self::sanitize(artist)
-        );
-        let url = format!(
-            "{MB_BASE}/release/?query={}&limit=3&fmt=json",
-            urlencoding::encode(&query)
-        );
+        for query in Self::search_queries("release", artist, album) {
+            let url = format!(
+                "{MB_BASE}/release/?query={}&limit=5&fmt=json",
+                urlencoding::encode(&query)
+            );
 
-        self.throttle.wait().await;
+            self.throttle.wait().await;
 
-        let resp = self.http.get(&url).send().await.ok()?;
-        let result: MbReleaseSearchResult = resp.json().await.ok()?;
-        let releases = result.releases?;
+            let Some(resp) = self.http.get(&url).send().await.ok() else {
+                continue;
+            };
+            let Ok(result) = resp.json::<MbReleaseSearchResult>().await else {
+                continue;
+            };
+            let Some(releases) = result.releases else {
+                continue;
+            };
 
-        releases
-            .into_iter()
-            .filter(|r| r.score.unwrap_or(0) > 50)
-            .max_by_key(|r| r.score.unwrap_or(0))
-            .map(|r| r.id)
+            let mut candidates: Vec<MbRelease> = releases
+                .into_iter()
+                .filter(|r| r.score.unwrap_or(0) > 50)
+                .filter(|r| {
+                    r.title
+                        .as_deref()
+                        .is_none_or(|t| Self::release_title_matches(t, album))
+                })
+                .filter(|r| Self::artist_credit_matches(r.artist_credit.as_ref(), artist))
+                .collect();
+            candidates.sort_by_key(|r| std::cmp::Reverse(r.score.unwrap_or(0)));
+            if let Some(r) = candidates.into_iter().next() {
+                return Some(r.id);
+            }
+        }
+        None
     }
 
     async fn search_artist(&self, artist: &str) -> Option<String> {
@@ -289,7 +447,8 @@ impl MusicBrainzClient {
     }
 
     async fn search_artist_network(&self, artist: &str) -> Option<String> {
-        let query = format!("artist:\"{}\"", Self::sanitize(artist));
+        let artist = Self::normalize_for_lookup(artist);
+        let query = format!("artist:\"{}\"", Self::lucene_escape(&artist));
         let url = format!(
             "{MB_BASE}/artist/?query={}&limit=3&fmt=json",
             urlencoding::encode(&query)
@@ -331,16 +490,86 @@ impl MusicBrainzClient {
         }
     }
 
-    fn sanitize(s: &str) -> String {
-        // Remove characters that break MusicBrainz Lucene queries
-        s.replace('"', "")
-            .replace('\\', "")
-            .replace('(', "")
-            .replace(')', "")
-            .replace('[', "")
-            .replace(']', "")
-            .replace('{', "")
-            .replace('}', "")
+    /// Backslash-escape the Lucene metacharacters in a MusicBrainz search
+    /// term, mirroring mikMPD's `luceneEscape`.
+    ///
+    /// This replaces a `sanitize` that *deleted* `" \ ( ) [ ] { }` and left
+    /// `/ + - ! ^ ~ * ? :` alone. Deleting loses information the query needs
+    /// ("Songs (For Sale)" and "Songs For Sale" become the same term), and
+    /// the untouched characters are the ones that actually break a query:
+    /// `/` opens a Lucene regex, so **`AC/DC` — probably the most-tagged
+    /// slash in any rock library — was issuing a malformed query on every
+    /// lookup**. `-` and `!` are similarly operators.
+    fn lucene_escape(s: &str) -> String {
+        const SPECIAL: &[char] = &[
+            '\\', '"', '+', '-', '!', '(', ')', '{', '}', '[', ']', '^', '~',
+            '*', '?', ':', '/',
+        ];
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            if SPECIAL.contains(&ch) {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        out
+    }
+
+    /// Fold the punctuation that taggers and databases disagree about, then
+    /// undo sort-order artist names. Applied to both sides of every external
+    /// lookup — the query we send *and* the title we compare the answer to.
+    ///
+    /// Ported from mikMPD's `normalizedForLookup`. The characters matter
+    /// because a tag and a MusicBrainz/Wikipedia title routinely differ by
+    /// exactly one of them: `Don’t Stop` (U+2019) vs `Don't Stop`,
+    /// `1967–1970` (en dash) vs `1967-1970`, `Yes…` vs `Yes...`.
+    ///
+    /// `title_matches` is already immune to all of this — it tokenizes on
+    /// non-alphanumerics, so quotes and dashes are separators either way —
+    /// but the *query string* is not, and neither is the substring check in
+    /// `is_music_article`.
+    fn normalize_for_lookup(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for ch in s.chars() {
+            match ch {
+                '\u{2026}' => out.push_str("..."),          // ellipsis
+                '\u{2018}' | '\u{2019}' => out.push('\''),  // smart single quotes
+                '\u{201C}' | '\u{201D}' => out.push('"'),   // smart double quotes
+                '\u{2013}' | '\u{2014}' | '\u{2212}' => out.push('-'), // en/em dash, minus
+                c => out.push(c),
+            }
+        }
+
+        // Collapse whitespace runs. A real tag on this library reads
+        // "Blue  Oyster Cult" with two spaces, which no exact-match query
+        // will ever hit.
+        if out.contains("  ") || out.trim() != out {
+            out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        }
+
+        // "Beatles, The" → "The Beatles". Library tags carry sort order far
+        // more often than MusicBrainz does.
+        for suffix in [", The", ", A", ", An"] {
+            let Some(head_len) = out.len().checked_sub(suffix.len()) else {
+                continue;
+            };
+            // `get` rather than slicing: a multi-byte char could straddle
+            // this index, and indexing there would panic.
+            let Some(tail) = out.get(head_len..) else {
+                continue;
+            };
+            if head_len > 0 && tail.eq_ignore_ascii_case(suffix) {
+                let article = &tail[2..]; // drop ", "
+                return format!("{article} {}", &out[..head_len]);
+            }
+        }
+        out
+    }
+
+    /// Query-ready form of an album title: disc markers and edition
+    /// qualifiers off, punctuation folded.
+    fn album_query_title(album: &str) -> String {
+        Self::normalize_for_lookup(&Self::lookup_title(album))
     }
 
     /// Strip a trailing bracketed edition/remaster qualifier
@@ -352,23 +581,18 @@ impl MusicBrainzClient {
     /// different reasons, so this only recognizes edition keywords, not
     /// disc markers).
     fn strip_edition_qualifier(album: &str) -> String {
-        const EDITION_KEYWORDS: &[&str] = &[
-            "remaster", "remastered", "edition", "deluxe", "bonus",
-            "expanded", "anniversary", "reissue", "version", "bit",
-            "mono", "stereo",
-        ];
         let trimmed = album.trim_end();
         let open = match trimmed.as_bytes().last() {
             Some(b']') => '[',
             Some(b')') => '(',
+            Some(b'}') => '{',
             _ => return album.to_string(),
         };
         let Some(open_idx) = trimmed.rfind(open) else {
             return album.to_string();
         };
         let inner = &trimmed[open_idx + 1..trimmed.len() - 1];
-        let lower = inner.to_lowercase();
-        if !EDITION_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        if !Self::is_edition_qualifier(inner) {
             return album.to_string();
         }
         let base = trimmed[..open_idx]
@@ -382,15 +606,100 @@ impl MusicBrainzClient {
         }
     }
 
+    /// Does this bracket's contents read as an edition/remaster/catalog
+    /// qualifier rather than part of the title?
+    ///
+    /// Matches on **whole tokens**, which is the fix for the previous
+    /// substring test: `lower.contains("bit")` also fired on "Rabbit", so
+    /// `"Album (White Rabbit)"` had its bracket stripped. Beyond keywords it
+    /// recognizes the three things mikMPD's regex does — a year, an audio
+    /// spec (`24-bit`, `96 kHz`), and a catalogue number (`VICP-60852`,
+    /// `88697…`) — all of which appear in real tags and none of which belong
+    /// in a lookup query.
+    fn is_edition_qualifier(inner: &str) -> bool {
+        const KEYWORDS: &[&str] = &[
+            "remaster", "remastered", "edition", "deluxe", "bonus", "expanded",
+            "anniversary", "reissue", "version", "mono", "stereo", "live",
+            "explicit", "sacd", "original", "recording", "japan", "import",
+            "promo", "limited", "digipack", "digipak",
+        ];
+        let tokens: Vec<&str> = inner
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        for (i, tok) in tokens.iter().enumerate() {
+            let lower = tok.to_lowercase();
+            if KEYWORDS.contains(&lower.as_str()) {
+                return true;
+            }
+            // "hi-res" / "hires" — split by the tokenizer when hyphenated.
+            if lower == "hires"
+                || (lower == "hi"
+                    && tokens
+                        .get(i + 1)
+                        .is_some_and(|n| n.eq_ignore_ascii_case("res")))
+            {
+                return true;
+            }
+
+            // A short all-caps token is a region or format marker, not part
+            // of a title: "[UK]", "[US]", "[EP]". This library's Depeche Mode
+            // rips are all tagged "… [UK]", which no MusicBrainz title has.
+            if tok.len() <= 3
+                && tok.chars().all(|c| c.is_ascii_uppercase())
+                && !tok.is_empty()
+            {
+                return true;
+            }
+
+            if lower.chars().all(|c| c.is_ascii_digit()) {
+                // A year: 1900–2099.
+                if lower.len() == 4 {
+                    if let Ok(year) = lower.parse::<u32>() {
+                        if (1900..=2099).contains(&year) {
+                            return true;
+                        }
+                    }
+                }
+                // "24-bit", "96 kHz" — a number qualified by a unit.
+                if tokens.get(i + 1).is_some_and(|n| {
+                    let n = n.to_lowercase();
+                    n == "bit" || n == "khz" || n == "hz"
+                }) {
+                    return true;
+                }
+                // A bare digit run this long is a catalogue number, not a
+                // title. Four digits keeps "Part 2" and "Volume 3" safe.
+                if lower.len() >= 4 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Composes both lookup-only transforms for an album query candidate:
     /// strip the edition qualifier, then the disc-marker suffix (order
     /// matters for titles carrying both, e.g. `"X [Disc 1] [Remastered]"`).
     /// Never used for the art cache key — see `Song::art_key`, which folds
     /// disc markers but not edition qualifiers (a remaster isn't the same
     /// release as the original for art-lookup purposes, only for grouping).
+    /// Applied repeatedly until the title stops changing, because real tags
+    /// stack the suffixes: `"Album (Deluxe Edition) [2011 Remaster]"` needs
+    /// two passes, and `"Album [Remastered] [Disc 1]"` needs both transforms
+    /// to alternate. A single pass left the second suffix in the query.
     fn lookup_title(album: &str) -> String {
-        let no_edition = Self::strip_edition_qualifier(album);
-        crate::mpd::types::album_base_and_disc(&no_edition).0
+        let mut title = crate::mpd::types::album_base_and_disc(album).0;
+        // Bounded: each iteration must shorten the title or we stop.
+        loop {
+            let stripped = Self::strip_edition_qualifier(&title);
+            let stripped = crate::mpd::types::album_base_and_disc(&stripped).0;
+            if stripped == title {
+                return title;
+            }
+            title = stripped;
+        }
     }
 
     /// Fetch the curated English Wikipedia URL from a MusicBrainz entity's URL relations.
@@ -430,7 +739,11 @@ impl MusicBrainzClient {
     /// Check that a Wikipedia extract is actually about a music artist/band/album,
     /// not an unrelated article with the same name.
     fn is_music_article(text: &str, name: &str) -> bool {
-        let lower = text.to_lowercase();
+        // Folded on both sides: the final clause is a substring test, so a
+        // smart apostrophe or an umlaut in the tag would otherwise never
+        // match the article's straight quote / plain letter (or vice versa).
+        let lower = Self::fold_for_compare(text);
+        let name = Self::fold_for_compare(&name.to_string());
         lower.contains("band")
             || lower.contains("musician")
             || lower.contains("singer")
@@ -453,7 +766,7 @@ impl MusicBrainzClient {
     fn title_matches(article_title: &str, target: &str) -> bool {
         const STOPWORDS: &[&str] = &["the", "a", "an", "of", "and", "in", "on", "at", "to", "for"];
         fn tokenize(s: &str) -> Vec<String> {
-            s.to_lowercase()
+            MusicBrainzClient::fold_for_compare(s)
                 .split(|c: char| !c.is_alphanumeric())
                 .filter(|w| !w.is_empty() && !STOPWORDS.contains(w))
                 .map(|w| w.to_string())
@@ -507,6 +820,14 @@ impl MusicBrainzClient {
     /// Step 2: fall back to suffix-guessing if MusicBrainz has no Wikipedia link.
     /// Step 3: fall back to Wikipedia's own search API.
     pub async fn fetch_artist_bio(&self, artist: &str) -> Option<String> {
+        // Same normalization the art path gets, and for the same reason: the
+        // raw tag is what every step below is built from, so a sort-order
+        // name ("Alan Parsons Project, The") would otherwise be guessed as
+        // the Wikipedia title "Alan Parsons Project, The (band)", searched
+        // for verbatim, *and* used as the `title_matches` target — three
+        // chances to fail on one unfolded string.
+        let artist = &Self::normalize_for_lookup(artist);
+
         // Step 1: MusicBrainz canonical Wikipedia link
         if let Some(artist_id) = self.search_artist(artist).await {
             if let Some(wiki_url) = self.get_wikipedia_url("artist", &artist_id).await {
@@ -546,7 +867,11 @@ impl MusicBrainzClient {
     /// Step 2: fall back to "(album)" suffix guessing.
     /// Step 3: fall back to Wikipedia's own search API.
     pub async fn fetch_album_bio(&self, artist: &str, album: &str) -> Option<String> {
-        let lookup_album = Self::lookup_title(album);
+        // Normalized on the way in, so every Wikipedia title guess, the
+        // MusicBrainz query and the `title_matches` target below are all
+        // built from the same folded string.
+        let lookup_album = Self::album_query_title(album);
+        let artist = &Self::normalize_for_lookup(artist);
 
         // Step 1: MusicBrainz canonical Wikipedia link
         if let Some(rg_id) = self.search_release_group(artist, &lookup_album).await {
@@ -559,26 +884,135 @@ impl MusicBrainzClient {
             }
         }
 
-        // Step 2: suffix fallback
-        let candidates = [
-            format!("{lookup_album} (album)"),
-            format!("{lookup_album} ({artist} album)"),
-            lookup_album.clone(),
-        ];
+        // A title like "Greatest Hits" belongs to hundreds of artists and
+        // usually has a generic Wikipedia article attached to none of them.
+        // Every loose path below is tightened or skipped when it applies.
+        let generic = !artist.is_empty() && Self::is_generic_album_title(&lookup_album);
+
+        // Step 2: Wikipedia's own album naming patterns.
+        //
+        // A "(… album)" title looks self-validating and isn't: `Greatest
+        // Hits (album)` **redirects to Wikipedia's article about the concept
+        // of a greatest-hits record**, which was duly returned as Bob Dylan's
+        // album bio. So every hit goes through the same validation as a
+        // search hit — for a real album the extract names both the album and
+        // the artist, and the concept article names neither.
+        let mut candidates = Vec::new();
+        if !artist.is_empty() {
+            candidates.push(format!("{lookup_album} ({artist} album)"));
+        }
+        candidates.push(format!("{lookup_album} (album)"));
         for title in &candidates {
-            if let Some(summary) = self.try_bio_candidate(title, &lookup_album).await {
-                return Some(summary);
+            if let Some(extract) = self.fetch_wikipedia_summary(title).await {
+                if Self::album_result_matches(title, &extract, &lookup_album, artist) {
+                    return Some(extract);
+                }
             }
         }
 
-        // Step 3: general search fallback
-        for title in self.search_wikipedia(&format!("{lookup_album} {artist}")).await {
-            if let Some(summary) = self.try_bio_candidate(&title, &lookup_album).await {
-                return Some(summary);
+        // Step 3: the plain title. Distinctive album names ("An Acoustic
+        // Evening at the Vienna Opera House") are articles with no "(album)"
+        // suffix at all — but a plain "Greatest Hits" page is almost never
+        // about *this* artist's record, so generic titles skip this unless
+        // the album name itself carries the artist.
+        if !generic
+            || Self::fold_for_compare(&lookup_album).contains(&Self::fold_for_compare(artist))
+        {
+            if let Some(extract) = self.fetch_wikipedia_summary(&lookup_album).await {
+                if Self::is_music_article(&extract, &lookup_album)
+                    && Self::album_result_matches(&lookup_album, &extract, &lookup_album, artist)
+                {
+                    return Some(extract);
+                }
             }
         }
 
-        None
+        // Step 4: search, loosest last. A hit whose *title* names the album
+        // wins immediately; an extract-only match is held back as a fallback,
+        // because a related article (a sequel, another compilation) will
+        // happily cite this album by name.
+        let searches: Vec<String> = if artist.is_empty() {
+            vec![format!("{lookup_album} album")]
+        } else if generic {
+            // Drop the artist-free query: "Greatest Hits album" returns
+            // something for everyone, and none of it is this record.
+            vec![format!("{lookup_album} {artist} album")]
+        } else {
+            vec![
+                format!("{lookup_album} {artist} album"),
+                format!("{lookup_album} album"),
+            ]
+        };
+
+        let mut extract_only: Option<String> = None;
+        for query in searches {
+            for title in self.search_wikipedia(&query).await {
+                let Some(extract) = self.fetch_wikipedia_summary(&title).await else {
+                    continue;
+                };
+                if !Self::album_result_matches(&title, &extract, &lookup_album, artist) {
+                    continue;
+                }
+                if Self::title_matches(&title, &lookup_album) {
+                    return Some(extract);
+                }
+                if extract_only.is_none() {
+                    extract_only = Some(extract);
+                }
+            }
+        }
+
+        // For a generic title, a matching extract is too weak to stand on
+        // its own — the title it came from could be anything.
+        if generic {
+            None
+        } else {
+            extract_only
+        }
+    }
+
+    /// Album titles with a Wikipedia article that belongs to no single
+    /// artist's release. Ported from mikMPD's `genericAlbumTitles`, which
+    /// notes why this is a curated list rather than a token-count heuristic:
+    /// a count also catches distinctive short titles like Depeche Mode's
+    /// "101".
+    fn is_generic_album_title(album: &str) -> bool {
+        const GENERIC: &[&str] = &[
+            "greatest hits", "gold", "live", "the best of", "best of", "hits",
+            "anthology", "collection", "the collection", "essential",
+            "the essential", "platinum", "compilation", "singles",
+            "the singles", "the very best of", "the hits", "unplugged",
+            "in concert",
+        ];
+        let a = Self::fold_for_compare(album);
+        GENERIC.contains(&a.trim())
+    }
+
+    /// A Wikipedia hit must be about **this album by this artist**, not just
+    /// something in the artist's discography.
+    ///
+    /// Token overlap counts only toward the *title*: the extract has to
+    /// contain the album name outright, because a related article mentions
+    /// enough of the album's words in passing to fool a token match. The
+    /// artist check is what winrmpc was missing entirely — without it, a
+    /// search hit for a different artist's same-titled album passed as long
+    /// as the extract mentioned music.
+    fn album_result_matches(title: &str, extract: &str, album: &str, artist: &str) -> bool {
+        let album_f = Self::fold_for_compare(album);
+        let title_f = Self::fold_for_compare(title);
+        let extract_f = Self::fold_for_compare(extract);
+
+        let about_album = title_f.contains(&album_f)
+            || Self::title_matches(&title_f, &album_f)
+            || extract_f.contains(&album_f);
+
+        let artist_f = Self::fold_for_compare(artist);
+        let letters = |s: &str| s.chars().filter(|c| c.is_alphabetic()).collect::<String>();
+        let about_artist = artist_f.trim().is_empty()
+            || extract_f.contains(&artist_f)
+            || letters(&extract_f).contains(&letters(&artist_f));
+
+        about_album && about_artist
     }
 
     async fn fetch_wikipedia_summary(&self, title: &str) -> Option<String> {
@@ -716,7 +1150,339 @@ mod tests {
         assert_eq!(once, "Album [Disc 1]");
     }
 
+    // === Lucene escaping ===
+
     #[test]
+    fn lucene_escape_protects_the_ac_dc_slash() {
+        // The regression this replaced: `/` opens a Lucene regex, and the old
+        // `sanitize` didn't touch it, so every AC/DC lookup sent a malformed
+        // query.
+        assert_eq!(MusicBrainzClient::lucene_escape("AC/DC"), r"AC\/DC");
+    }
+
+    #[test]
+    fn lucene_escape_keeps_bracket_content_instead_of_deleting_it() {
+        // The old `sanitize` removed brackets outright, collapsing two
+        // different albums onto one query string.
+        assert_eq!(
+            MusicBrainzClient::lucene_escape("Songs (For Sale)"),
+            r"Songs \(For Sale\)"
+        );
+    }
+
+    #[test]
+    fn lucene_escape_covers_the_operator_characters() {
+        assert_eq!(MusicBrainzClient::lucene_escape("a+b-c!d"), r"a\+b\-c\!d");
+    }
+
+    // === Unicode normalization ===
+
+    #[test]
+    fn normalize_folds_smart_punctuation() {
+        assert_eq!(
+            MusicBrainzClient::normalize_for_lookup("Don\u{2019}t Stop\u{2026}"),
+            "Don't Stop..."
+        );
+        assert_eq!(
+            MusicBrainzClient::normalize_for_lookup("1967\u{2013}1970"),
+            "1967-1970"
+        );
+        assert_eq!(
+            MusicBrainzClient::normalize_for_lookup("\u{201C}Heroes\u{201D}"),
+            "\"Heroes\""
+        );
+    }
+
+    #[test]
+    fn normalize_moves_sort_order_article_to_front() {
+        assert_eq!(
+            MusicBrainzClient::normalize_for_lookup("Beatles, The"),
+            "The Beatles"
+        );
+        assert_eq!(
+            MusicBrainzClient::normalize_for_lookup("Doors, The"),
+            "The Doors"
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_a_normal_title_alone() {
+        assert_eq!(
+            MusicBrainzClient::normalize_for_lookup("The Wall"),
+            "The Wall"
+        );
+        // A comma that isn't a sort-order article must survive.
+        assert_eq!(
+            MusicBrainzClient::normalize_for_lookup("Sgt. Pepper, Live"),
+            "Sgt. Pepper, Live"
+        );
+    }
+
+    #[test]
+    fn normalize_does_not_panic_on_multibyte_tails() {
+        // The article check indexes from the end; a multi-byte char straddling
+        // that index must not panic.
+        assert_eq!(MusicBrainzClient::normalize_for_lookup("Björk"), "Björk");
+        assert_eq!(MusicBrainzClient::normalize_for_lookup("Å"), "Å");
+        assert_eq!(MusicBrainzClient::normalize_for_lookup(""), "");
+    }
+
+    // === Edition qualifier recognition ===
+
+    #[test]
+    fn edition_qualifier_does_not_fire_on_a_word_containing_bit() {
+        // The substring test this replaced stripped "(White Rabbit)" because
+        // "rabbit" contains "bit".
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("Album (White Rabbit)"),
+            "Album (White Rabbit)"
+        );
+    }
+
+    #[test]
+    fn edition_qualifier_recognizes_year_and_audio_spec_and_catalog() {
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("Album (2011)"),
+            "Album"
+        );
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("Album [24-bit]"),
+            "Album"
+        );
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("Killers (CDM 7520192)"),
+            "Killers"
+        );
+    }
+
+    #[test]
+    fn edition_qualifier_leaves_part_and_volume_brackets_alone() {
+        // Short digit runs must not read as catalogue numbers.
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("Album (Part 2)"),
+            "Album (Part 2)"
+        );
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("Album (Volume 3)"),
+            "Album (Volume 3)"
+        );
+    }
+
+    #[test]
+    fn lookup_title_strips_stacked_qualifiers() {
+        // One pass left the second suffix in the query.
+        assert_eq!(
+            MusicBrainzClient::lookup_title("Album (Deluxe Edition) [2011 Remaster]"),
+            "Album"
+        );
+    }
+
+    // === MusicBrainz result validation ===
+
+    #[test]
+    fn release_title_match_rejects_a_different_album() {
+        // The case the unchecked top-score pick got wrong.
+        assert!(!MusicBrainzClient::release_title_matches(
+            "The Doors",
+            "Best of the Doors"
+        ));
+        assert!(MusicBrainzClient::release_title_matches(
+            "Best of the Doors",
+            "Best of the Doors"
+        ));
+    }
+
+    #[test]
+    fn release_title_match_is_punctuation_insensitive() {
+        assert!(MusicBrainzClient::release_title_matches(
+            "Don't Stop the Music",
+            "Don\u{2019}t Stop the Music"
+        ));
+    }
+
+    #[test]
+    fn artist_credit_match_accepts_common_tag_spellings() {
+        let credit = vec![MbArtistCredit {
+            name: Some("AC/DC".into()),
+        }];
+        assert!(MusicBrainzClient::artist_credit_matches(
+            Some(&credit),
+            "ACDC"
+        ));
+        let beatles = vec![MbArtistCredit {
+            name: Some("The Beatles".into()),
+        }];
+        assert!(MusicBrainzClient::artist_credit_matches(
+            Some(&beatles),
+            "Beatles, The"
+        ));
+    }
+
+    #[test]
+    fn artist_credit_match_folds_diacritics() {
+        let credit = vec![MbArtistCredit {
+            name: Some("Motörhead".into()),
+        }];
+        assert!(MusicBrainzClient::artist_credit_matches(
+            Some(&credit),
+            "Motorhead"
+        ));
+    }
+
+    #[test]
+    fn artist_credit_match_survives_mojibake_and_double_spaces() {
+        // Both real tags on this library for one band.
+        let credit = vec![MbArtistCredit {
+            name: Some("Blue Öyster Cult".into()),
+        }];
+        assert!(MusicBrainzClient::artist_credit_matches(
+            Some(&credit),
+            "Blue  Oyster Cult"
+        ));
+        assert!(MusicBrainzClient::artist_credit_matches(
+            Some(&credit),
+            "Blue Îyster Cult"
+        ));
+    }
+
+    #[test]
+    fn edition_qualifier_strips_a_short_all_caps_region_tag() {
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("A Broken Frame [UK]"),
+            "A Broken Frame"
+        );
+        // Mixed case is a title word, not a marker.
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("Album (Live at Leeds)"),
+            "Album"
+        );
+        assert_eq!(
+            MusicBrainzClient::strip_edition_qualifier("Album (Rain)"),
+            "Album (Rain)"
+        );
+    }
+
+    #[test]
+    fn normalize_collapses_whitespace_runs() {
+        assert_eq!(
+            MusicBrainzClient::normalize_for_lookup("Blue  Oyster Cult"),
+            "Blue Oyster Cult"
+        );
+    }
+
+    // === Wikipedia matching ===
+
+    #[test]
+    fn title_matches_folds_diacritics() {
+        // Wikipedia keeps the umlaut, library tags usually don't. A
+        // single-token target needs an exact match, so without folding every
+        // accented one-word band name failed its own article.
+        assert!(MusicBrainzClient::title_matches("Motörhead", "Motorhead"));
+        assert!(MusicBrainzClient::title_matches(
+            "Blue Öyster Cult",
+            "Blue Oyster Cult"
+        ));
+    }
+
+    #[test]
+    fn generic_album_titles_are_recognized() {
+        assert!(MusicBrainzClient::is_generic_album_title("Greatest Hits"));
+        assert!(MusicBrainzClient::is_generic_album_title("the very best of"));
+        // Distinctive short titles must not be caught — the reason this is a
+        // curated list and not a token-count rule.
+        assert!(!MusicBrainzClient::is_generic_album_title("101"));
+        assert!(!MusicBrainzClient::is_generic_album_title("Powerage"));
+    }
+
+    #[test]
+    fn album_result_requires_the_extract_to_name_the_artist() {
+        // The gap this closes: a same-titled album by someone else used to
+        // pass on "mentions music" alone.
+        assert!(!MusicBrainzClient::album_result_matches(
+            "Powerage",
+            "Powerage is the fifth studio album by the band Someone Else.",
+            "Powerage",
+            "AC/DC"
+        ));
+        assert!(MusicBrainzClient::album_result_matches(
+            "Powerage",
+            "Powerage is the fifth studio album by Australian rock band AC/DC.",
+            "Powerage",
+            "AC/DC"
+        ));
+    }
+
+    #[test]
+    fn album_result_rejects_the_generic_concept_article() {
+        // `Greatest Hits (album)` redirects to Wikipedia's article about
+        // greatest-hits records as a *concept*, which was being returned as
+        // Bob Dylan's album bio. It names the album words but no artist.
+        assert!(!MusicBrainzClient::album_result_matches(
+            "Greatest Hits (album)",
+            "A greatest hits album or best-of album is a type of compilation \
+             album that collects popular songs by a particular artist.",
+            "Greatest Hits",
+            "Bob Dylan"
+        ));
+        assert!(MusicBrainzClient::album_result_matches(
+            "Bob Dylan's Greatest Hits",
+            "Bob Dylan's Greatest Hits is a 1967 compilation album of songs \
+             by the American singer-songwriter Bob Dylan.",
+            "Greatest Hits",
+            "Bob Dylan"
+        ));
+    }
+
+    #[test]
+    fn album_result_matches_artist_across_diacritics() {
+        assert!(MusicBrainzClient::album_result_matches(
+            "Fire of Unknown Origin",
+            "Fire of Unknown Origin is an album by Blue Öyster Cult.",
+            "Fire of Unknown Origin",
+            "Blue  Oyster Cult"
+        ));
+    }
+
+    #[test]
+    fn album_result_requires_the_extract_to_name_the_album_outright() {
+        // Token overlap counts toward the title only; a sequel's extract
+        // shares words freely.
+        assert!(!MusicBrainzClient::album_result_matches(
+            "Live at Carnegie Hall",
+            "A live album recorded at the Vienna Opera House by the band.",
+            "An Acoustic Evening at the Vienna Opera House",
+            ""
+        ));
+    }
+
+    #[test]
+    fn artist_credit_match_rejects_an_unrelated_artist() {
+        let credit = vec![MbArtistCredit {
+            name: Some("Metallica".into()),
+        }];
+        assert!(!MusicBrainzClient::artist_credit_matches(
+            Some(&credit),
+            "Megadeth"
+        ));
+    }
+
+    #[test]
+    fn artist_credit_match_passes_when_data_is_absent() {
+        assert!(MusicBrainzClient::artist_credit_matches(None, "Anyone"));
+    }
+
+    #[test]
+    fn search_queries_loosen_and_drop_the_artist_clause_when_unknown() {
+        let qs = MusicBrainzClient::search_queries("release", "AC/DC", "Live");
+        assert_eq!(qs.len(), 3);
+        assert!(qs[0].contains(r#"artist:"AC\/DC""#), "{}", qs[0]);
+        assert!(!qs[2].contains("artist:"), "{}", qs[2]);
+
+        let no_artist = MusicBrainzClient::search_queries("release", "", "Live");
+        assert_eq!(no_artist.len(), 1);
+        assert!(!no_artist[0].contains("artist:"));
+    }
+
     fn lookup_title_strips_both_edition_and_disc_marker() {
         assert_eq!(
             MusicBrainzClient::lookup_title("Album [Disc 1] [Remastered]"),

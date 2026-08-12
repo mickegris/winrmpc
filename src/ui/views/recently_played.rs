@@ -80,7 +80,14 @@ pub fn view<'a>(
             let mut list = column![].spacing(0);
             for (i, g) in groups.into_iter().enumerate() {
                 let bg = if i % 2 == 0 { AppColors::ROW_EVEN } else { AppColors::ROW_ODD };
+                // Same cover as this view's grid mode, just small — matching
+                // Albums and Recently Added, whose list modes already do this.
                 let label = row![
+                    album_grid::list_thumb(album_grid::art_for(
+                        art_handles,
+                        &g.artist,
+                        &g.album
+                    )),
                     text(g.album.clone()).size(14).color(AppColors::TEXT_PRIMARY),
                     text(g.artist.clone()).size(12).color(AppColors::TEXT_MUTED),
                     Space::with_width(Length::Fill),
