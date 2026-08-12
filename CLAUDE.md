@@ -18,7 +18,7 @@ cargo test <name>        # run tests whose name matches <name>
 cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 ```
 
-- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 149 offline tests cover the pure-logic core, all I/O-free:
+- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 150 offline tests cover the pure-logic core, all I/O-free:
   - `mpd/client.rs` — `escape` injection safety (quotes, backslashes, ordering)
   - `mpd/protocol.rs` — `pairs_to_map`, `split_groups`, `parse_ack`
   - `mpd/commands.rs` — every response parser (`parse_status`/`song`/`songs`/`outputs`/`partitions`/`directory_listing`/`stats`/`tag_list`); note the `Time`→`duration` fallback rule
@@ -105,7 +105,7 @@ src/
       mod.rs
     widgets/
       player_bar.rs          Transport controls bar (play/pause/stop/prev/next, seek, volume)
-      sidebar.rs             Navigation sidebar
+      sidebar.rs             Navigation sidebar — wrapped in a `scrollable`; with 17 entries and a `Length::Fill` spacer the bottom group (Settings/Log/Stats) used to be pushed off a short window with no way to reach it
       art_image.rs           Bytes → iced ImageHandle helper
       link.rs                Clickable hyperlink widget (opens URLs via `open`)
       album_grid.rs          Shared cover-grid: tile/grid/layout_toggle/art_for, used by Albums, Recently Added and Recently Played
@@ -191,7 +191,7 @@ Artist images: `"artist:{name}"`.
 `QueueRemove(id)` uses `delete_id` (song id, not position — stable across concurrent queue mutations). `QueueMoveUp`/`QueueMoveDown(pos)` wrap `move_pos(from, to)`; MPD's `move FROM TO` leaves the song at position `TO` in the *final* list (remove-then-insert semantics), so `move(pos, pos-1)`/`move(pos, pos+1)` are simple adjacent swaps with no off-by-one. `QueueAddNext(uri)` composes this: `add_id` appends to the end, then `move_pos(end, current_song_pos + 1)` relocates it to play right after the current track; if nothing is playing (`song_pos` is `None`), it falls back to `play_id` on the newly added song instead of trying to insert "next" of nothing.
 
 ### Playback options: crossfade + replay gain (`src/ui/widgets/player_bar.rs`)
-Crossfade (`Status.crossfade`) and replay gain both live in the **player bar**, on a third line under repeat/random/single/consume — they're server-wide playback settings exactly like those, so they belong next to them rather than in a single view's header (they were originally in `now_playing.rs`'s `toggle_row`). The replay-gain `pick_list` carries a visible **"Replay Gain"** label; a bare dropdown reading `off/track/album/auto` gives no clue what it controls.
+Crossfade (`Status.crossfade`) and replay gain both live in the **player bar**, in their own 190px column to the *left* of the repeat/random/single/consume grid (crossfade above replay gain) — they're server-wide playback settings exactly like those, so they belong next to them rather than in a single view's header (they were originally in `now_playing.rs`'s `toggle_row`). The replay-gain `pick_list` carries a visible **"Replay Gain"** label; a bare dropdown reading `off/track/album/auto` gives no clue what it controls.
 - **The MPD commands are `replay_gain_status` and `replay_gain_mode <mode>` — with the underscore between "replay" and "gain".** `replaygain_status`/`replaygain_mode` are not commands; MPD answers `ACK [5@0] {} unknown command` and replay gain silently never works. This was a real shipped bug, fixed in 0.4.1; `live_replay_gain_round_trips` in `live_tests.rs` guards it against a real server, because a unit test can only check the string we build, not that MPD accepts it.
 - `replay_gain_mode` is fetched once in `fetch_all()` on connect (not polled — it rarely changes and isn't part of `status`), stored on `App`, and optimistically updated in the `SetReplayGainMode` handler before the command round-trips.
 
@@ -240,7 +240,7 @@ Two distinct features sharing one plan (`docs/plans/recently-added-and-played-hi
 The Albums list, Recently Added and Recently Played (Albums mode) all render through one shared widget, so they look and behave identically. `album_grid` exposes `tile()` (cover + title + subtitle + optional caption), `grid()` (chunks tiles into rows — `Element` isn't `Clone`, so it consumes the iterator rather than slicing), `layout_toggle()` (the ▦ Grid / ☰ List button) and `art_for()` (cache lookup via `art_key_for`).
 - **One flag for all three views**: `AppConfig::album_grid_view` (`#[serde(default)]`, persisted), toggled by `Message::ToggleAlbumGridView`. Deliberately not per-view — three independent layout memories would feel arbitrary.
 - **List mode also shows art**, as a 36px thumbnail, so switching layouts never changes *which* albums appear to have covers.
-- **Art prefetch is bounded** — `App::ALBUM_ART_PREFETCH_LIMIT` (60). Each uncached album costs an MPD `find` to locate a track plus, on a miss, a MusicBrainz lookup behind the global ~1 req/s throttle; an unbounded prefetch over an 800-album library would hammer the server for a quarter of an hour. `prefetch_album_art()` picks the list matching the current view, skips anything already in `art_handles`, and takes the first 60. Cached art always renders regardless of the cap, so grids fill in as you browse. **Known limitation**: there's no visible-range/lazy fetch (iced 0.13 doesn't expose scroll position per item), so past the first 60 uncached entries tiles show the placeholder block until visited.
+- **Art prefetch is bounded** — `App::ALBUM_ART_PREFETCH_LIMIT` (24). Each uncached album costs an MPD `find` to locate a track plus, on a miss, a MusicBrainz lookup behind the global ~1 req/s throttle; an unbounded prefetch over an 800-album library would hammer the server for a quarter of an hour. On a library with **no embedded art** every album takes the full `find` → `readpicture` → `albumart` → MusicBrainz path, which is the heaviest load the app ever puts on the single shared connection — the cap was 60 and that coincided with the connection falling over (see "Connection desync"). `prefetch_album_art()` picks the list matching the current view, skips anything already in `art_handles`, and takes the first 24. Cached art always renders regardless of the cap, so grids fill in as you browse. **Known limitation**: there's no visible-range/lazy fetch (iced 0.13 doesn't expose scroll position per item), so past the first 24 uncached entries tiles show the placeholder block until visited. Grid mode also builds ~4 widgets per album with **no virtualisation** — on an 800-album library that is ~3200 widgets laid out every frame, which is untested for responsiveness.
 - `fetch_album_group_art(artist, base, variant)` is the single per-album fetch (tag → cover file → MusicBrainz), shared by `prefetch_album_art` and the `ArtistAlbumsLoaded` handler.
 
 ## Stored Playlists (`src/mpd/client.rs`, `src/ui/views/{playlists_list,playlist_detail,add_to_playlist}.rs`)
@@ -314,3 +314,50 @@ Design docs written before implementing a feature — read the relevant one befo
 
 ## Current Version
 `0.4.1` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
+
+`Cargo.lock` **is committed** (`.gitignore` has `*.lock` with a `!Cargo.lock` exception). This is a binary crate, so the lockfile belongs in version control: without it every machine resolves its own versions, builds aren't reproducible, and a bad upstream patch release can't be pinned back.
+
+---
+
+# Current state — session handoff
+
+Everything below reflects `release/v0.4.1` at the time of writing. **Not yet merged to `main` and not yet tagged/released.**
+
+## Where things stand
+
+`release/v0.4.1` is pushed and green: **150 offline tests, 8 live tests, zero build warnings**, debug and release both build. The branch contains a long run of post-parity fix work: two rounds of code review and their fixes, real-library album-matching improvements, live integration tests, and a batch of user-requested UI/behaviour changes.
+
+## Verified against a real server
+
+A live MPD **0.24.0** at `10.0.1.3` (9846 songs, 802 albums, 4 partitions) plus a Snapcast server on `1705`. Run the opt-in suite with:
+
+```bash
+WINRMPC_TEST_MPD=10.0.1.3:6600 WINRMPC_TEST_SNAPCAST=10.0.1.3:1705 \
+  cargo test -- --ignored --test-threads=1
+```
+
+Anything that mutates state uses a throwaway MPD partition and deletes it; the default partition's queue is never touched. Confirmed clean after every run.
+
+## Open / unverified — read this before continuing
+
+1. **No UI change in this branch has been seen rendered.** There is no display in the dev sandbox these were written in. Control placement, sizing, the album grid and the lyrics fix all compile and are reasoned from code, but only the Windows/macOS build shows whether they actually look right.
+2. **The MPD connection desync trigger is still unknown.** The *recovery* failure is confirmed and fixed (see "Connection desync"). The original cause is not reproduced: the test server has no embedded album art, so the binary path only ever returns `OK` or `ACK`, never multi-chunk data — `live_concurrent_art_fetches_do_not_desync_the_connection` passes because it cannot exercise the risky path. If it recurs, the new `WARN connection desynced on <verb> …` line names the command responsible; that is the thread to pull.
+3. **Album grid may not be usable at library scale.** ~4 widgets per album, no virtualisation, ~3200 widgets on an 800-album library. If the Albums view feels slow or freezes (as opposed to erroring), this is the suspect, not the connection. Options: cap/page the grid, or only build tiles for albums with cached art.
+4. **`docs/plans/review-fixes-correctness.md` lists two deliberate deferrals**: punctuation-folding the album grouping key (en/em-dash, smart quotes — the *case*-folding half is done), and de-duping `recent_albums` on the disc-stripped base.
+5. **Grouping-matcher gap, with a ready test corpus**: `Volume 3 Disc3 (Rem.2007)` — a marker followed by a non-marker bracket — is deliberately not handled, since stripping from the middle of a name is materially riskier. Same doc has the six real album names that motivated the rules.
+
+## iced 0.14 upgrade — researched, branch deleted
+
+`feature/iced-0.14` was created, planned, then deleted at the user's request. Keep the findings, they cost real work:
+
+- iced **0.14.0 and cryoglyph 0.1.0 shipped 2025-12-07/05 and have had no patch release since**, but iced master is very active (300+ commits, pushed daily).
+- The 2026-06 migration attempt (`79b960b`) was reverted (`31c7dba`) for glyph corruption after atlas growth on resize. The revert blamed cryoglyph, but it also reproduced under **tiny-skia**, which doesn't link cryoglyph — so the real layer is `iced_graphics`/`cosmic-text`.
+- Commit **`2c1a28fb` (2026-05-13), "Fix global `graphics::Cache` invalidation"**, makes a `Cache` stop serving **stale entries** — matching the reported symptom (stale text wrong, live-reshaped line right) and living in the shared layer. It postdates 0.14.0 by five months, so the June attempt never had it.
+- **If the upgrade is retried, start by pinning a git rev on master at or after `2c1a28fb`**, not crates.io 0.14.0. Also relevant on master: per-OS default fonts (likely obviating the Segoe UI lyric-font hack) and cosmic-text 0.15 → 0.19. Note 0.14 needs Rust ≥1.88 and jumps wgpu 0.19 → 27, and does **not** fix the `block 0.1.6` future-incompat warning (still arrives via `metal` → `wgpu-hal`).
+- A UI-framework survey concluded **stay on iced** (no forced move; a switch is a full rewrite of 20+ view modules; the apparent abandonment is release cadence, not development). egui would be the fallback. Revisit only if 0.15 never ships *and* master proves unusable, or an accessibility requirement appears — iced's genuine weak spot.
+
+## Suggested next steps
+
+1. Build and run on Windows/macOS; check the reported issues are actually resolved (player-bar layout, Log reachable in the sidebar, Albums view usable).
+2. If Albums is slow rather than broken, address item 3 above.
+3. Then `main` merge + tag via the `release` skill.
