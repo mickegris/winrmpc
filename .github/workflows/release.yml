@@ -1,0 +1,161 @@
+name: Release
+
+# Two ways in:
+#   * pushing a `v*` tag  — builds and publishes a GitHub release
+#   * "Run workflow"      — builds the same artifacts and leaves them as
+#                           workflow artifacts, publishing nothing. Use this to
+#                           get a Windows .exe to test without committing to a
+#                           release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Least privilege: only the publish job needs to write, and it is the only one
+# that asks for it.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Tests run before anything is built, on all three platforms. Windows and
+  # macOS have never run this suite — the whole 0.4.2 batch is about platform
+  # differences that are silent rather than loud, so a green run here is worth
+  # more than usual. macOS is tested but not shipped: there is no .app bundle
+  # yet (see docs/plans/app-icon-cross-platform.md, steps D and E).
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev pkg-config
+        # Note there is deliberately no libssl-dev here: reqwest is pinned to
+        # rustls, so no OpenSSL headers are needed to build. If this ever
+        # starts failing on a missing libssl, something re-enabled native-tls.
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --all-targets
+        # The `#[ignore]`d live tests stay ignored: they need a real MPD server
+        # and would hammer MusicBrainz/LRCLIB from CI.
+
+      - name: Check for warnings
+        run: cargo check --all-targets
+        env:
+          RUSTFLAGS: -D warnings
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          # The tag is authoritative when there is one; otherwise fall back to
+          # Cargo.toml so workflow_dispatch runs still produce named files.
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The Linux artifact is a tarball rather than a bare binary so the
+      # desktop-integration assets travel with it — on Wayland the window icon
+      # only resolves once the .desktop file is installed, so shipping the
+      # binary alone would ship a knowingly icon-less app.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          NAME="winrmpc-${{ steps.version.outputs.version }}-linux-x86_64"
+          mkdir -p "dist/$NAME"
+          cp "target/${{ matrix.target }}/release/winrmpc" "dist/$NAME/"
+          cp -r packaging/linux "dist/$NAME/packaging"
+          cp README.md LICENSE "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          echo "ASSET=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          NAME="winrmpc-${{ steps.version.outputs.version }}-windows-x86_64.exe"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/winrmpc.exe" "dist/$NAME"
+          echo "ASSET=dist/$NAME" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winrmpc-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    # Tags only. A manual run builds artifacts to download and test, and must
+    # never create or modify a release.
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          ls -la artifacts
+          # `create` if the tag has no release yet, otherwise attach to the one
+          # that is already there (so notes written by hand survive).
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" artifacts/* \
+              --title "$TAG" \
+              --generate-notes
+          fi
