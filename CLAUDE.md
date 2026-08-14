@@ -319,12 +319,13 @@ Six views mark the playing track: Queue, Album detail, Playlist detail, Search, 
 **Every track list uses one column order** (`widgets/song_row.rs` owns the cells):
 
 ```
-[playing marker 14] [number 30, right] [title Fill] … [duration 55, right] [action group]
+[playing marker 14] [number 30, right] [action group] [title Fill] … [duration 55, right]
 ```
 
-Reading order is **number → title → time**, with the controls last. The library views (album, search, browser, playlist detail) used to *lead* with four glyph buttons, putting ~134px of identical controls between the left edge and the first thing anyone is looking for; `playlist_detail` was worse still, splitting its seven actions across *both* sides of the title. The Queue already had it right, so the others were moved to match rather than the reverse.
-- **`number` and `duration` are right-aligned fixed-width cells.** Numbers so `10` doesn't hang a character left of `9`; duration because the action group now follows it — sized to content, a `4:53` row would be a few pixels narrower than a `10:53` row and every button below would sit slightly off.
-- **Browser file rows have no number** — a directory listing's order is the server's, not an album's.
+Number, then the buttons, then the title, with the length **last, at the far right**. `playlist_detail` used to split its seven actions across *both* sides of the title, and the five lists disagreed with each other about where anything went; they are now identical.
+- **`number` and `duration` are right-aligned fixed-width cells**, and the action group is fixed width too (`action_group_width(n)`). All three have to be: the title is the only `Fill`, so any variable-width cell before it moves the title's start on that row alone — the failure that showed up as the queue's first and last rows drifting against the rest.
+- **Browser file rows have no number** — a directory listing's order is the server's, not an album's — so the buttons lead, occupying the slot the number would have.
+- **The Queue's header reserves the number and action slots** (`MARKER_WIDTH + 8 + NUMBER_WIDTH`, then `ACTIONS_WIDTH`) in the same positions, or its `FillPortion`s divide a different amount of space than the rows and every label drifts sideways.
 
 **Row actions are a deliberate table, not per-view accident.** Every row action is an `icon_btn_tip` (or `icon_btn_danger` for destructive ones) carrying a fixed tooltip — the wording is part of the contract, so the same button never reads differently between views:
 

@@ -89,16 +89,11 @@ pub fn view<'a>(
                 let file_uri = s.file.clone();
                 items = items.push(
                     container(
-                        // No track number here: a browser listing is a
-                        // directory, and file order is the server's, not an
-                        // album's. The rest matches the other track lists.
+                        // No track number: a browser listing is a directory,
+                        // and file order is the server's, not an album's. The
+                        // buttons therefore lead, where the number would be.
                         row![
                             song_row::playing_marker(is_current),
-                            text(label)
-                                .size(13)
-                                .color(song_row::title_color(is_current))
-                                .width(Length::Fill),
-                            song_row::duration(duration, 11),
                             row![
                                 icon_btn_tip(
                                     icon::PLAY,
@@ -123,6 +118,11 @@ pub fn view<'a>(
                             ]
                             .spacing(song_row::ACTION_SPACING)
                             .width(song_row::action_group_width(4)),
+                            text(label)
+                                .size(13)
+                                .color(song_row::title_color(is_current))
+                                .width(Length::Fill),
+                            song_row::duration(duration, 11),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),

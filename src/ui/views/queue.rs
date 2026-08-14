@@ -40,6 +40,9 @@ pub fn view<'a>(
                 .width(song_row::MARKER_WIDTH + 8 + song_row::NUMBER_WIDTH)
                 .align_x(iced::alignment::Horizontal::Right)
                 .color(AppColors::TEXT_MUTED),
+            // Holds the action group's slot so the header's FillPortions get
+            // exactly the same share of the row as the data's do.
+            Space::with_width(ACTIONS_WIDTH),
             text("Title").size(11).width(Length::FillPortion(3)).color(AppColors::TEXT_MUTED),
             text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
             text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
@@ -48,10 +51,6 @@ pub fn view<'a>(
                 .width(song_row::DURATION_WIDTH)
                 .align_x(iced::alignment::Horizontal::Right)
                 .color(AppColors::TEXT_MUTED),
-            // Reserves the action group's width. Without it the header's
-            // FillPortion columns get ~134px more to share than the rows do,
-            // and every label sits visibly right of the data under it.
-            Space::with_width(ACTIONS_WIDTH),
         ]
         .spacing(8)
         .padding([4, 12]),
@@ -178,11 +177,11 @@ pub fn view<'a>(
                 row![
                     song_row::playing_marker(is_current),
                     song_row::number(format!("{}", pos + 1), 12),
+                    actions,
                     title_btn,
                     artist_btn,
                     album_btn,
                     song_row::duration(song.format_duration(), 11),
-                    actions,
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),

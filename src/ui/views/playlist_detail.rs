@@ -92,69 +92,64 @@ pub fn view<'a>(
         // in practice — it's here only to make the row build if it did.
         let pos = song.pos.unwrap_or(i as u32);
 
+        // This row used to split its actions across *both* sides of the title —
+        // play/add/next leading, move/playlist/remove trailing. All seven now
+        // sit together, in the same slot every other track list uses.
+        let actions = row![
+            icon_btn_tip(
+                icon::PLAY,
+                "Play now",
+                Message::PlaylistPlayAt(playlist_name.to_string(), pos)
+            ),
+            icon_btn_tip(
+                icon::ADD_QUEUE,
+                "Add to end of queue",
+                Message::QueueAddOnly(song.file.clone())
+            ),
+            icon_btn_tip(
+                icon::PLAY_NEXT,
+                "Play next",
+                Message::QueueAddNext(song.file.clone())
+            ),
+            // Disabled at the ends like the queue's: moving the first entry up
+            // is already a no-op in the handler, and moving the last one down
+            // sent MPD a range it could only reject.
+            icon_btn_tip_maybe(
+                icon::MOVE_UP,
+                "Move up in playlist",
+                (i > 0).then(|| Message::PlaylistMoveSongUp(playlist_name.to_string(), pos))
+            ),
+            icon_btn_tip_maybe(
+                icon::MOVE_DOWN,
+                "Move down in playlist",
+                (i + 1 < songs.len())
+                    .then(|| Message::PlaylistMoveSongDown(playlist_name.to_string(), pos))
+            ),
+            icon_btn_tip(
+                icon::ADD_PLAYLIST,
+                "Add to playlist…",
+                Message::OpenAddToPlaylist(vec![song.file.clone()])
+            ),
+            icon_btn_danger(
+                icon::REMOVE,
+                "Remove from playlist",
+                Message::PlaylistRemoveSong(playlist_name.to_string(), pos)
+            ),
+        ]
+        .spacing(song_row::ACTION_SPACING)
+        .width(song_row::action_group_width(7));
+
         track_list = track_list.push(
             container(
-                // This row used to split its actions across *both* sides of the
-                // title — play/add/next leading, move/playlist/remove
-                // trailing. All seven now sit together on the right, matching
-                // every other track list.
                 row![
                     song_row::playing_marker(is_current),
                     song_row::number((pos + 1).to_string(), 13),
+                    actions,
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
                         .color(song_row::title_color(is_current)),
                     song_row::duration(song.format_duration(), 12),
-                    row![
-                        icon_btn_tip(
-                            icon::PLAY,
-                            "Play now",
-                            Message::PlaylistPlayAt(playlist_name.to_string(), pos)
-                        ),
-                        icon_btn_tip(
-                            icon::ADD_QUEUE,
-                            "Add to end of queue",
-                            Message::QueueAddOnly(song.file.clone())
-                        ),
-                        icon_btn_tip(
-                            icon::PLAY_NEXT,
-                            "Play next",
-                            Message::QueueAddNext(song.file.clone())
-                        ),
-                        // Disabled at the ends like the queue's: moving the
-                        // first entry up is already a no-op in the handler,
-                        // and moving the last one down sent MPD a range it
-                        // could only reject.
-                        icon_btn_tip_maybe(
-                            icon::MOVE_UP,
-                            "Move up in playlist",
-                            (i > 0).then(|| Message::PlaylistMoveSongUp(
-                                playlist_name.to_string(),
-                                pos
-                            ))
-                        ),
-                        icon_btn_tip_maybe(
-                            icon::MOVE_DOWN,
-                            "Move down in playlist",
-                            (i + 1 < songs.len()).then(|| Message::PlaylistMoveSongDown(
-                                playlist_name.to_string(),
-                                pos
-                            ))
-                        ),
-                        icon_btn_tip(
-                            icon::ADD_PLAYLIST,
-                            "Add to playlist…",
-                            Message::OpenAddToPlaylist(vec![song.file.clone()])
-                        ),
-                        icon_btn_danger(
-                            icon::REMOVE,
-                            "Remove from playlist",
-                            Message::PlaylistRemoveSong(playlist_name.to_string(), pos)
-                        ),
-                    ]
-                    .spacing(song_row::ACTION_SPACING)
-                    .width(song_row::action_group_width(7)),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),

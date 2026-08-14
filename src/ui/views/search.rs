@@ -83,12 +83,34 @@ pub fn view<'a>(
             let bg = song_row::row_bg(row_index, is_current);
             row_index += 1;
 
+            let actions = row![
+                icon_btn_tip(icon::PLAY, "Play now", Message::PlaySong(song.file.clone())),
+                icon_btn_tip(
+                    icon::ADD_QUEUE,
+                    "Add to end of queue",
+                    Message::QueueAddOnly(song.file.clone())
+                ),
+                icon_btn_tip(
+                    icon::PLAY_NEXT,
+                    "Play next",
+                    Message::QueueAddNext(song.file.clone())
+                ),
+                icon_btn_tip(
+                    icon::ADD_PLAYLIST,
+                    "Add to playlist…",
+                    Message::OpenAddToPlaylist(vec![song.file.clone()])
+                ),
+            ]
+            .spacing(song_row::ACTION_SPACING)
+            .width(song_row::action_group_width(4));
+
             result_list = result_list.push(
                 container(
                     row![
                         Space::with_width(8),
                         song_row::playing_marker(is_current),
                         song_row::number(track.to_string(), 12),
+                        actions,
                         text(song.display_title())
                             .size(12)
                             .color(song_row::title_color(is_current))
@@ -98,30 +120,6 @@ pub fn view<'a>(
                             .color(AppColors::TEXT_SECONDARY)
                             .width(Length::FillPortion(2)),
                         song_row::duration(song.format_duration(), 11),
-                        row![
-                            icon_btn_tip(
-                                icon::PLAY,
-                                "Play now",
-                                Message::PlaySong(song.file.clone())
-                            ),
-                            icon_btn_tip(
-                                icon::ADD_QUEUE,
-                                "Add to end of queue",
-                                Message::QueueAddOnly(song.file.clone())
-                            ),
-                            icon_btn_tip(
-                                icon::PLAY_NEXT,
-                                "Play next",
-                                Message::QueueAddNext(song.file.clone())
-                            ),
-                            icon_btn_tip(
-                                icon::ADD_PLAYLIST,
-                                "Add to playlist…",
-                                Message::OpenAddToPlaylist(vec![song.file.clone()])
-                            ),
-                        ]
-                        .spacing(song_row::ACTION_SPACING)
-                        .width(song_row::action_group_width(4)),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center),
