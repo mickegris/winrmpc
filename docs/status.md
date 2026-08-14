@@ -5,9 +5,9 @@ next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
 Last updated: 2026-08-14. Branch: `improve/cross-platform-and-ui` — **all five
-plans implemented plus the lyrics sync work**, version bumped to **0.4.2**,
-release CI added. **Nothing pushed: 10 commits sit locally, awaiting manual
-testing.**
+plans implemented, plus lyrics sync/scroll, a track-list layout pass, release
+CI and the 0.4.2 bump**. Merged to `main` and **not yet tagged**: the tag is
+what publishes, and the visual work still needs a look on a real screen.
 
 **v0.4.1 shipped.** `release/v0.4.1` was merged to `main` (PR #20, commit
 `a810419`) and tagged `v0.4.1`. Everything in the sections below describing
@@ -58,7 +58,23 @@ Then, on top of the five plans:
 |---|---|---|
 | Lyrics sync/scroll toggle | `66cb985` | **verified against real LRCLIB data** |
 | Version bump to 0.4.2 | `283c5b6` | crate description no longer says "Windows" |
-| Release CI | `a91432d` | not yet run — no workflow has ever executed for this repo |
+| Release CI | `a91432d` | **not yet run** — no workflow has ever executed for this repo |
+| Queue row/header alignment | `40ace14` | disabled-not-omitted actions; derived widths |
+| Track-list column order | `118ed34` | four passes with the user; final order below |
+| ship/release skills | `6d57337` | rewritten for CI-built binaries |
+
+**Track-list column order**, now identical in all five lists (album, search,
+browser, playlist detail, queue):
+
+```
+[playing marker] [play] [number] [title Fill] … [length] [function buttons]
+```
+
+Play is the primary action so it leads, beside the number and title it acts
+on; the rest are secondary and follow the length. The queue gained a leading
+play button it never had (`QueuePlay(pos)`, **not** `PlaySong(uri)` — that
+would enqueue a second copy). Everything before the `Fill` title is
+fixed-width, which is what keeps rows from drifting against each other.
 
 Each plan file now carries a "What was actually built" section and a status
 banner; the durable rules landed in CLAUDE.md.
@@ -277,9 +293,15 @@ migration.
 
 ## Suggested next steps — manual testing, then release
 
-Nothing is pushed. The local release build is at `target/release/winrmpc`, and
+Merged, not tagged. The local release build is at `target/release/winrmpc`, and
 `dist/winrmpc-v0.4.2-linux-x86_64.tar.gz` is the artifact CI would produce
 (binary + `packaging/linux/` + README + LICENSE).
+
+**The workflow had to reach `main` before it could be run at all** —
+`workflow_dispatch` is only offered for workflows already on the default
+branch. That is why this batch was shipped before being tagged, and it is a
+one-time constraint: from here, a manual run can build an `.exe` from any
+branch.
 
 1. **Run the app and look at it.** Everything visual is unverified: icon
    glyphs and tooltips, the playing-row highlight, the lyrics Sync/Scroll
