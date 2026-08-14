@@ -1,7 +1,8 @@
 use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::icon_btn;
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::icon_btn_tip;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -77,16 +78,34 @@ pub fn view<'a>(
 
         match entry {
             DirectoryEntry::File(s) => {
-                // File rows show: [file] | artist – title | duration | ▶ | ＋
+                // File rows carry the same four actions as the album, search and
+                // playlist track lists — see the row-action table in CLAUDE.md.
                 let label = format!("{} – {}", s.display_artist(), s.display_title());
                 let duration = s.format_duration();
                 let file_uri = s.file.clone();
-                let play_uri = file_uri.clone();
                 items = items.push(
                     container(
                         row![
-                            icon_btn("▶", Message::PlaySong(play_uri)),
-                            icon_btn("+", Message::QueueAddOnly(file_uri)),
+                            icon_btn_tip(
+                                icon::PLAY,
+                                "Play now",
+                                Message::PlaySong(file_uri.clone())
+                            ),
+                            icon_btn_tip(
+                                icon::ADD_QUEUE,
+                                "Add to end of queue",
+                                Message::QueueAddOnly(file_uri.clone())
+                            ),
+                            icon_btn_tip(
+                                icon::PLAY_NEXT,
+                                "Play next",
+                                Message::QueueAddNext(file_uri.clone())
+                            ),
+                            icon_btn_tip(
+                                icon::ADD_PLAYLIST,
+                                "Add to playlist…",
+                                Message::OpenAddToPlaylist(vec![file_uri])
+                            ),
                             text(label)
                                 .size(13)
                                 .color(AppColors::TEXT_PRIMARY)

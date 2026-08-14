@@ -1,7 +1,8 @@
 use crate::mpd::types::*;
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::{icon_btn, link, link_accent};
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::{link, link_accent, link_icon};
 use iced::widget::{button, column, container, image, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -32,7 +33,7 @@ pub fn view<'a>(
         Space::with_width(12),
         link("Partitions", 12, Message::NavigateTo(View::Partitions)),
         Space::with_width(12),
-        link("\u{1F551} History", 12, Message::NavigateTo(View::RecentlyPlayed)),
+        link_icon(icon::HISTORY, "History", 12, Message::NavigateTo(View::RecentlyPlayed)),
         Space::with_width(Length::Fill),
         lyrics_toggle(show_lyrics),
     ]
@@ -89,8 +90,9 @@ pub fn view<'a>(
             ];
 
             if let Some(name) = playing_from {
-                info_items.push(link(
-                    format!("▤ Playing from {name}"),
+                info_items.push(link_icon(
+                    icon::QUEUE_MUSIC,
+                    format!("Playing from {name}"),
                     13,
                     Message::PlaylistSelected(name.to_string()),
                 ));
@@ -131,7 +133,7 @@ pub fn view<'a>(
                     info_items.push(
                         button(
                             row![
-                                text("▶  ").size(13).color(AppColors::ACCENT),
+                                icon::icon_sized(icon::PLAY, 13).color(AppColors::ACCENT),
                                 text(next.display_title())
                                     .size(14)
                                     .color(AppColors::TEXT_PRIMARY),
@@ -379,7 +381,7 @@ fn lyrics_column<'a>(
     let inner: Element<'a, Message> = match lyrics {
         None => centered_note("Loading lyrics…"),
         Some(None) => centered_note("No lyrics available"),
-        Some(Some(l)) if l.instrumental => centered_note("♪ Instrumental"),
+        Some(Some(l)) if l.instrumental => centered_icon_note(icon::MUSIC_NOTE, "Instrumental"),
 
         Some(Some(l)) => {
             // Prefer synced (for highlighting); fall back to plain text.
@@ -449,6 +451,24 @@ fn lyrics_column<'a>(
 }
 
 /// A short note centered in the lyrics pane (loading / not found / instrumental).
+/// [`centered_note`] with a leading icon — separate widgets because the glyph
+/// needs the bundled icon font and the label does not.
+fn centered_icon_note<'a>(glyph: &'static str, msg: &'a str) -> Element<'a, Message> {
+    container(
+        row![
+            icon::icon_sized(glyph, 16).color(AppColors::TEXT_MUTED),
+            text(msg).size(14).color(AppColors::TEXT_MUTED),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
 fn centered_note<'a>(msg: &'a str) -> Element<'a, Message> {
     container(text(msg).size(14).color(AppColors::TEXT_MUTED))
         .center_x(Length::Fill)

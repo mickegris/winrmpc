@@ -3,7 +3,8 @@
 use crate::mpd::types::Song;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::icon_btn;
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::{icon_btn_danger, icon_btn_tip};
 use iced::widget::{button, container, image, row, text, Column, Space};
 use iced::{Alignment, Element, Length};
 
@@ -91,12 +92,21 @@ pub fn view<'a>(
         track_list = track_list.push(
             container(
                 row![
-                    icon_btn(
-                        "▶",
+                    icon_btn_tip(
+                        icon::PLAY,
+                        "Play now",
                         Message::PlaylistPlayAt(playlist_name.to_string(), pos)
                     ),
-                    icon_btn("+", Message::QueueAddOnly(song.file.clone())),
-                    icon_btn("⏭", Message::QueueAddNext(song.file.clone())),
+                    icon_btn_tip(
+                        icon::ADD_QUEUE,
+                        "Add to end of queue",
+                        Message::QueueAddOnly(song.file.clone())
+                    ),
+                    icon_btn_tip(
+                        icon::PLAY_NEXT,
+                        "Play next",
+                        Message::QueueAddNext(song.file.clone())
+                    ),
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
@@ -104,40 +114,26 @@ pub fn view<'a>(
                     text(song.format_duration())
                         .size(12)
                         .color(AppColors::TEXT_MUTED),
-                    icon_btn(
-                        "↑",
+                    icon_btn_tip(
+                        icon::MOVE_UP,
+                        "Move up in playlist",
                         Message::PlaylistMoveSongUp(playlist_name.to_string(), pos)
                     ),
-                    icon_btn(
-                        "↓",
+                    icon_btn_tip(
+                        icon::MOVE_DOWN,
+                        "Move down in playlist",
                         Message::PlaylistMoveSongDown(playlist_name.to_string(), pos)
                     ),
-                    button(text("☰").size(13))
-                        .on_press(Message::OpenAddToPlaylist(vec![song.file.clone()]))
-                        .padding([2, 8])
-                        .style(|_t: &iced::Theme, s: button::Status| button::Style {
-                            background: None,
-                            text_color: match s {
-                                button::Status::Hovered | button::Status::Pressed => {
-                                    AppColors::ACCENT
-                                }
-                                _ => AppColors::TEXT_MUTED,
-                            },
-                            border: iced::Border::default(),
-                            shadow: iced::Shadow::default(),
-                        }),
-                    button(text("×").size(14))
-                        .on_press(Message::PlaylistRemoveSong(
-                            playlist_name.to_string(),
-                            pos
-                        ))
-                        .padding([2, 8])
-                        .style(|_t: &iced::Theme, _s: button::Status| button::Style {
-                            background: None,
-                            text_color: AppColors::ERROR,
-                            border: iced::Border::default(),
-                            ..Default::default()
-                        }),
+                    icon_btn_tip(
+                        icon::ADD_PLAYLIST,
+                        "Add to playlist…",
+                        Message::OpenAddToPlaylist(vec![song.file.clone()])
+                    ),
+                    icon_btn_danger(
+                        icon::REMOVE,
+                        "Remove from playlist",
+                        Message::PlaylistRemoveSong(playlist_name.to_string(), pos)
+                    ),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),

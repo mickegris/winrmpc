@@ -1,6 +1,7 @@
 use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::icon;
 use iced::widget::{button, column, container, pick_list, row, slider, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -107,11 +108,11 @@ pub fn view<'a>(
     let crossfade_control = row![
         text("Crossfade").size(12).color(AppColors::TEXT_SECONDARY),
         Space::with_width(Length::Fill),
-        small_btn("−", Message::SetCrossfade(crossfade_secs.saturating_sub(1))),
+        small_icon_btn(icon::MINUS, Message::SetCrossfade(crossfade_secs.saturating_sub(1))),
         text(format!("{crossfade_secs}s"))
             .size(13)
             .color(AppColors::TEXT_PRIMARY),
-        small_btn("+", Message::SetCrossfade(crossfade_secs + 1)),
+        small_icon_btn(icon::ADD_QUEUE, Message::SetCrossfade(crossfade_secs + 1)),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
@@ -265,6 +266,25 @@ fn format_time(secs: f64) -> String {
 }
 
 /// Compact square button for the crossfade −/+ steppers.
+/// [`small_btn`] with an icon-font glyph instead of a text label. The `+`/`−`
+/// pair has to go through the icon font together: `−` (U+2212) is not in every
+/// system font, and a matched pair drawn from two different fonts looks it.
+fn small_icon_btn<'a>(glyph: &'static str, msg: Message) -> Element<'a, Message> {
+    button(icon::icon_sized(glyph, 13).color(AppColors::TEXT_PRIMARY))
+        .padding([2, 8])
+        .on_press(msg)
+        .style(|_t: &iced::Theme, _s| button::Style {
+            background: Some(AppColors::BG_SECONDARY.into()),
+            text_color: AppColors::TEXT_SECONDARY,
+            border: iced::Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 fn small_btn(label: &str, msg: Message) -> Element<'_, Message> {
     button(text(label).size(13).color(AppColors::TEXT_PRIMARY))
         .padding([2, 8])

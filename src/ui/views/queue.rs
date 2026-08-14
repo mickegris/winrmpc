@@ -1,7 +1,8 @@
 use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::icon_btn;
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::{icon_btn_danger, icon_btn_tip};
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -124,19 +125,31 @@ pub fn view<'a>(
             shadow: iced::Shadow::default(),
         });
 
+        // No "add to end of queue" here: these rows already *are* the queue.
+        // See the row-action table in CLAUDE.md.
         let mut actions = row![].spacing(2);
         if i > 0 {
-            actions = actions.push(icon_btn("▲", Message::QueueMoveUp(pos)));
+            actions =
+                actions.push(icon_btn_tip(icon::MOVE_UP, "Move up", Message::QueueMoveUp(pos)));
         }
         if i + 1 < queue.len() {
-            actions = actions.push(icon_btn("▼", Message::QueueMoveDown(pos)));
+            actions = actions.push(icon_btn_tip(
+                icon::MOVE_DOWN,
+                "Move down",
+                Message::QueueMoveDown(pos),
+            ));
         }
-        actions = actions.push(icon_btn(
-            "☰",
+        actions = actions.push(icon_btn_tip(
+            icon::ADD_PLAYLIST,
+            "Add to playlist…",
             Message::OpenAddToPlaylist(vec![song.file.clone()]),
         ));
         if let Some(id) = song.id {
-            actions = actions.push(icon_btn("✕", Message::QueueRemove(id)));
+            actions = actions.push(icon_btn_danger(
+                icon::REMOVE,
+                "Remove from queue",
+                Message::QueueRemove(id),
+            ));
         }
 
         items = items.push(

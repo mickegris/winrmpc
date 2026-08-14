@@ -1,7 +1,8 @@
 use crate::mpd::types::Song;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::icon_btn;
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::icon_btn_tip;
 use iced::widget::{button, container, image, row, text, Column, Space};
 use iced::{Alignment, Element, Length};
 
@@ -176,10 +177,22 @@ pub fn view<'a>(
         track_list = track_list.push(
             container(
                 row![
-                    icon_btn("▶", Message::PlaySong(song.file.clone())),
-                    icon_btn("+", Message::QueueAddOnly(song.file.clone())),
-                    icon_btn("⏭", Message::QueueAddNext(song.file.clone())),
-                    icon_btn("☰", Message::OpenAddToPlaylist(vec![song.file.clone()])),
+                    icon_btn_tip(icon::PLAY, "Play now", Message::PlaySong(song.file.clone())),
+                    icon_btn_tip(
+                        icon::ADD_QUEUE,
+                        "Add to end of queue",
+                        Message::QueueAddOnly(song.file.clone())
+                    ),
+                    icon_btn_tip(
+                        icon::PLAY_NEXT,
+                        "Play next",
+                        Message::QueueAddNext(song.file.clone())
+                    ),
+                    icon_btn_tip(
+                        icon::ADD_PLAYLIST,
+                        "Add to playlist…",
+                        Message::OpenAddToPlaylist(vec![song.file.clone()])
+                    ),
                     text(track_num.to_string())
                         .size(13)
                         .width(30)

@@ -3,16 +3,27 @@
 use crate::logger::LogEntry;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::icon;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
-use iced::{Element, Length};
+use iced::{Alignment, Element, Length};
 
 pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Message> {
     let title = text("Log")
         .size(24)
         .color(AppColors::TEXT_PRIMARY);
 
-    let toggle_label = if show_mpd_only { "MPD only ✓" } else { "All logs" };
-    let toggle_btn = button(text(toggle_label).size(12))
+    let toggle_inner: Element<'_, Message> = if show_mpd_only {
+        row![
+            text("MPD only").size(12),
+            icon::icon_sized(icon::CHECK, 13),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        text("All logs").size(12).into()
+    };
+    let toggle_btn = button(toggle_inner)
         .on_press(Message::LogToggleMpdOnly)
         .padding([4, 12]);
 
@@ -77,14 +88,28 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
                 .strip_prefix("winrmpc::")
                 .unwrap_or(&entry.target);
 
-            let prefix = if slow { "⚠ " } else { "" };
-            let line = text(format!(
-                "{prefix}{} {:5} {}  {}",
+            let message = text(format!(
+                "{} {:5} {}  {}",
                 entry.timestamp, entry.level, target, entry.message
             ))
             .size(11)
             .color(level_color)
             .font(iced::Font::MONOSPACE);
+
+            // The slow-command marker has to be its own widget: the log line is
+            // monospace and the marker comes from the icon font, and one `text`
+            // can only carry one font. The fixed-width cell keeps every line's
+            // text starting at the same x, marked or not.
+            let marker: Element<'_, Message> = if slow {
+                icon::icon_sized(icon::WARNING, 12)
+                    .color(AppColors::WARNING)
+                    .into()
+            } else {
+                Space::with_width(0).into()
+            };
+            let line = row![container(marker).width(16), message]
+                .spacing(2)
+                .align_y(Alignment::Center);
 
             let bg = if i % 2 == 0 {
                 AppColors::ROW_EVEN

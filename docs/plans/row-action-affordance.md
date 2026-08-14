@@ -2,6 +2,12 @@
 
 Part of [cross-platform-and-ui-0.4.2](cross-platform-and-ui-0.4.2.md).
 
+> **Status (2026-08-14): implemented — A, B, C and D. E was considered and
+> declined.** See "What was actually built" at the bottom. The one thing still
+> outstanding is the acceptance criterion itself: **the icons have not been
+> seen rendered by iced on any platform**, only rasterised directly from the
+> font file. That check needs the running app.
+
 ## The report
 
 > Buttons for adding to playlist and add next look weird, hard to understand
@@ -161,9 +167,86 @@ Album and playlist rows have width to spare at the 1000px minimum window size.
 Not proposing it as the default — four text buttons per row would be heavy —
 but worth a look during implementation for the one or two rows where it fits.
 
+## What was actually built
+
+**A — bundled icon font.** Option 1 from the plan: a subsetted open-licence
+icon set, not a general font. `assets/fonts/winrmpc-icons.ttf` is a 17-glyph,
+~2.6 KB subset of Material Symbols Outlined (Apache-2.0), registered once via
+`iced::application().font(icon::FONT_BYTES)`. `src/ui/widgets/icon.rs` owns it
+and exposes one `pub const` per glyph.
+
+Three build details that were not obvious from the plan:
+
+- **The upstream font is variable, and had to be instanced.** iced never sets
+  variation coordinates, so shipping a variable font leaves the rendered
+  weight to whatever default the rasteriser picks. Axes are pinned
+  (`FILL`/`GRAD`/`opsz`/`wght`) before subsetting.
+- **`FILL=0` for everything except the status dot.** Outlined reads better at
+  15-16px, but `fiber_manual_record` at `FILL=0` is a hollow ring, and that
+  glyph's whole job is to be a solid dot. It is instanced separately at
+  `FILL=1` and merged in.
+- **The family is renamed to `winrmpc Icons`.** Left as "Material Symbols
+  Outlined", a system-installed copy of the *full* family could win the family
+  lookup and supply glyphs this subset doesn't have — a subtler version of the
+  same class of bug the plan is about.
+
+`packaging/fonts/build-icon-font.py` does all of it and is committed;
+`fonttools` is a dev-only dependency, not part of `cargo build`.
+
+**The audit was completed, and it was wider than the four row actions.** Every
+non-ASCII literal in `src/ui/` was reviewed and sorted into three piles:
+
+- *Routed through the icon font* — the four row actions, plus `↑↓▲▼✕×` (queue,
+  playlist, server and playlist-delete rows), `▦`/`☰` (layout toggle), `●`
+  (Snapcast and server status), `⚠` (Log), `♪`/`▤` (Now Playing), `−` (player
+  bar crossfade), `🕐` (History link) and `✓` (Log filter).
+- *Left as text* — `…`, `–`, `—`, `·`. General Punctuation, covered
+  essentially everywhere; the ellipsis in "Add to playlist…" is deliberate.
+- *Re-picked* — `→` was **not** left as text. It is in the Arrows block, whose
+  coverage in system sans fonts is much less certain than punctuation, so the
+  Outputs view's "move to partition" buttons now use `ARROW_FORWARD`.
+
+Mixed icon+text strings had to become two widgets each (`link_icon`,
+`layout_toggle`, `centered_icon_note`, and the Log view's slow-command
+marker): one `text` carries one font, so `"🕐 History"` could only ever render
+one half correctly. The Log marker also needed a fixed-width cell so the
+monospace lines still start at the same x whether marked or not.
+
+**B — tooltips.** `icon_btn_tip(glyph, tip, msg)` is now the default for row
+actions, with `icon_btn_danger` for destructive ones (it keeps the `ERROR`
+colour the hand-rolled delete buttons had). Tooltips are placed `Top`, not to
+the side, because the right-most actions sit near the window edge. `icon_btn`
+survives as the untooltipped primitive.
+
+**C — the two bad glyphs.** `⏭` → `PLAY_NEXT` (`queue_play_next`), `☰` →
+`ADD_PLAYLIST` (`playlist_add`), which frees `LIST` to mean list-layout
+unambiguously.
+
+**D — consistency sweep.** `playlist_detail.rs`'s two hand-rolled buttons now
+go through the shared helpers. The per-view action set is written down as a
+table in CLAUDE.md, with the two gaps stated as decisions rather than left as
+accidents: the queue has no "add to end of queue" (those rows *are* the
+queue), and only reorderable lists get move arrows. Browser file rows gained
+the full four actions.
+
+**E — declined.** Text labels in low-density rows were considered and not
+done: with tooltips carrying the meaning, four text buttons per row costs
+width in every view for a benefit only the widest windows would see. Now
+Playing keeps its `+ Add to Playlist` text link.
+
+Test count went 185 → 189. The four new ones parse the committed TTF's `cmap`
+directly and assert every constant resolves to a glyph, that the font carries
+no glyph without a constant, that no two constants collide, and that the
+family name is the bundled one — the same "committed binary asset can't
+drift" shape as `packaged_png_assets_match_the_generator`.
+
 ## How to confirm on the real OS
 
-The whole point of A is that this cannot be verified by reading code:
+The whole point of A is that this cannot be verified by reading code. **This
+has not been done yet.** The glyphs were rasterised straight from the built
+font file to confirm each codepoint draws the intended icon, but that proves
+the font is correct, *not* that iced resolves the bundled family at runtime —
+which is the actual claim:
 
 - **Before, on macOS and Linux**: screenshot an album track list. Expect tofu
   boxes (□) where `▶ + ⏭ ☰` should be. Confirm which of the *other* glyphs in

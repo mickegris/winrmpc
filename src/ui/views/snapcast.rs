@@ -5,6 +5,7 @@
 use crate::snapcast::{SnapClient, SnapGroup};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::icon;
 use iced::widget::{button, column, container, pick_list, row, scrollable, slider, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -173,7 +174,7 @@ fn client_row<'a>(client: &'a SnapClient) -> Element<'a, Message> {
     let was_muted = client.muted;
 
     row![
-        text("●").size(10).color(dot_color),
+        icon::icon_sized(icon::DOT, 10).color(dot_color),
         text(client.display_name().to_string())
             .size(13)
             .color(name_color)

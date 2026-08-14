@@ -2,6 +2,7 @@
 use crate::mpd::types::{Output, Partition};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::icon;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -19,9 +20,15 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
         // Build one "Move to X" button per partition
         let mut move_buttons = row![].spacing(4);
         for partition in partitions {
-            let btn_label = format!("→ {}", partition.name);
             move_buttons = move_buttons.push(
-                button(text(btn_label).size(11))
+                button(
+                    row![
+                        icon::icon_sized(icon::ARROW_FORWARD, 12),
+                        text(partition.name.clone()).size(11),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
                     .on_press(Message::MoveOutput {
                         output_name: output.name.clone(),
                         target_partition: partition.name.clone(),

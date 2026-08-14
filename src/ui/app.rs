@@ -7,6 +7,7 @@ use crate::store::Store;
 use crate::mpd::types::{push_recent, *};
 use crate::ui::message::{ArtOutcome, Message, View};
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::icon;
 use crate::ui::views;
 use crate::ui::widgets;
 use iced::widget::{column, container, image::Handle as ImageHandle, row, scrollable};
@@ -3379,7 +3380,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 let addr_text = text(server.addr()).size(11).color(AppColors::TEXT_MUTED);
 
                 let connect_btn: Element<'_, Message> = if is_active {
-                    text("●").size(13).color(AppColors::SUCCESS).into()
+                    icon::icon_sized(icon::DOT, 13).color(AppColors::SUCCESS).into()
                 } else {
                     button(text("Connect").size(11))
                         .on_press(Message::SwitchServer(server.name.clone()))
@@ -3445,7 +3446,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                     quiet_btn("Rename", Message::StartRename(server.name.clone())).into();
 
                 let remove_btn: Element<'_, Message> = if can_remove {
-                    button(text("×").size(13))
+                    button(icon::icon_sized(icon::REMOVE, 13))
                         .on_press(Message::RemoveServer(server.name.clone()))
                         .padding([3, 8])
                         .style(|_t: &iced::Theme, _s: button::Status| button::Style {

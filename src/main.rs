@@ -43,6 +43,11 @@ fn main() -> iced::Result {
     iced::application("winrmpc", App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
+        // Register the bundled icon font. Without this the row-action glyphs
+        // resolve through *system* fonts — which is why they rendered as tofu
+        // boxes on every machine without `Segoe UI Symbol`, i.e. all of macOS
+        // and Linux. See `ui::widgets::icon`.
+        .font(ui::widgets::icon::FONT_BYTES)
         .window(window_settings())
         .run_with(App::new)
 }
