@@ -4,8 +4,8 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-14. Branch: `improve/cross-platform-and-ui` — planning
-only so far, no code changes yet.
+Last updated: 2026-08-14. Branch: `improve/cross-platform-and-ui` — **all five
+plans implemented**, one commit each, not yet merged.
 
 **v0.4.1 shipped.** `release/v0.4.1` was merged to `main` (PR #20, commit
 `a810419`) and tagged `v0.4.1`. Everything in the sections below describing
@@ -37,24 +37,53 @@ only the Queue highlights the playing track; and macOS storage works but lives
 in `~/Library/…/com.winrmpc.winrmpc/`, which Finder hides — that's the whole
 of the "couldn't find the config file" report.
 
-### Done so far on this branch
+### Done on this branch — all five plans
 
-**Linux app icon + desktop integration** (plan 1, steps A–C). One shared
-generator in `src/icon_design.rs` feeding the window icon, the Windows ICO and
-new `packaging/linux/` assets; `application_id` wired up so Wayland can match
-the `.desktop` file; `install.sh` with user/system prefixes and `--uninstall`;
-README section. 185 offline tests (was 181), zero warnings. The install and
-uninstall paths were exercised against a scratch prefix and the `.desktop`
-file passes `desktop-file-validate` — but **the icon has not been seen on a
-real Wayland or X11 session**, which is the only thing that actually proves it.
-macOS still has no `.app` bundle and therefore still no icon.
+One commit per plan, in the umbrella's suggested order. **202 offline tests
+(was 181), 13 live, zero build warnings.**
 
-**Nothing else here is verified on real macOS or Linux hardware.** Every claim is
-sourced from the vendored `iced 0.13.1` / `iced_winit 0.13.0` /
-`winit 0.30.13` / `Cargo.lock` with file:line references, and each plan ends
-with a "How to confirm on the real OS" section that is the actual acceptance
-criterion. Suggested implementation order: affordance → network → highlighting
-→ storage → icons.
+| Plan | Commit | State |
+|---|---|---|
+| 1 — app icon | `190f14e` | steps A–C done; **D (macOS `.app`) and E (release flow) not done** |
+| 4 — row actions | `a44e9f3` | A–D done, E declined |
+| 5 — network | `8868b0a` | all five steps + the optional deadline; **verified on Linux** |
+| 3 — highlighting | `7812d5c` | A–C done, D deferred as planned, E out of scope |
+| 2 — storage | `8c21f53` | A–E done |
+
+Each plan file now carries a "What was actually built" section and a status
+banner; the durable rules landed in CLAUDE.md.
+
+**What is actually verified, and what is not.** Plan 5 is the only one proven
+against reality: `openssl-sys` and `native-tls` are gone from the dependency
+tree, and the new `live_tls_reaches_every_lookup_host` gets HTTP 200 from
+MusicBrainz, Cover Art Archive, Wikipedia and LRCLIB on Linux, with
+`live_wikipedia_bios_for_awkward_tags` still resolving all ten awkward tags.
+The Linux config/cache paths were confirmed on disk.
+
+Everything visual is **code-verified only**. Nobody has seen the bundled icon
+font render in iced, the tooltips, the playing-row highlight, or Settings →
+Storage. The icon glyphs were rasterised directly from the built `.ttf` to
+confirm each codepoint draws the intended shape, which proves the *font* is
+right but not that iced resolves the bundled family at runtime. The window
+icon has still not been seen on a real Wayland or X11 session, and macOS has
+no `.app` bundle so it still has no icon at all.
+
+**The GUI has not been launched this session, deliberately.** The previous
+session ended in a hard machine freeze — kernel log shows
+`xe … [drm] *ERROR* [CRTC:151:pipe A] flip_done timed out` seconds after the
+last edit, then an unclean reboot. That is a display-driver hang, and the
+likely trigger was launching this very (wgpu) app to check the Wayland icon.
+Worth knowing before running it again.
+
+**One self-inflicted incident, recorded because it cost real data.** A test
+written for plan 2 called `AppConfig::save_and_log()`, which resolves the
+*real* user config path — running `cargo test` overwrote
+`~/.config/winrmpc/config.toml` with defaults. Servers, radio stations and the
+saved partition in that file were lost and are not recoverable from the repo
+or the cache DB. The test was replaced with one that sets
+`WINRMPC_CONFIG_DIR` to a scratch dir, and the rule is now written down in
+CLAUDE.md: **never call `save()`/`save_and_log()` from a test without the env
+override in place.**
 
 ## Where things stood at v0.4.1
 
@@ -221,12 +250,20 @@ migration.
 
 ## Suggested next steps
 
-1. Work the five plans in the order given above, on
-   `improve/cross-platform-and-ui`.
-2. Build and run on **macOS and Linux** — the tofu-box and icon findings can
-   only be confirmed there, and they gate how wide the glyph audit in plan 4
-   has to be.
-3. Merge the branch into `release/v0.4.2` and ship via the `release` skill.
+1. **Run the app and look at it.** Everything visual on this branch is
+   unverified: icon glyphs, tooltips, the playing-row highlight, Settings →
+   Storage. Note the display-driver hang above before launching on this
+   machine.
+2. **Re-enter the MPD server in Settings** if the overwritten config had a
+   non-default one (see the incident note above).
+3. Run the live suite against the real server —
+   `WINRMPC_TEST_MPD=10.0.1.3:6600 WINRMPC_TEST_SNAPCAST=10.0.1.3:1705 cargo
+   test -- --ignored --test-threads=1` — since none of it has been run since
+   these changes landed.
+4. Decide on plan 1 steps D/E (macOS `.app` bundle + release flow) and plan 3
+   step D (album-level highlighting). Both were deferred deliberately, neither
+   blocks a release.
+5. Merge the branch into `release/v0.4.2` and ship via the `release` skill.
 
 ### Still open from v0.4.1
 
