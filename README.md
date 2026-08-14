@@ -189,6 +189,79 @@ For development builds (faster compilation, slower runtime):
 cargo build
 ```
 
+## Desktop integration (Linux)
+
+Running the binary directly works fine, but the window will have a generic
+icon and winrmpc won't show up in your application menu. `packaging/linux/`
+has everything needed to fix that — the same equalizer icon the Windows build
+embeds in its `.exe`, emitted as standard freedesktop icons.
+
+```bash
+cargo build --release
+./packaging/linux/install.sh
+```
+
+That installs, under `~/.local` by default:
+
+| What | Where |
+|---|---|
+| Desktop entry | `share/applications/io.github.mickegris.winrmpc.desktop` |
+| Icons (16–512px + SVG) | `share/icons/hicolor/*/apps/io.github.mickegris.winrmpc.*` |
+| Binary | `bin/winrmpc` (only if `target/release/winrmpc` exists) |
+
+For a system-wide install, set `PREFIX` (this needs root):
+```bash
+sudo PREFIX=/usr/local ./packaging/linux/install.sh
+```
+
+To remove everything it installed:
+```bash
+./packaging/linux/install.sh --uninstall
+```
+
+Make sure the install prefix's `bin/` is on your `PATH` — the desktop entry
+uses `Exec=winrmpc` and the launcher resolves it there. The script warns you if
+it isn't. You may need to log out and back in before the icon appears.
+
+### Why the extra step is needed on Wayland
+
+**Wayland has no per-window icon protocol.** An application cannot hand its
+compositor an icon at runtime the way it can on Windows or X11. Instead the
+compositor matches the window's `app_id` against the basename of an installed
+`.desktop` file and reads that file's `Icon=` key. So until the files above are
+installed, a Wayland window genuinely has no icon to show — nothing the app
+does at runtime can change that.
+
+Three strings have to match exactly for the chain to resolve, all of them
+`io.github.mickegris.winrmpc`: the `app_id` winrmpc sets at startup, the
+`.desktop` filename, and the icon filenames. They all come from one constant
+(`APP_ID` in `src/icon_design.rs`).
+
+X11 is less strict — it gets an icon from the running application either way —
+but still needs the desktop entry to appear in menus.
+
+### Regenerating the icons
+
+The icon is drawn procedurally, not stored as a source image, so one generator
+feeds all three platforms: the runtime window icon, the Windows `.ico` resource
+embedded by `build.rs`, and these Linux assets. The generated PNGs and SVG are
+committed so packaging needs no toolchain, but if you change the design in
+`src/icon_design.rs`, regenerate them:
+
+```bash
+cargo run --example emit_icons
+```
+
+`cargo test` fails if the committed assets fall behind the generator, so this
+can't be forgotten silently.
+
+### macOS
+
+Not yet packaged. macOS takes its Dock and Finder icon from an `.app` bundle's
+`.icns` file, and winrmpc doesn't build one — a bare binary gets the generic
+executable icon. Tracked in
+[`docs/plans/app-icon-cross-platform.md`](docs/plans/app-icon-cross-platform.md).
+
 ### Running tests
 
 ```bash

@@ -1,4 +1,12 @@
+// The icon geometry, shared verbatim with the app (`src/icon.rs`) and the
+// Linux asset emitter (`examples/emit_icons.rs`). A build script can't `use`
+// a crate module, so it is pulled in textually; `src/icon_design.rs` is
+// dependency-free precisely so this works.
+include!("src/icon_design.rs");
+
 fn main() {
+    println!("cargo:rerun-if-changed=src/icon_design.rs");
+
     // Only embed a Windows resource on Windows targets.
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() != "windows" {
         return;
@@ -85,51 +93,26 @@ fn make_bmp(size: u32) -> Vec<u8> {
     bmp
 }
 
-/// Generate bottom-up BGRA pixels for the icon at the given size.
+/// Convert the shared top-down RGBA design into the bottom-up BGRA layout a
+/// BMP-inside-an-ICO requires.
+///
+/// These two transforms — the row flip and the channel swizzle — are the only
+/// icon code that is genuinely Windows-specific. The drawing itself comes from
+/// `rgba_pixels`, so the ICO can no longer drift from the window icon.
 fn make_bgra(size: u32) -> Vec<u8> {
-    let mut px = vec![0u8; (size * size * 4) as usize];
-
-    let cx = (size as f32 - 1.0) / 2.0;
-    let cy = cx;
-    let r = size as f32 / 2.0 - 0.5;
+    let rgba = rgba_pixels(size);
+    let mut px = vec![0u8; rgba.len()];
 
     for y in 0..size {
+        // BMP rows run bottom-up.
+        let bmp_y = size - 1 - y;
         for x in 0..size {
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            // BMP is bottom-up
-            let bmp_y = size - 1 - y;
-            let i = ((bmp_y * size + x) * 4) as usize;
-
-            if (dx * dx + dy * dy).sqrt() <= r {
-                // Background: #1a1a2e → BGRA = 0x2e, 0x1a, 0x1a, 0xff
-                px[i] = 0x2e; px[i+1] = 0x1a; px[i+2] = 0x1a; px[i+3] = 0xff;
-            }
-        }
-    }
-
-    // Three equalizer bars: #4fc3f7 → BGRA = 0xf7, 0xc3, 0x4f, 0xff
-    let s = size as f32 / 32.0;
-    let bars: [(f32, f32, f32); 3] = [
-        (8.0, 11.0, 10.0),
-        (14.0, 7.0, 18.0),
-        (20.0, 10.0, 12.0),
-    ];
-    let bar_w = (4.0 * s).max(1.0) as u32;
-
-    for (bx, by, bh) in bars {
-        let bx = (bx * s) as u32;
-        let by = (by * s) as u32;
-        let bh = (bh * s).max(1.0) as u32;
-
-        for y in by..by + bh {
-            let bmp_y = size - 1 - y;
-            for x in bx..bx + bar_w {
-                if x < size && y < size {
-                    let i = ((bmp_y * size + x) * 4) as usize;
-                    px[i] = 0xf7; px[i+1] = 0xc3; px[i+2] = 0x4f; px[i+3] = 0xff;
-                }
-            }
+            let src = ((y * size + x) * 4) as usize;
+            let dst = ((bmp_y * size + x) * 4) as usize;
+            px[dst] = rgba[src + 2];     // B
+            px[dst + 1] = rgba[src + 1]; // G
+            px[dst + 2] = rgba[src];     // R
+            px[dst + 3] = rgba[src + 3]; // A
         }
     }
 

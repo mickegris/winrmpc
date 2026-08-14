@@ -18,7 +18,7 @@ cargo test <name>        # run tests whose name matches <name>
 cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 ```
 
-- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 181 offline tests; none touch the network or need an MPD server (the `store` ones do open a real redb, over `InMemoryBackend`):
+- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 185 offline tests; none touch the network or need an MPD server (the `store` ones do open a real redb, over `InMemoryBackend`):
   - `mpd/client.rs` — `escape` injection safety (quotes, backslashes, ordering)
   - `mpd/protocol.rs` — `pairs_to_map`, `split_groups`, `parse_ack`
   - `mpd/commands.rs` — every response parser (`parse_status`/`song`/`songs`/`outputs`/`partitions`/`directory_listing`/`stats`/`tag_list`); note the `Time`→`duration` fallback rule
@@ -28,6 +28,7 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
   - `store/mod.rs` — `bios`/`mb_ids`/`recently_played` round trips over an in-memory redb, including the absent-vs-`Some(None)` distinction and per-server key isolation
   - `snapcast/types.rs` + `snapcast/protocol.rs` — `decode_snap_groups`/`decode_snap_streams` from fixtures, degrade-to-empty on unexpected JSON, `extract_result`'s error/null handling, and response-id matching among interleaved notification lines
   - Not yet covered (would need a mock `AsyncRead`/`AsyncWrite`): the `protocol.rs` read loops & EOF guards.
+  - `icon.rs` — the window icon builds, corners are transparent / centre is bar-coloured, the committed `packaging/linux/` PNGs still match the generator, and `svg()` emits one circle + one rect per bar
   - `config/settings.rs` — TOML shapes (the README's multi-server example, a legacy single-server file, a minimal config, a partial `[theme]` table, a `save()`→`load()` round trip) plus the three `load_from` cases against a scratch path: a missing file is **created**, an unparseable one is **never overwritten**, a legacy one is **migrated and persisted**. Every legacy field is `#[serde(default)]` *by necessity* — a shape that fails to deserialize used to cost the user their settings, since `load` fell back to defaults and the next `save` wrote them over the file. `load_failed` now disarms `save` instead, but the defaults are still what keeps a valid-but-old file parsing at all.
   - `live_tests.rs` — integration tests against a **real** MPD/Snapcast server, all `#[ignore]`d so `cargo test` stays offline. Run with `WINRMPC_TEST_MPD=host:6600 WINRMPC_TEST_SNAPCAST=host:1705 cargo test -- --ignored --test-threads=1`. They cover `add_all`'s bulk enqueue and its stop-at-first-failure semantics, `group_albums_by_artist` against a real album list, and Snapcast `Server.GetStatus` decoding. Anything that mutates state creates a throwaway MPD **partition**, works there, and deletes it — the default partition's queue is never touched.
   - Four of them are **diagnostics rather than assertions**, and they are the fastest way to answer "why is this album's cover blank" — reach for them before theorising: `live_diagnose_album_art_sources` prints, per album, which stage answers (`readpicture` / `albumart` / nothing) plus the raw artist tags; `live_probe_cue_album_art_fallback` checks whether a CUE-sheet track's cover is reachable via the `.cue` path (on this library: no); `live_musicbrainz_resolves_locally_artless_albums` and `live_wikipedia_bios_for_awkward_tags` run the real external lookups over the tag shapes that used to defeat them. The last two need **`WINRMPC_TEST_MUSICBRAINZ=1`** on top of `--ignored`, so a routine sweep can't start hammering a free community service. Two Snapcast tests in this file are *not* ignored: they drive the client against a local `TcpListener` mock to prove a dead socket is dropped (so the view can reconnect) while an RPC error response is not.
@@ -366,9 +367,25 @@ gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
 Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer for the in-app view).
 
 ## App Icon
-`src/icon.rs` — `make_icon()` generates RGBA pixels at runtime for the iced window icon.  
-`build.rs` — generates the same design as 16×16 + 32×32 BMP-in-ICO and embeds it via `winres`.  
-Build dependency: `winres = "0.1"` in `[build-dependencies]`.
+**`src/icon_design.rs` is the single generator** — a dark-navy circle with three cyan equalizer bars, drawn procedurally on a 32-unit grid so every size is free and no source image exists. It holds `APP_ID`, the colours, `rgba_pixels(size)` and `svg()`. Three consumers share it, two of them via `include!` because neither a build script nor an example can `use` a crate module:
+- `src/icon.rs` — thin iced wrapper (`make_icon()`, 32×32) + the icon tests.
+- `build.rs` — `include!`s it, then does the *only* Windows-specific work: row flip + RGBA→BGRA swizzle + the BMP-in-ICO container, embedded via `winres` (`winres = "0.1"` in `[build-dependencies]`).
+- `examples/emit_icons.rs` — `include!`s it and writes `packaging/linux/icons/hicolor/**` (PNG at 8 sizes + scalable SVG).
+
+**Two constraints on `icon_design.rs`, both load-bearing**: `std` only (no `iced`, no `image`, no `use crate::…`), and **no inner `//!` doc comments anywhere in the file** — `include!` splices it mid-file where inner docs are a hard `E0753` error.
+
+**What the runtime icon actually does, per platform** — it is not uniform, and the two no-ops are why `packaging/` exists:
+
+| Platform | `window::Settings.icon` |
+|---|---|
+| Windows | Works; `build.rs` also embeds the ICO for Explorer/taskbar |
+| Linux / X11 | Works (`_NET_WM_ICON`) |
+| Linux / Wayland | **No-op** — `winit .../wayland/window/mod.rs:433` is an empty fn |
+| macOS | **No-op** — `winit .../macos/window_delegate.rs:1541`, documented |
+
+Wayland resolves an icon by matching the surface's `app_id` to a `.desktop` basename, so `main.rs` sets `platform_specific.application_id` from `icon_design::APP_ID` (`io.github.mickegris.winrmpc`). `PlatformSpecific` is a **different type per OS**, hence the cfg-split `platform_specific()` helper next to `window_settings()`. That id must stay byte-identical in three places — the `app_id`, the `.desktop` filename, and the icon filenames — or the icon silently doesn't resolve. **macOS has no packaging yet** and therefore still no icon; see `docs/plans/app-icon-cross-platform.md`.
+
+The generated PNGs **are committed** (packagers shouldn't need a Rust toolchain), and `icon::tests::packaged_png_assets_match_the_generator` keeps them honest by decoding each one and comparing *pixels* — not encoded bytes, so an `image` upgrade can't fail it spuriously. Change the design → run `cargo run --example emit_icons`, or `cargo test` fails and tells you to.
 
 ## Planning Docs (`docs/plans/`)
 Design docs written before implementing a feature — read the relevant one before starting related work, and add new ones there for anything non-trivial. `mikmpd-parity-overview.md` tracks the gap between winrmpc and its sibling iOS client [mikMPD](https://github.com/mickegris/mikMPD) (`../mikMPD`), with one linked plan file per gap (queue editing, multi-disc album grouping, recently-added/played history, server stats & diagnostics, Snapcast control, Now Playing quick controls). `server-discovery.md` is kept only as a record — that feature was **removed** in 0.4.1. `playlists.md` and `enhancements.md` (playlists, MPD log, lyrics) are earlier plans from this same parity effort — already shipped. Others not covered by the parity overview: `art-wikipedia-fetch-order-and-caching.md` (the tag → cover-file → internet order and the fetch gate), `local-database.md` (the redb store), `review-fixes-correctness.md` / `review-fixes-performance.md` (the two code-review rounds, including the deferrals listed in `docs/status.md`), and `iced-0.14-migration.md` — whose **§9 post-mortem is the part that matters**: the migration was tried and reverted, and §§0–8 predate that.

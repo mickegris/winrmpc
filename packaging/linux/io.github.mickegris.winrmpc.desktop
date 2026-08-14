@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=winrmpc
+GenericName=MPD Client
+Comment=Music Player Daemon client with album art, lyrics and Snapcast multiroom control
+Exec=winrmpc
+Icon=io.github.mickegris.winrmpc
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=MPD;Music;Player;Audio;Snapcast;Lyrics;
+
+# X11 matches a window to this entry by WM_CLASS; Wayland matches by app_id.
+# Both are set from `icon_design::APP_ID` in src/main.rs, and all three strings
+# — this key, this file's basename, and the installed icon basename — must stay
+# byte-identical or the window falls back to a generic icon with no error.
+StartupWMClass=io.github.mickegris.winrmpc

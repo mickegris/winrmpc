@@ -2,6 +2,14 @@
 
 Part of [cross-platform-and-ui-0.4.2](cross-platform-and-ui-0.4.2.md).
 
+> **Status (2026-08-14): steps A, B and C are implemented. D and E are not.**
+> The Linux half is done — one shared generator, `application_id` wired up, and
+> installable `.desktop`/icon assets under `packaging/linux/` with an
+> `install.sh`. macOS still has no `.app` bundle, so it still has no icon.
+> Nothing here has been checked on a real Wayland or macOS session; see
+> "How to confirm on the real OS" at the bottom, which is still the acceptance
+> criterion.
+
 ## What exists now
 
 Two independent generators draw the same design — a dark navy circle
@@ -161,6 +169,48 @@ existing home in this repo, and E depends on them. If 0.4.2 needs to ship
 before that, **A and B alone are still worth shipping**: B fixes the Wayland
 icon outright (given the user installs a desktop file by hand), and neither
 changes behaviour on Windows.
+
+## What was actually built (A, B, C)
+
+- **`src/icon_design.rs`** — the one generator. Dependency-free `std`-only so
+  it can be `include!`d by both `build.rs` and `examples/emit_icons.rs`
+  (neither can `use` a crate module). It holds `APP_ID`, the colours, the
+  32-unit grid geometry, `rgba_pixels(size)` and `svg()`.
+  - Gotcha worth knowing: **no inner (`//!`) doc comments anywhere in that
+    file.** `include!` splices it into the middle of another file, where inner
+    docs are a hard error (`E0753`). The header comment says so.
+- **`src/icon.rs`** — now just the iced wrapper plus tests. Window icon stays
+  at 32×32 deliberately: the drawing has hard, un-antialiased edges, so a
+  bigger source downscaled by the WM would look *different* from the Windows
+  ICO rather than merely sharper. Raising it should come with anti-aliasing.
+- **`build.rs`** — keeps only the format-specific work (row flip + RGBA→BGRA
+  swizzle + ICO container). Verified byte-equivalent to the old hand-written
+  `make_bgra`. Also gained `cargo:rerun-if-changed=src/icon_design.rs`.
+- **`src/main.rs`** — `window_settings()` extracted, with a cfg-split
+  `platform_specific()` because `PlatformSpecific` is a *different type per
+  OS* and can't be written once.
+- **`examples/emit_icons.rs`** — regenerates the assets. An example rather
+  than a CLI flag, since winrmpc is a GUI binary with no argument handling and
+  a dev tool isn't a good reason to add some.
+- **`packaging/linux/`** — the `.desktop` entry (validated with
+  `desktop-file-validate`), the committed PNG/SVG assets, and `install.sh`
+  (user-prefix by default, `PREFIX=` for system-wide, `--uninstall`; both
+  paths exercised against a scratch prefix).
+- **README** — a "Desktop integration (Linux)" section covering install,
+  uninstall, regeneration, *why* Wayland needs this at all, and macOS's
+  current absence.
+
+### On committing generated binaries
+
+The PNGs are checked in, which the original plan argued against. The reason it
+is safe here: `icon::tests::packaged_png_assets_match_the_generator` decodes
+every committed PNG and compares **pixels** (not encoded bytes, so an `image`
+crate upgrade can't cause a false failure) against a fresh
+`rgba_pixels(size)`. Change the design without regenerating and `cargo test`
+fails with the command to run. That buys packagers assets that need no Rust
+toolchain, without the drift risk that motivated the no-binaries rule.
+
+Test count went 181 → 185 offline.
 
 ## How to confirm on the real OS
 

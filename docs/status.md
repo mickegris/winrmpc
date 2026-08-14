@@ -37,7 +37,19 @@ only the Queue highlights the playing track; and macOS storage works but lives
 in `~/Library/…/com.winrmpc.winrmpc/`, which Finder hides — that's the whole
 of the "couldn't find the config file" report.
 
-**Nothing here is verified on real macOS or Linux hardware.** Every claim is
+### Done so far on this branch
+
+**Linux app icon + desktop integration** (plan 1, steps A–C). One shared
+generator in `src/icon_design.rs` feeding the window icon, the Windows ICO and
+new `packaging/linux/` assets; `application_id` wired up so Wayland can match
+the `.desktop` file; `install.sh` with user/system prefixes and `--uninstall`;
+README section. 185 offline tests (was 181), zero warnings. The install and
+uninstall paths were exercised against a scratch prefix and the `.desktop`
+file passes `desktop-file-validate` — but **the icon has not been seen on a
+real Wayland or X11 session**, which is the only thing that actually proves it.
+macOS still has no `.app` bundle and therefore still no icon.
+
+**Nothing else here is verified on real macOS or Linux hardware.** Every claim is
 sourced from the vendored `iced 0.13.1` / `iced_winit 0.13.0` /
 `winit 0.30.13` / `Cargo.lock` with file:line references, and each plan ends
 with a "How to confirm on the real OS" section that is the actual acceptance
