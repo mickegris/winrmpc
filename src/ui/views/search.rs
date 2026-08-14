@@ -3,13 +3,17 @@ use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
 use crate::ui::widgets::link::icon_btn_tip;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::BTreeMap;
 
+/// `current_file` marks the playing track among the song rows. The artist and
+/// album sections above them aren't tracks, so they carry no row state.
 pub fn view<'a>(
     query: &'a str,
     results: &'a [Song],
+    current_file: Option<&'a str>,
 ) -> Element<'a, Message> {
     let search_bar = row![
         text_input("Search your library...", query)
@@ -75,17 +79,15 @@ pub fn view<'a>(
         for &idx in indices {
             let song = &results[idx];
             let track = song.track.as_deref().unwrap_or("-");
-            let bg = if row_index % 2 == 0 {
-                AppColors::ROW_EVEN
-            } else {
-                AppColors::ROW_ODD
-            };
+            let is_current = song_row::is_current_uri(&song.file, current_file);
+            let bg = song_row::row_bg(row_index, is_current);
             row_index += 1;
 
             result_list = result_list.push(
                 container(
                     row![
                         Space::with_width(8),
+                        song_row::playing_marker(is_current),
                         icon_btn_tip(
                             icon::PLAY,
                             "Play now",
@@ -112,7 +114,7 @@ pub fn view<'a>(
                             .color(AppColors::TEXT_MUTED),
                         text(song.display_title())
                             .size(12)
-                            .color(AppColors::TEXT_PRIMARY)
+                            .color(song_row::title_color(is_current))
                             .width(Length::Fill),
                         text(song.display_artist())
                             .size(11)

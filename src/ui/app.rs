@@ -2229,6 +2229,17 @@ impl App {
         }
     }
 
+    /// The playing track's URI, for row highlighting in library listings.
+    ///
+    /// Views get the URI rather than `&Option<Song>` on purpose: it makes the
+    /// match rule obvious at the call site and stops a view reaching for other
+    /// fields. The Queue is the exception — it gets `status.song_pos`, because
+    /// it is the only list where the same file can appear twice and position
+    /// is what tells the two entries apart. See `widgets::song_row`.
+    fn current_file(&self) -> Option<&str> {
+        self.current_song.as_ref().map(|s| s.file.as_str())
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let sidebar = widgets::sidebar::view(
             &self.current_view,
@@ -2306,6 +2317,7 @@ impl App {
                 self.recently_played_show_albums,
                 self.config.album_grid_view,
                 &self.art_handles,
+                self.current_file(),
             ),
             View::ArtistDetail(name) => {
                 let albums = self
@@ -2335,7 +2347,14 @@ impl App {
                     .unwrap_or_default();
                 let art = self.art_handles.get(&art_key);
                 let bio = self.album_bios.get(&key).and_then(|o| o.as_deref());
-                views::album::view(name, songs, art, bio, self.show_album_bio)
+                views::album::view(
+                    name,
+                    songs,
+                    art,
+                    bio,
+                    self.show_album_bio,
+                    self.current_file(),
+                )
             }
             View::GenreDetail(name) => {
                 let albums = self
@@ -2346,10 +2365,18 @@ impl App {
                 views::genre_detail::view(name, albums)
             }
             View::Browser => {
-                views::browser::view(&self.browser_path, &self.browser_entries)
+                views::browser::view(
+                    &self.browser_path,
+                    &self.browser_entries,
+                    self.current_file(),
+                )
             }
             View::Search => {
-                views::search::view(&self.search_query, &self.search_results)
+                views::search::view(
+                    &self.search_query,
+                    &self.search_results,
+                    self.current_file(),
+                )
             }
             View::Radio => {
                 views::radio::view(
@@ -2404,7 +2431,7 @@ impl App {
                     .map(|s| s.art_key())
                     .unwrap_or_default();
                 let art = self.art_handles.get(&art_key);
-                views::playlist_detail::view(name, songs, art)
+                views::playlist_detail::view(name, songs, art, self.current_file())
             }
             View::AddToPlaylist => {
                 let count = self

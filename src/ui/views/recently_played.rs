@@ -6,16 +6,21 @@ use crate::mpd::types::{art_key_for, recently_played_albums, relative_time, Rece
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::album_grid;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, image, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
 
 
+/// `current_file` marks the playing track in **Tracks** mode. Albums mode is
+/// album-level state, which is a different comparison (see plan step D) and is
+/// deliberately not done here.
 pub fn view<'a>(
     entries: &'a [RecentlyPlayedEntry],
     show_albums: bool,
     grid_view: bool,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
+    current_file: Option<&'a str>,
 ) -> Element<'a, Message> {
     let mode_label = if show_albums { "Albums" } else { "Tracks" };
     let toggle_btn = button(text(format!("View: {mode_label}")).size(12))
@@ -116,19 +121,17 @@ pub fn view<'a>(
         let now = chrono::Utc::now().timestamp();
         let mut list = column![].spacing(0);
         for (i, e) in entries.iter().enumerate() {
-            let bg = if i % 2 == 0 {
-                AppColors::ROW_EVEN
-            } else {
-                AppColors::ROW_ODD
-            };
+            let is_current = song_row::is_current_uri(&e.file, current_file);
+            let bg = song_row::row_bg(i, is_current);
             list = list.push(
                 container(
                     button(
                         row![
+                            song_row::playing_marker(is_current),
                             text(e.title.as_str())
                                 .size(13)
                                 .width(Length::FillPortion(3))
-                                .color(AppColors::TEXT_PRIMARY),
+                                .color(song_row::title_color(is_current)),
                             text(e.artist.as_str())
                                 .size(12)
                                 .width(Length::FillPortion(2))

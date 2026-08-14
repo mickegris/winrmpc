@@ -2,6 +2,12 @@
 
 Part of [cross-platform-and-ui-0.4.2](cross-platform-and-ui-0.4.2.md).
 
+> **Status (2026-08-14): A, B and C implemented. D deferred as planned, E out
+> of scope.** Six views now mark the playing track. The match rule is unit
+> tested, including the position-vs-URI trap this plan was written around; what
+> is *not* verified is the visual result, which needs the running app — see
+> "Verification" at the bottom.
+
 ## What exists now
 
 **Exactly one view highlights the playing track: the Queue.**
@@ -133,6 +139,47 @@ straightforward track-list work.
 - **Radio view.** Stations are URLs, not songs; matching `current_song.file`
   against a station URL would work, but the Radio view has no row-state concept
   yet. Fold in later if wanted.
+
+## What was actually built
+
+**A — `src/ui/widgets/song_row.rs`.** The three styling helpers from the plan,
+plus the two *match predicates* (`is_current_uri`, `is_current_pos`), which
+turned out to be the part worth extracting: putting them in the same module as
+the doc comment explaining position-vs-URI is what makes the rule discoverable
+from a call site. `AppColors::ROW_PLAYING` was added as specified; the Queue's
+rewrite dropped its improvised `BG_TERTIARY`.
+
+One layout detail the plan called correctly and which cost real care:
+`playing_marker` is a fixed-width cell that is *either* the glyph or blank.
+The Queue's `#` header had to move 40 → 48px to stay aligned with it.
+
+**B — six views threaded.** Album, Playlist detail, Search, Browser, Recently
+Played (Tracks) and the Queue. `App::current_file()` supplies `Option<&str>`.
+
+The plan listed five views; Search needed the extra care its note implied —
+its row index is a running counter across the artist/album/song *sections*,
+not `enumerate()` over one list, so the zebra parity had to keep using that
+counter rather than a fresh index.
+
+**C — nothing to do**, as the plan predicted: Now Playing's recents strip is
+album tiles, so it belongs to D.
+
+**D — deferred, deliberately.** Album-level highlighting is a different
+comparison (`album_scoped_key` against the disc-collapsed base, so a playing
+Disc 2 track marks the single collapsed row) with its own edge cases. Landing
+B first means an album-key bug can't hold up the straightforward work — which
+is exactly the plan's own reasoning, kept.
+
+**E — out of scope**, unchanged: no auto-scroll-to-playing, no Radio view.
+
+Test count 191 → 200. The nine new tests cover the match rule rather than the
+rendering, per the plan: notably that a playlist row whose `pos` equals the
+playing `song_pos` but whose file differs does **not** match, that the same
+file at two queue positions is distinguished, that duplicate URIs in one
+listing both match (an accepted consequence, asserted so it stays a decision),
+and that `ROW_PLAYING` is distinct from both zebra stripes and from
+`BG_HOVER` — a highlight equal to either stripe would be invisible on half the
+rows.
 
 ## Verification
 

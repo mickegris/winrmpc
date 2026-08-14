@@ -3,15 +3,20 @@ use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
 use crate::ui::widgets::link::icon_btn_tip;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, container, image, row, text, Column, Space};
 use iced::{Alignment, Element, Length};
 
+/// `current_file` is the playing track's URI, not its queue position — this is
+/// a library listing, so a position compare would mark an unrelated row. See
+/// `widgets::song_row`.
 pub fn view<'a>(
     album_name: &'a str,
     songs: &'a [Song],
     art_handle: Option<&'a iced::widget::image::Handle>,
     bio: Option<&'a str>,
     show_bio: bool,
+    current_file: Option<&'a str>,
 ) -> Element<'a, Message> {
     let artist = songs
         .first()
@@ -167,16 +172,14 @@ pub fn view<'a>(
             }
         }
 
-        let bg = if i % 2 == 0 {
-            AppColors::ROW_EVEN
-        } else {
-            AppColors::ROW_ODD
-        };
+        let is_current = song_row::is_current_uri(&song.file, current_file);
+        let bg = song_row::row_bg(i, is_current);
         let track_num = song.track.as_deref().unwrap_or("-");
 
         track_list = track_list.push(
             container(
                 row![
+                    song_row::playing_marker(is_current),
                     icon_btn_tip(icon::PLAY, "Play now", Message::PlaySong(song.file.clone())),
                     icon_btn_tip(
                         icon::ADD_QUEUE,
@@ -200,7 +203,7 @@ pub fn view<'a>(
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
-                        .color(AppColors::TEXT_PRIMARY),
+                        .color(song_row::title_color(is_current)),
                     text(song.format_duration())
                         .size(12)
                         .color(AppColors::TEXT_MUTED),

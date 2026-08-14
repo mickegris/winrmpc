@@ -3,6 +3,7 @@ use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
 use crate::ui::widgets::link::{icon_btn_danger, icon_btn_tip};
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -27,7 +28,9 @@ pub fn view<'a>(
 
     let header = container(
         row![
-            text("#").size(11).width(40).color(AppColors::TEXT_MUTED),
+            // 48 = the marker cell (14) + the row's 8px spacing + the number
+            // column (26), so the header still lines up with the rows.
+            text("#").size(11).width(48).color(AppColors::TEXT_MUTED),
             text("Title").size(11).width(Length::FillPortion(3)).color(AppColors::TEXT_MUTED),
             text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
             text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
@@ -60,21 +63,12 @@ pub fn view<'a>(
 
     for (i, song) in queue.iter().enumerate() {
         let pos = song.pos.unwrap_or(0);
-        let is_current = current_pos == Some(pos);
+        // The Queue is the one list that matches on position rather than URI —
+        // a queue can hold the same file twice. See `widgets::song_row`.
+        let is_current = song_row::is_current_pos(pos, current_pos);
 
-        let bg = if is_current {
-            AppColors::BG_TERTIARY
-        } else if i % 2 == 0 {
-            AppColors::ROW_EVEN
-        } else {
-            AppColors::ROW_ODD
-        };
-
-        let title_color = if is_current {
-            AppColors::ACCENT
-        } else {
-            AppColors::TEXT_PRIMARY
-        };
+        let bg = song_row::row_bg(i, is_current);
+        let title_color = song_row::title_color(is_current);
 
         // Title plays the track; artist and album navigate to their views.
         let title_btn = button(
@@ -155,9 +149,10 @@ pub fn view<'a>(
         items = items.push(
             container(
                 row![
+                    song_row::playing_marker(is_current),
                     text(format!("{}", pos + 1))
                         .size(12)
-                        .width(40)
+                        .width(26)
                         .color(AppColors::TEXT_MUTED),
                     title_btn,
                     artist_btn,

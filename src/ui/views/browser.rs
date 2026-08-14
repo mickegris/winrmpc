@@ -3,12 +3,16 @@ use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
 use crate::ui::widgets::link::icon_btn_tip;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
+/// `current_file` marks the playing track among `DirectoryEntry::File` rows
+/// only — directories and playlists have no track identity.
 pub fn view<'a>(
     current_path: &'a str,
     entries: &'a [DirectoryEntry],
+    current_file: Option<&'a str>,
 ) -> Element<'a, Message> {
     let breadcrumb = {
         let parts: Vec<&str> = if current_path.is_empty() {
@@ -70,11 +74,11 @@ pub fn view<'a>(
 
     let mut items = column![].spacing(0);
     for (i, entry) in entries.iter().enumerate() {
-        let bg = if i % 2 == 0 {
-            AppColors::ROW_EVEN
-        } else {
-            AppColors::ROW_ODD
+        let is_current = match entry {
+            DirectoryEntry::File(s) => song_row::is_current_uri(&s.file, current_file),
+            _ => false,
         };
+        let bg = song_row::row_bg(i, is_current);
 
         match entry {
             DirectoryEntry::File(s) => {
@@ -86,6 +90,7 @@ pub fn view<'a>(
                 items = items.push(
                     container(
                         row![
+                            song_row::playing_marker(is_current),
                             icon_btn_tip(
                                 icon::PLAY,
                                 "Play now",
@@ -108,7 +113,7 @@ pub fn view<'a>(
                             ),
                             text(label)
                                 .size(13)
-                                .color(AppColors::TEXT_PRIMARY)
+                                .color(song_row::title_color(is_current))
                                 .width(Length::Fill),
                             text(duration)
                                 .size(11)

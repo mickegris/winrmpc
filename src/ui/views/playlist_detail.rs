@@ -5,6 +5,7 @@ use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
 use crate::ui::widgets::link::{icon_btn_danger, icon_btn_tip};
+use crate::ui::widgets::song_row;
 use iced::widget::{button, container, image, row, text, Column, Space};
 use iced::{Alignment, Element, Length};
 
@@ -12,6 +13,7 @@ pub fn view<'a>(
     playlist_name: &'a str,
     songs: &'a [Song],
     art_handle: Option<&'a iced::widget::image::Handle>,
+    current_file: Option<&'a str>,
 ) -> Element<'a, Message> {
     let total_duration: u64 = songs
         .iter()
@@ -79,11 +81,12 @@ pub fn view<'a>(
     }
 
     for (i, song) in songs.iter().enumerate() {
-        let bg = if i % 2 == 0 {
-            AppColors::ROW_EVEN
-        } else {
-            AppColors::ROW_ODD
-        };
+        // Match on the URI, **never** on `pos`: `pos` here is the *playlist*
+        // index, which has no relationship to `status.song_pos`. Comparing the
+        // two would highlight an arbitrary unrelated row — see the test in
+        // `widgets::song_row`.
+        let is_current = song_row::is_current_uri(&song.file, current_file);
+        let bg = song_row::row_bg(i, is_current);
         // `list_playlist` guarantees `pos` is always set (assigned from the
         // record index if the server omits it), so this fallback never fires
         // in practice — it's here only to make the row build if it did.
@@ -92,6 +95,7 @@ pub fn view<'a>(
         track_list = track_list.push(
             container(
                 row![
+                    song_row::playing_marker(is_current),
                     icon_btn_tip(
                         icon::PLAY,
                         "Play now",
@@ -110,7 +114,7 @@ pub fn view<'a>(
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
-                        .color(AppColors::TEXT_PRIMARY),
+                        .color(song_row::title_color(is_current)),
                     text(song.format_duration())
                         .size(12)
                         .color(AppColors::TEXT_MUTED),
