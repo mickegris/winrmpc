@@ -316,6 +316,16 @@ Six views mark the playing track: Queue, Album detail, Playlist detail, Search, 
 - **The font is committed and kept honest by tests**, mirroring the app-icon PNGs: `icon.rs`'s tests parse the TTF's `cmap` and assert every constant resolves to a glyph, that the font carries no glyph without a constant, that no two constants collide, and that the family name is the bundled one. Change the icon set → edit `build-icon-font.py`, rerun it, add the constant.
 - **Regenerating** needs `fonttools` (a dev-only dependency, not part of `cargo build`): `python3 -m venv .venv && .venv/bin/pip install fonttools brotli && .venv/bin/python3 packaging/fonts/build-icon-font.py`.
 
+**Every track list uses one column order** (`widgets/song_row.rs` owns the cells):
+
+```
+[playing marker 14] [number 30, right] [title Fill] … [duration 55, right] [action group]
+```
+
+Reading order is **number → title → time**, with the controls last. The library views (album, search, browser, playlist detail) used to *lead* with four glyph buttons, putting ~134px of identical controls between the left edge and the first thing anyone is looking for; `playlist_detail` was worse still, splitting its seven actions across *both* sides of the title. The Queue already had it right, so the others were moved to match rather than the reverse.
+- **`number` and `duration` are right-aligned fixed-width cells.** Numbers so `10` doesn't hang a character left of `9`; duration because the action group now follows it — sized to content, a `4:53` row would be a few pixels narrower than a `10:53` row and every button below would sit slightly off.
+- **Browser file rows have no number** — a directory listing's order is the server's, not an album's.
+
 **Row actions are a deliberate table, not per-view accident.** Every row action is an `icon_btn_tip` (or `icon_btn_danger` for destructive ones) carrying a fixed tooltip — the wording is part of the contract, so the same button never reads differently between views:
 
 | Action | Glyph | Tooltip | album | search | browser | playlist_detail | queue |
@@ -328,6 +338,8 @@ Six views mark the playing track: Queue, Album detail, Playlist detail, Search, 
 | `PlaylistMoveSongUp`/`Down` | `MOVE_UP`/`MOVE_DOWN` | Move up in playlist / Move down in playlist | — | — | — | ✓ | — |
 | `QueueRemove` | `REMOVE` | Remove from queue | — | — | — | — | ✓ |
 | `PlaylistRemoveSong` | `REMOVE` | Remove from playlist | — | — | — | ✓ | — |
+
+(Playlist detail therefore carries seven, the widest group; the rest carry four.)
 
 The two deliberate gaps: **the queue has no "add to end of queue"** (those rows already *are* the queue), and **only reorderable lists get move arrows** (you can't reorder an album). Browser file rows gained the full four — they previously had play/add only, for no stated reason. The ellipsis in "Add to playlist…" is load-bearing: it's the only row action that opens a picker rather than acting immediately.
 

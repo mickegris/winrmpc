@@ -178,35 +178,40 @@ pub fn view<'a>(
 
         track_list = track_list.push(
             container(
+                // number -> title -> time, actions last. See
+                // `song_row::number` for why the controls don't lead the row.
                 row![
                     song_row::playing_marker(is_current),
-                    icon_btn_tip(icon::PLAY, "Play now", Message::PlaySong(song.file.clone())),
-                    icon_btn_tip(
-                        icon::ADD_QUEUE,
-                        "Add to end of queue",
-                        Message::QueueAddOnly(song.file.clone())
-                    ),
-                    icon_btn_tip(
-                        icon::PLAY_NEXT,
-                        "Play next",
-                        Message::QueueAddNext(song.file.clone())
-                    ),
-                    icon_btn_tip(
-                        icon::ADD_PLAYLIST,
-                        "Add to playlist…",
-                        Message::OpenAddToPlaylist(vec![song.file.clone()])
-                    ),
-                    text(track_num.to_string())
-                        .size(13)
-                        .width(30)
-                        .color(AppColors::TEXT_MUTED),
+                    song_row::number(track_num.to_string(), 13),
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
                         .color(song_row::title_color(is_current)),
-                    text(song.format_duration())
-                        .size(12)
-                        .color(AppColors::TEXT_MUTED),
+                    song_row::duration(song.format_duration(), 12),
+                    row![
+                        icon_btn_tip(
+                            icon::PLAY,
+                            "Play now",
+                            Message::PlaySong(song.file.clone())
+                        ),
+                        icon_btn_tip(
+                            icon::ADD_QUEUE,
+                            "Add to end of queue",
+                            Message::QueueAddOnly(song.file.clone())
+                        ),
+                        icon_btn_tip(
+                            icon::PLAY_NEXT,
+                            "Play next",
+                            Message::QueueAddNext(song.file.clone())
+                        ),
+                        icon_btn_tip(
+                            icon::ADD_PLAYLIST,
+                            "Add to playlist…",
+                            Message::OpenAddToPlaylist(vec![song.file.clone()])
+                        ),
+                    ]
+                    .spacing(song_row::ACTION_SPACING)
+                    .width(song_row::action_group_width(4)),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),

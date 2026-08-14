@@ -32,7 +32,7 @@
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
-use iced::widget::container;
+use iced::widget::{container, text};
 use iced::{Color, Element, Length};
 
 /// Width of the leading now-playing marker cell.
@@ -40,7 +40,7 @@ use iced::{Color, Element, Length};
 /// The marker is a *fixed-width cell that is either the glyph or blank*, never
 /// a widget pushed in only when current — otherwise every other column in the
 /// row would shift depending on what happens to be playing.
-const MARKER_WIDTH: u16 = 14;
+pub const MARKER_WIDTH: u16 = 14;
 
 /// Width of one row-action icon button.
 ///
@@ -62,6 +62,47 @@ pub const ACTION_SPACING: u16 = 2;
 /// spread its labels ~134px wider than the rows beneath them.
 pub const fn action_group_width(n: u16) -> u16 {
     n * ACTION_BTN_WIDTH + n.saturating_sub(1) * ACTION_SPACING
+}
+
+/// Width of the leading track/position number column.
+pub const NUMBER_WIDTH: u16 = 30;
+
+/// The leading number cell.
+///
+/// **Right-aligned**, so a list running past nine lines its numbers up on the
+/// units digit instead of letting `10` hang a character left of `9`.
+///
+/// Every track list puts this immediately after [`playing_marker`] and before
+/// the title, with the actions at the far right — the reading order is
+/// number → title → time, and the controls are secondary to all three. The
+/// library views used to lead with four glyph buttons, which put ~134px of
+/// identical controls between the left edge and the first thing anyone is
+/// actually looking for.
+pub fn number<'a>(label: impl text::IntoFragment<'a>, size: u16) -> Element<'a, Message> {
+    text(label)
+        .size(size)
+        .width(Length::Fixed(NUMBER_WIDTH as f32))
+        .align_x(iced::alignment::Horizontal::Right)
+        .color(AppColors::TEXT_MUTED)
+        .into()
+}
+
+/// Width of the trailing duration column. Fits `mm:ss` with room for a
+/// three-digit minute count.
+pub const DURATION_WIDTH: u16 = 55;
+
+/// The trailing duration cell, right-aligned and **fixed width**.
+///
+/// The width is load-bearing now that the action group follows it: sized to
+/// content, a row reading `4:53` would be four pixels narrower than one
+/// reading `10:53`, and every action button below it would sit slightly off.
+pub fn duration<'a>(label: impl text::IntoFragment<'a>, size: u16) -> Element<'a, Message> {
+    text(label)
+        .size(size)
+        .width(Length::Fixed(DURATION_WIDTH as f32))
+        .align_x(iced::alignment::Horizontal::Right)
+        .color(AppColors::TEXT_MUTED)
+        .into()
 }
 
 /// Does this library-list row hold the currently playing track?

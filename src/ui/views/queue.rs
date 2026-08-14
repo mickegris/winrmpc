@@ -32,13 +32,22 @@ pub fn view<'a>(
 
     let header = container(
         row![
-            // 48 = the marker cell (14) + the row's 8px spacing + the number
-            // column (26), so the header still lines up with the rows.
-            text("#").size(11).width(48).color(AppColors::TEXT_MUTED),
+            // Marker cell + the row's 8px spacing + the number column, so the
+            // header lines up with the rows. Right-aligned to sit over the
+            // right-aligned numbers.
+            text("#")
+                .size(11)
+                .width(song_row::MARKER_WIDTH + 8 + song_row::NUMBER_WIDTH)
+                .align_x(iced::alignment::Horizontal::Right)
+                .color(AppColors::TEXT_MUTED),
             text("Title").size(11).width(Length::FillPortion(3)).color(AppColors::TEXT_MUTED),
             text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
             text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
-            text("Time").size(11).width(55).color(AppColors::TEXT_MUTED),
+            text("Time")
+                .size(11)
+                .width(song_row::DURATION_WIDTH)
+                .align_x(iced::alignment::Horizontal::Right)
+                .color(AppColors::TEXT_MUTED),
             // Reserves the action group's width. Without it the header's
             // FillPortion columns get ~134px more to share than the rows do,
             // and every label sits visibly right of the data under it.
@@ -168,17 +177,11 @@ pub fn view<'a>(
             container(
                 row![
                     song_row::playing_marker(is_current),
-                    text(format!("{}", pos + 1))
-                        .size(12)
-                        .width(26)
-                        .color(AppColors::TEXT_MUTED),
+                    song_row::number(format!("{}", pos + 1), 12),
                     title_btn,
                     artist_btn,
                     album_btn,
-                    text(song.format_duration())
-                        .size(11)
-                        .width(55)
-                        .color(AppColors::TEXT_MUTED),
+                    song_row::duration(song.format_duration(), 11),
                     actions,
                 ]
                 .spacing(8)

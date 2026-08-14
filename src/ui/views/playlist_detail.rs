@@ -4,7 +4,7 @@ use crate::mpd::types::Song;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
-use crate::ui::widgets::link::{icon_btn_danger, icon_btn_tip};
+use crate::ui::widgets::link::{icon_btn_danger, icon_btn_tip, icon_btn_tip_maybe};
 use crate::ui::widgets::song_row;
 use iced::widget::{button, container, image, row, text, Column, Space};
 use iced::{Alignment, Element, Length};
@@ -94,50 +94,67 @@ pub fn view<'a>(
 
         track_list = track_list.push(
             container(
+                // This row used to split its actions across *both* sides of the
+                // title — play/add/next leading, move/playlist/remove
+                // trailing. All seven now sit together on the right, matching
+                // every other track list.
                 row![
                     song_row::playing_marker(is_current),
-                    icon_btn_tip(
-                        icon::PLAY,
-                        "Play now",
-                        Message::PlaylistPlayAt(playlist_name.to_string(), pos)
-                    ),
-                    icon_btn_tip(
-                        icon::ADD_QUEUE,
-                        "Add to end of queue",
-                        Message::QueueAddOnly(song.file.clone())
-                    ),
-                    icon_btn_tip(
-                        icon::PLAY_NEXT,
-                        "Play next",
-                        Message::QueueAddNext(song.file.clone())
-                    ),
+                    song_row::number((pos + 1).to_string(), 13),
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
                         .color(song_row::title_color(is_current)),
-                    text(song.format_duration())
-                        .size(12)
-                        .color(AppColors::TEXT_MUTED),
-                    icon_btn_tip(
-                        icon::MOVE_UP,
-                        "Move up in playlist",
-                        Message::PlaylistMoveSongUp(playlist_name.to_string(), pos)
-                    ),
-                    icon_btn_tip(
-                        icon::MOVE_DOWN,
-                        "Move down in playlist",
-                        Message::PlaylistMoveSongDown(playlist_name.to_string(), pos)
-                    ),
-                    icon_btn_tip(
-                        icon::ADD_PLAYLIST,
-                        "Add to playlist…",
-                        Message::OpenAddToPlaylist(vec![song.file.clone()])
-                    ),
-                    icon_btn_danger(
-                        icon::REMOVE,
-                        "Remove from playlist",
-                        Message::PlaylistRemoveSong(playlist_name.to_string(), pos)
-                    ),
+                    song_row::duration(song.format_duration(), 12),
+                    row![
+                        icon_btn_tip(
+                            icon::PLAY,
+                            "Play now",
+                            Message::PlaylistPlayAt(playlist_name.to_string(), pos)
+                        ),
+                        icon_btn_tip(
+                            icon::ADD_QUEUE,
+                            "Add to end of queue",
+                            Message::QueueAddOnly(song.file.clone())
+                        ),
+                        icon_btn_tip(
+                            icon::PLAY_NEXT,
+                            "Play next",
+                            Message::QueueAddNext(song.file.clone())
+                        ),
+                        // Disabled at the ends like the queue's: moving the
+                        // first entry up is already a no-op in the handler,
+                        // and moving the last one down sent MPD a range it
+                        // could only reject.
+                        icon_btn_tip_maybe(
+                            icon::MOVE_UP,
+                            "Move up in playlist",
+                            (i > 0).then(|| Message::PlaylistMoveSongUp(
+                                playlist_name.to_string(),
+                                pos
+                            ))
+                        ),
+                        icon_btn_tip_maybe(
+                            icon::MOVE_DOWN,
+                            "Move down in playlist",
+                            (i + 1 < songs.len()).then(|| Message::PlaylistMoveSongDown(
+                                playlist_name.to_string(),
+                                pos
+                            ))
+                        ),
+                        icon_btn_tip(
+                            icon::ADD_PLAYLIST,
+                            "Add to playlist…",
+                            Message::OpenAddToPlaylist(vec![song.file.clone()])
+                        ),
+                        icon_btn_danger(
+                            icon::REMOVE,
+                            "Remove from playlist",
+                            Message::PlaylistRemoveSong(playlist_name.to_string(), pos)
+                        ),
+                    ]
+                    .spacing(song_row::ACTION_SPACING)
+                    .width(song_row::action_group_width(7)),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
