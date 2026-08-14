@@ -5,7 +5,9 @@ next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
 Last updated: 2026-08-14. Branch: `improve/cross-platform-and-ui` — **all five
-plans implemented**, one commit each, not yet merged.
+plans implemented plus the lyrics sync work**, version bumped to **0.4.2**,
+release CI added. **Nothing pushed: 10 commits sit locally, awaiting manual
+testing.**
 
 **v0.4.1 shipped.** `release/v0.4.1` was merged to `main` (PR #20, commit
 `a810419`) and tagged `v0.4.1`. Everything in the sections below describing
@@ -50,15 +52,40 @@ One commit per plan, in the umbrella's suggested order. **202 offline tests
 | 3 — highlighting | `7812d5c` | A–C done, D deferred as planned, E out of scope |
 | 2 — storage | `8c21f53` | A–E done |
 
+Then, on top of the five plans:
+
+| Work | Commit | State |
+|---|---|---|
+| Lyrics sync/scroll toggle | `66cb985` | **verified against real LRCLIB data** |
+| Version bump to 0.4.2 | `283c5b6` | crate description no longer says "Windows" |
+| Release CI | `a91432d` | not yet run — no workflow has ever executed for this repo |
+
 Each plan file now carries a "What was actually built" section and a status
 banner; the durable rules landed in CLAUDE.md.
 
-**What is actually verified, and what is not.** Plan 5 is the only one proven
-against reality: `openssl-sys` and `native-tls` are gone from the dependency
+**Lyrics.** The pane autoscrolled off the 500ms status poll and called
+`snap_to` unconditionally, so any manual scroll was undone within half a
+second — synced lyrics were readable *only* at the current line. There is now
+a **Sync / Scroll** switch, with the highlight kept in both modes. Two silent
+duplications behind it were collapsed: the lyrics cache key (written by hand
+in three places) into `Song::lyrics_key()`, and the active-line calculation
+(computed separately by the view and the autoscroll, so they could scroll to a
+different line than they highlight) into `lyrics::active_line()`. Verified
+live: `live_lrclib_returns_parseable_synced_lyrics` fetches three real tracks
+and asserts sorted, advancing, non-empty timestamped lines.
+
+**What is actually verified, and what is not.** Plan 5 is the only *plan*
+proven against reality: `openssl-sys` and `native-tls` are gone from the dependency
 tree, and the new `live_tls_reaches_every_lookup_host` gets HTTP 200 from
 MusicBrainz, Cover Art Archive, Wikipedia and LRCLIB on Linux, with
 `live_wikipedia_bios_for_awkward_tags` still resolving all ten awkward tags.
-The Linux config/cache paths were confirmed on disk.
+The Linux config/cache paths were confirmed on disk. The release binary
+links **only libc, libm and libgcc_s** — no libssl, no libcrypto — which is
+finding 1 proven at the binary level: this build is now portable across
+distros.
+
+The lyrics work is verified too, against live LRCLIB responses rather than
+only self-written fixtures.
 
 Everything visual is **code-verified only**. Nobody has seen the bundled icon
 font render in iced, the tooltips, the playing-row highlight, or Settings →
@@ -248,22 +275,33 @@ migration.
    so this is cosmetic — recorded here only so deleting the plan didn't
    silently drop it.
 
-## Suggested next steps
+## Suggested next steps — manual testing, then release
 
-1. **Run the app and look at it.** Everything visual on this branch is
-   unverified: icon glyphs, tooltips, the playing-row highlight, Settings →
-   Storage. Note the display-driver hang above before launching on this
-   machine.
-2. **Re-enter the MPD server in Settings** if the overwritten config had a
-   non-default one (see the incident note above).
-3. Run the live suite against the real server —
-   `WINRMPC_TEST_MPD=10.0.1.3:6600 WINRMPC_TEST_SNAPCAST=10.0.1.3:1705 cargo
-   test -- --ignored --test-threads=1` — since none of it has been run since
-   these changes landed.
-4. Decide on plan 1 steps D/E (macOS `.app` bundle + release flow) and plan 3
-   step D (album-level highlighting). Both were deferred deliberately, neither
-   blocks a release.
-5. Merge the branch into `release/v0.4.2` and ship via the `release` skill.
+Nothing is pushed. The local release build is at `target/release/winrmpc`, and
+`dist/winrmpc-v0.4.2-linux-x86_64.tar.gz` is the artifact CI would produce
+(binary + `packaging/linux/` + README + LICENSE).
+
+1. **Run the app and look at it.** Everything visual is unverified: icon
+   glyphs and tooltips, the playing-row highlight, the lyrics Sync/Scroll
+   switch, Settings → Storage. **Note the display-driver hang above before
+   launching on this machine.**
+2. **Re-enter the MPD server in Settings** — the config was overwritten with
+   defaults (see the incident note above), so it currently points at
+   `127.0.0.1:6600`.
+3. Run the live suite against the real server, none of which has run since
+   these changes landed:
+   ```bash
+   WINRMPC_TEST_MPD=10.0.1.3:6600 WINRMPC_TEST_SNAPCAST=10.0.1.3:1705 \
+     cargo test -- --ignored --test-threads=1
+   ```
+4. **Push the branch and use "Run workflow" on the Release action** to get a
+   Windows `.exe` to test. That path publishes nothing — the `publish` job is
+   gated on `refs/tags/`.
+5. Only then: merge to `main`, tag `v0.4.2`, and let the workflow build and
+   attach both binaries.
+
+Deferred and not blocking a release: plan 1 steps D/E (macOS `.app` bundle),
+plan 3 step D (album-level highlighting).
 
 ### Still open from v0.4.1
 

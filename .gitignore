@@ -12,3 +12,5 @@ target
 
 # Transient temp files written by the Claude Code settings writer
 .claude/settings.local.json.tmp.*
+# Locally-built release artifacts; CI builds the real ones.
+dist
