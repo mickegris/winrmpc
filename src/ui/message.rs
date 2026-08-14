@@ -222,7 +222,12 @@ pub enum Message {
 
     // === Lyrics ===
     LyricsLoaded(String, Option<crate::lyrics::Lyrics>),
+    /// Show/hide the whole lyrics pane.
     ToggleLyrics,
+    /// Switch the synced-lyrics pane between **following the song** and
+    /// **free scrolling**. Without this the 500ms autoscroll snaps the pane
+    /// back before the user can read anywhere but the current line.
+    ToggleLyricsFollow,
 
     // === Settings / Servers ===
     HostChanged(String),

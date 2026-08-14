@@ -192,6 +192,11 @@ pub struct App {
     lyrics_client: crate::lyrics::LyricsClient,
     lyrics: HashMap<String, Option<crate::lyrics::Lyrics>>,
     show_lyrics: bool,
+    /// Whether the synced-lyrics pane follows the song (true) or scrolls
+    /// freely (false). Session-local and not persisted, matching
+    /// `show_lyrics` — both are "how I want to read *this* track" rather than
+    /// a durable preference.
+    lyrics_follow: bool,
     lyrics_scroll_id: scrollable::Id,
 
     // Errors
@@ -345,6 +350,7 @@ impl App {
             lyrics_client: crate::lyrics::LyricsClient::new(),
             lyrics: HashMap::new(),
             show_lyrics: true,
+            lyrics_follow: true,
             lyrics_scroll_id: scrollable::Id::unique(),
 
             last_error: None,
@@ -2189,6 +2195,15 @@ impl App {
                 self.lyrics.insert(key, lyrics);
                 Task::none()
             }
+            Message::ToggleLyricsFollow => {
+                self.lyrics_follow = !self.lyrics_follow;
+                // Re-syncing on the next 500ms tick would feel like the button
+                // didn't take, so snap straight away when following resumes.
+                if self.lyrics_follow {
+                    return self.lyrics_autoscroll();
+                }
+                Task::none()
+            }
             Message::ToggleLyrics => {
                 self.show_lyrics = !self.show_lyrics;
                 Task::none()
@@ -2301,13 +2316,7 @@ impl App {
                 // Lyrics: None=loading, Some(None)=not found, Some(Some(l))=found
                 let lyrics: Option<Option<&crate::lyrics::Lyrics>> =
                     self.current_song.as_ref().and_then(|s| {
-                        let key = format!(
-                            "{}\x1f{}\x1f{}",
-                            s.display_artist(),
-                            s.display_title(),
-                            s.display_album()
-                        );
-                        self.lyrics.get(&key).map(|opt| opt.as_ref())
+                        self.lyrics.get(&s.lyrics_key()).map(|opt| opt.as_ref())
                     });
                 views::now_playing::view(
                     &self.current_song,
@@ -2318,6 +2327,7 @@ impl App {
                     &self.art_handles,
                     lyrics,
                     self.show_lyrics,
+                    self.lyrics_follow,
                     self.lyrics_scroll_id.clone(),
                     self.playing_from_playlist.as_deref(),
                 )
@@ -3287,12 +3297,7 @@ impl App {
     }
 
 fn fetch_lyrics(&self, song: &Song) -> Task<Message> {
-    let key = format!(
-        "{}\x1f{}\x1f{}",
-        song.display_artist(),
-        song.display_title(),
-        song.display_album()
-    );
+    let key = song.lyrics_key();
     // Already cached in memory (including "not found" = Some(None)) — skip.
     if self.lyrics.contains_key(&key) {
         return Task::none();
@@ -3352,19 +3357,16 @@ fn lyrics_autoscroll(&self) -> Task<Message> {
     // Also gated on the active view: the lyrics scrollable only exists in
     // the widget tree while Now Playing is open, so from any other view
     // this snap_to walks the tree every 500ms to reach nothing.
-    if !self.show_lyrics || self.current_view != View::NowPlaying {
+    // `lyrics_follow` is what makes the pane readable: without it this runs
+    // every 500ms and yanks the view back to the active line, so the user can
+    // never scroll anywhere else.
+    if !self.show_lyrics || !self.lyrics_follow || self.current_view != View::NowPlaying {
         return Task::none();
     }
     let Some(song) = &self.current_song else {
         return Task::none();
     };
-    let key = format!(
-        "{}\x1f{}\x1f{}",
-        song.display_artist(),
-        song.display_title(),
-        song.display_album()
-    );
-    let Some(Some(lyrics)) = self.lyrics.get(&key) else {
+    let Some(Some(lyrics)) = self.lyrics.get(&song.lyrics_key()) else {
         return Task::none();
     };
     let Some(synced) = &lyrics.synced else {
@@ -3374,8 +3376,8 @@ fn lyrics_autoscroll(&self) -> Task<Message> {
         return Task::none();
     }
     let elapsed = self.status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
-    let t = elapsed - crate::ui::views::now_playing::LYRIC_SYNC_OFFSET;
-    let active = synced.iter().rposition(|l| l.secs <= t).unwrap_or(0);
+    // Before the first timestamp there is no active line; hold at the top.
+    let active = crate::lyrics::active_line(synced, elapsed).unwrap_or(0);
     let ratio = active as f32 / (synced.len() - 1) as f32;
     scrollable::snap_to(
         self.lyrics_scroll_id.clone(),

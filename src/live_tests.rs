@@ -759,6 +759,90 @@ fn first_sentence(s: &str) -> String {
     s[..cut.min(s.len()).min(180)].replace('\n', " ")
 }
 
+/// Fetches real synced lyrics from LRCLIB and checks they parse into
+/// timestamped lines that actually advance.
+///
+/// There was no live test for lyrics at all, which left `parse_lrc` verified
+/// only against fixtures this repo wrote itself — so nothing confirmed that
+/// what LRCLIB *actually returns* matches the shape the parser expects. Needs
+/// no MPD server. Same `WINRMPC_TEST_NETWORK=1` gate as the TLS check.
+#[tokio::test]
+#[ignore]
+async fn live_lrclib_returns_parseable_synced_lyrics() {
+    if std::env::var("WINRMPC_TEST_NETWORK").ok().as_deref() != Some("1") {
+        eprintln!("skipping: set WINRMPC_TEST_NETWORK=1 to run");
+        return;
+    }
+
+    let client = crate::lyrics::LyricsClient::new();
+
+    // Well-known tracks with good LRCLIB coverage. Durations are the real
+    // ones — the exact-match endpoint uses them to pick the right recording.
+    let tracks = [
+        ("Radiohead", "Creep", "Pablo Honey", Some(238.0)),
+        ("Nirvana", "Smells Like Teen Spirit", "Nevermind", Some(301.0)),
+        ("a-ha", "Take On Me", "Hunting High and Low", Some(225.0)),
+    ];
+
+    let mut synced_found = 0;
+    for (artist, title, album, dur) in tracks {
+        match client.fetch(artist, title, album, dur).await {
+            Some(l) => {
+                let plain = l.plain.as_ref().map(|p| p.lines().count()).unwrap_or(0);
+                match &l.synced {
+                    Some(lines) => {
+                        synced_found += 1;
+                        println!(
+                            "  OK    {title:26} synced={} lines, plain={plain} lines, \
+                             first=[{:.2}s] {:?}, last=[{:.2}s]",
+                            lines.len(),
+                            lines[0].secs,
+                            lines.iter().find(|l| !l.text.is_empty()).map(|l| &l.text),
+                            lines[lines.len() - 1].secs,
+                        );
+
+                        // The properties the Now Playing panel relies on.
+                        assert!(lines.len() > 5, "{title}: implausibly few synced lines");
+                        assert!(
+                            lines.windows(2).all(|w| w[0].secs <= w[1].secs),
+                            "{title}: synced lines must be sorted by time — \
+                             the active-line search uses rposition, which assumes it"
+                        );
+                        assert!(
+                            lines.iter().any(|l| !l.text.is_empty()),
+                            "{title}: every synced line is empty, so the parser \
+                             kept the timestamps and dropped the words"
+                        );
+                        assert!(
+                            lines[lines.len() - 1].secs > lines[0].secs,
+                            "{title}: timestamps never advance"
+                        );
+                        // A timestamp past the track's own length means the
+                        // parser mis-scaled something (mm vs ss, say).
+                        if let Some(d) = dur {
+                            assert!(
+                                lines[lines.len() - 1].secs < d + 60.0,
+                                "{title}: last timestamp {:.1}s is beyond the track \
+                                 duration {d}s",
+                                lines[lines.len() - 1].secs
+                            );
+                        }
+                    }
+                    None => println!("  PLAIN {title:26} no synced lyrics (plain={plain} lines)"),
+                }
+            }
+            None => println!("  MISS  {title:26} nothing found"),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    }
+
+    assert!(
+        synced_found > 0,
+        "no synced lyrics came back for any track — either LRCLIB changed its \
+         response shape or parse_lrc is dropping every line"
+    );
+}
+
 /// Proves the TLS stack actually negotiates against every host this app talks
 /// to, on whatever OS the test is run on.
 ///
