@@ -4,10 +4,47 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-12. Branch: `release/v0.4.1` — **not yet merged to
-`main`, not yet tagged/released.**
+Last updated: 2026-08-14. Branch: `improve/cross-platform-and-ui` — planning
+only so far, no code changes yet.
 
-## Where things stand
+**v0.4.1 shipped.** `release/v0.4.1` was merged to `main` (PR #20, commit
+`a810419`) and tagged `v0.4.1`. Everything in the sections below describing
+that branch as pending is historical record, kept because the *findings* are
+still current — only its "not yet merged" framing is out of date.
+
+## Current branch: `improve/cross-platform-and-ui`
+
+Five plans written on 2026-08-14 from a read-only investigation, targeting a
+future `release/v0.4.2`. Umbrella:
+[`docs/plans/cross-platform-and-ui-0.4.2.md`](plans/cross-platform-and-ui-0.4.2.md).
+
+The headline finding is that **three separate bugs are the same mistake** —
+a Windows-only resource named directly, with a silent fallback elsewhere:
+
+1. `Font::with_name("Segoe UI Symbol")` (`link.rs:36`) — the row-action
+   glyphs (`▶ + ⏭ ☰`) almost certainly render as **tofu boxes on macOS and
+   Linux**, since the fallback is the very font the code's own comment says
+   lacks them. This is the real cause of "the buttons are hard to understand".
+2. `window::Settings.icon` → winit `set_window_icon`, which is a **documented
+   no-op on macOS** and an **empty no-op on Wayland**. `application_id` is
+   also left empty, so Wayland can't match a `.desktop` file either.
+3. `reqwest` on default features → `native-tls` → **OpenSSL on Linux only**
+   (schannel/Security.framework elsewhere).
+
+Plus: the MusicBrainz `User-Agent` is a placeholder
+(`winrmpc/0.1.0 (https://github.com/user/winrmpc)`) that risks being blocked;
+only the Queue highlights the playing track; and macOS storage works but lives
+in `~/Library/…/com.winrmpc.winrmpc/`, which Finder hides — that's the whole
+of the "couldn't find the config file" report.
+
+**Nothing here is verified on real macOS or Linux hardware.** Every claim is
+sourced from the vendored `iced 0.13.1` / `iced_winit 0.13.0` /
+`winit 0.30.13` / `Cargo.lock` with file:line references, and each plan ends
+with a "How to confirm on the real OS" section that is the actual acceptance
+criterion. Suggested implementation order: affordance → network → highlighting
+→ storage → icons.
+
+## Where things stood at v0.4.1
 
 `release/v0.4.1` is green: **181 offline tests, 12 live tests, zero build
 warnings**, debug and release both build. The branch contains a long run of
@@ -172,8 +209,14 @@ migration.
 
 ## Suggested next steps
 
-1. Build and run on Windows; confirm the four fixes above actually look
-   right, and watch the Log view during a first Albums browse for slow-command
-   ⚠ marks.
-2. If Albums is slow rather than broken, address item 3.
-3. Then `main` merge + tag via the `release` skill.
+1. Work the five plans in the order given above, on
+   `improve/cross-platform-and-ui`.
+2. Build and run on **macOS and Linux** — the tofu-box and icon findings can
+   only be confirmed there, and they gate how wide the glyph audit in plan 4
+   has to be.
+3. Merge the branch into `release/v0.4.2` and ship via the `release` skill.
+
+### Still open from v0.4.1
+
+- If Albums is slow rather than broken at library scale, address item 3 under
+  "Unverified" above.
