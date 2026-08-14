@@ -26,6 +26,11 @@ impl AppColors {
     pub const TEXT_PRIMARY: Color = Color::from_rgb(0.93, 0.93, 0.95);
     pub const TEXT_SECONDARY: Color = Color::from_rgb(0.62, 0.62, 0.68);
     pub const TEXT_MUTED: Color = Color::from_rgb(0.42, 0.42, 0.48);
+    /// An action that exists but doesn't apply here — the queue's "move up" on
+    /// the first row, "move down" on the last. Dim enough to read as
+    /// unavailable rather than merely low-priority, which is the distinction
+    /// `TEXT_MUTED` can't carry on its own.
+    pub const TEXT_DISABLED: Color = Color::from_rgb(0.24, 0.24, 0.28);
 
     // Accent
     pub const ACCENT: Color = Color::from_rgb(0.31, 0.76, 0.97);

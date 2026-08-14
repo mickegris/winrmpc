@@ -2,10 +2,14 @@ use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
-use crate::ui::widgets::link::{icon_btn_danger, icon_btn_tip};
+use crate::ui::widgets::link::{icon_btn_danger_maybe, icon_btn_tip, icon_btn_tip_maybe};
 use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
+
+/// Move up, move down, add-to-playlist, remove. All four are always rendered
+/// (disabled where they don't apply), so this width is constant.
+const ACTIONS_WIDTH: u16 = song_row::action_group_width(4);
 
 pub fn view<'a>(
     queue: &'a [Song],
@@ -35,6 +39,10 @@ pub fn view<'a>(
             text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
             text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
             text("Time").size(11).width(55).color(AppColors::TEXT_MUTED),
+            // Reserves the action group's width. Without it the header's
+            // FillPortion columns get ~134px more to share than the rows do,
+            // and every label sits visibly right of the data under it.
+            Space::with_width(ACTIONS_WIDTH),
         ]
         .spacing(8)
         .padding([4, 12]),
@@ -121,30 +129,40 @@ pub fn view<'a>(
 
         // No "add to end of queue" here: these rows already *are* the queue.
         // See the row-action table in CLAUDE.md.
-        let mut actions = row![].spacing(2);
-        if i > 0 {
-            actions =
-                actions.push(icon_btn_tip(icon::MOVE_UP, "Move up", Message::QueueMoveUp(pos)));
-        }
-        if i + 1 < queue.len() {
-            actions = actions.push(icon_btn_tip(
-                icon::MOVE_DOWN,
-                "Move down",
-                Message::QueueMoveDown(pos),
-            ));
-        }
+        //
+        // Both arrows are always present, disabled at the ends rather than
+        // omitted. Omitting one narrows the whole action group, which hands
+        // the freed width back to the FillPortion columns to its left — so the
+        // first and last rows' Title/Artist/Album/Time drifted right against
+        // every row between them, and the last row's Move-up arrow rendered in
+        // the Move-down column.
+        let mut actions = row![].spacing(song_row::ACTION_SPACING);
+        actions = actions.push(icon_btn_tip_maybe(
+            icon::MOVE_UP,
+            "Move up",
+            (i > 0).then(|| Message::QueueMoveUp(pos)),
+        ));
+        actions = actions.push(icon_btn_tip_maybe(
+            icon::MOVE_DOWN,
+            "Move down",
+            (i + 1 < queue.len()).then(|| Message::QueueMoveDown(pos)),
+        ));
         actions = actions.push(icon_btn_tip(
             icon::ADD_PLAYLIST,
             "Add to playlist…",
             Message::OpenAddToPlaylist(vec![song.file.clone()]),
         ));
-        if let Some(id) = song.id {
-            actions = actions.push(icon_btn_danger(
-                icon::REMOVE,
-                "Remove from queue",
-                Message::QueueRemove(id),
-            ));
-        }
+        // `id` is always set on a real queue response; disabled rather than
+        // omitted for the same layout reason as the arrows above.
+        actions = actions.push(icon_btn_danger_maybe(
+            icon::REMOVE,
+            "Remove from queue",
+            song.id.map(Message::QueueRemove),
+        ));
+
+        // Fixed width so the columns to the left land in the same place on
+        // every row, and so the header below can reserve the same amount.
+        let actions = actions.width(ACTIONS_WIDTH);
 
         items = items.push(
             container(

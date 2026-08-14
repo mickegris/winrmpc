@@ -42,6 +42,28 @@ use iced::{Color, Element, Length};
 /// row would shift depending on what happens to be playing.
 const MARKER_WIDTH: u16 = 14;
 
+/// Width of one row-action icon button.
+///
+/// Derived, not measured by eye: every glyph in the bundled font has an
+/// advance of exactly one em (`icon::tests::every_glyph_advances_exactly_one_em`
+/// asserts it), so at [`icon::SIZE`] the glyph is 16px, and `padding([2, 8])`
+/// adds 8 on each side.
+pub const ACTION_BTN_WIDTH: u16 = icon::SIZE + 8 + 8;
+
+/// Spacing between adjacent row-action buttons.
+pub const ACTION_SPACING: u16 = 2;
+
+/// Total width of a row-action group of `n` buttons.
+///
+/// A song list's columns are `FillPortion`s laid out *before* the action
+/// group, so the group's width decides where every column lands. Any header
+/// row that has to line up with the data rows must reserve exactly this much
+/// — see the Queue, whose header had no action column at all and therefore
+/// spread its labels ~134px wider than the rows beneath them.
+pub const fn action_group_width(n: u16) -> u16 {
+    n * ACTION_BTN_WIDTH + n.saturating_sub(1) * ACTION_SPACING
+}
+
 /// Does this library-list row hold the currently playing track?
 ///
 /// Compares URIs. See the module docs for why this is not a position compare
@@ -166,6 +188,30 @@ mod tests {
         assert_ne!(AppColors::ROW_PLAYING, AppColors::ROW_EVEN);
         assert_ne!(AppColors::ROW_PLAYING, AppColors::ROW_ODD);
         assert_ne!(AppColors::ROW_PLAYING, AppColors::BG_HOVER);
+    }
+
+    #[test]
+    fn the_action_group_width_matches_its_buttons() {
+        // The Queue's header reserves `action_group_width(4)` and its rows
+        // render four buttons at `ACTION_BTN_WIDTH` with `ACTION_SPACING`
+        // between them. If those two ever disagree the header's FillPortion
+        // columns get a different share of the row than the data's do, and
+        // every label drifts sideways — which is exactly what happened before
+        // the header reserved anything at all.
+        assert_eq!(
+            action_group_width(4),
+            4 * ACTION_BTN_WIDTH + 3 * ACTION_SPACING
+        );
+        assert_eq!(action_group_width(1), ACTION_BTN_WIDTH, "no trailing gap");
+        assert_eq!(action_group_width(0), 0);
+    }
+
+    #[test]
+    fn an_action_button_is_the_glyph_plus_its_padding() {
+        // Guards the derivation rather than the number: 8px padding either
+        // side of a glyph that is exactly `icon::SIZE` wide, which
+        // `icon::tests::every_glyph_advances_exactly_one_em` keeps true.
+        assert_eq!(ACTION_BTN_WIDTH, icon::SIZE + 16);
     }
 
     #[test]

@@ -333,6 +333,10 @@ The two deliberate gaps: **the queue has no "add to end of queue"** (those rows 
 
 Tooltips sit **above** the button (`tooltip::Position::Top`) because the right-most actions are near the window edge, where a side-placed tooltip clips.
 
+**An action that doesn't apply is disabled, never omitted** (`icon_btn_tip_maybe` / `icon_btn_danger_maybe`, with a `Status::Disabled` arm giving `TEXT_DISABLED`). Row columns are `FillPortion`s laid out *before* the action group, so dropping a button narrows the group, hands the freed width back to the fill columns, and shifts Title/Artist/Album/Time **on that row alone**. The Queue showed this plainly: its first and last rows drifted right against every row between them, and the last row's Move-up arrow rendered in the Move-down column. Same principle as `song_row::playing_marker` — hold the slot, change what's in it.
+
+**A header row must reserve `song_row::action_group_width(n)`.** The Queue's header had no action column at all, so its `FillPortion`s divided ~134px more than the rows beneath and every label sat visibly right of its data. `ACTION_BTN_WIDTH` is *derived*, not eyeballed: every glyph in the bundled font advances exactly one em (`icon::tests::every_glyph_advances_exactly_one_em` parses `hmtx` and asserts it), so a glyph is exactly `icon::SIZE` px and `padding([2, 8])` adds 8 each side. Regenerate the font with non-square glyphs and that test fails rather than the layout quietly drifting.
+
 ## Album cover grid vs list (`src/ui/widgets/album_grid.rs`)
 The Albums list, Recently Added and Recently Played (Albums mode) all render through one shared widget, so they look and behave identically. `album_grid` exposes `tile()` (cover + title + subtitle + optional caption), `grid()`, `list_thumb()` (the list-mode cover), `layout_toggle()` (the Grid / List button — `icon::GRID` / `icon::LIST` plus a text label) and `art_for()` (cache lookup via `art_key_for`).
 - **One flag for all three views**: `AppConfig::album_grid_view` (`#[serde(default)]`, persisted), toggled by `Message::ToggleAlbumGridView`. Deliberately not per-view — three independent layout memories would feel arbitrary.

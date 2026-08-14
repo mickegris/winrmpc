@@ -71,6 +71,9 @@ fn icon_btn_style(_t: &iced::Theme, status: button::Status) -> button::Style {
         button::Status::Hovered | button::Status::Pressed => {
             (Some(AppColors::BG_HOVER.into()), AppColors::ACCENT)
         }
+        // Disabled has to be visually distinct or the button lies: it looks
+        // pressable and isn't. This arm used to fall into the catch-all.
+        button::Status::Disabled => (None, AppColors::TEXT_DISABLED),
         _ => (None, AppColors::TEXT_MUTED),
     };
     button::Style {
@@ -105,15 +108,26 @@ pub fn icon_btn_danger<'a>(
     tip: &'static str,
     on_press: Message,
 ) -> Element<'a, Message> {
+    icon_btn_danger_maybe(glyph, tip, Some(on_press))
+}
+
+/// [`icon_btn_danger`] where the action may not apply. See
+/// [`icon_btn_tip_maybe`] for why this disables rather than omits.
+pub fn icon_btn_danger_maybe<'a>(
+    glyph: &'static str,
+    tip: &'static str,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
     with_tip(
         button(icon::icon(glyph))
-            .on_press(on_press)
+            .on_press_maybe(on_press)
             .padding([2, 8])
             .style(|_t: &iced::Theme, status: button::Status| {
                 let (bg, text_color) = match status {
                     button::Status::Hovered | button::Status::Pressed => {
                         (Some(AppColors::BG_HOVER.into()), AppColors::ERROR)
                     }
+                    button::Status::Disabled => (None, AppColors::TEXT_DISABLED),
                     _ => (None, AppColors::ERROR),
                 };
                 button::Style {
@@ -142,7 +156,34 @@ pub fn icon_btn_tip<'a>(
     tip: &'static str,
     on_press: Message,
 ) -> Element<'a, Message> {
-    with_tip(icon_btn(glyph, on_press), tip)
+    icon_btn_tip_maybe(glyph, tip, Some(on_press))
+}
+
+/// [`icon_btn_tip`] where the action may not apply to this row.
+///
+/// `None` renders the button **disabled rather than omitted**, and that is the
+/// point: the row's action buttons are laid out after `FillPortion` columns,
+/// so dropping one narrows the action group, hands the freed width back to the
+/// fill columns, and shifts Title/Artist/Album/Time on that row alone. The
+/// queue's first and last rows drifted visibly against every row between them,
+/// and the last row's remaining arrow slid into the *other* arrow's column.
+///
+/// Same reasoning as `song_row::playing_marker`: a slot that changes width
+/// with content moves everything beside it, so hold the slot and change what's
+/// in it.
+pub fn icon_btn_tip_maybe<'a>(
+    glyph: &'static str,
+    tip: &'static str,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    with_tip(
+        button(icon::icon(glyph))
+            .on_press_maybe(on_press)
+            .padding([2, 8])
+            .style(icon_btn_style)
+            .into(),
+        tip,
+    )
 }
 
 /// Wrap any element in the shared tooltip styling.

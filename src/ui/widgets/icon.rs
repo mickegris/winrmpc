@@ -219,6 +219,44 @@ mod tests {
         );
     }
 
+    /// Row layout depends on this. `song_row::ACTION_BTN_WIDTH` is computed as
+    /// `SIZE + horizontal padding`, which is only right because every glyph
+    /// advances exactly one em — so a rendered glyph is exactly `SIZE` px wide.
+    /// Regenerate the font with a set whose advances differ and the queue's
+    /// columns quietly stop lining up with its header; this fails instead.
+    #[test]
+    fn every_glyph_advances_exactly_one_em() {
+        let font = FONT_BYTES;
+        let be16 = |o: usize| u16::from_be_bytes([font[o], font[o + 1]]);
+        let be32 = |o: usize| {
+            u32::from_be_bytes([font[o], font[o + 1], font[o + 2], font[o + 3]])
+        };
+
+        let num_tables = be16(4) as usize;
+        let table = |tag: &[u8; 4]| -> usize {
+            (0..num_tables)
+                .map(|i| 12 + i * 16)
+                .find(|&rec| &font[rec..rec + 4] == tag)
+                .map(|rec| be32(rec + 8) as usize)
+                .unwrap_or_else(|| panic!("font has no {} table", String::from_utf8_lossy(tag)))
+        };
+
+        let units_per_em = be16(table(b"head") + 18);
+        // hhea.numberOfHMetrics is the last field of a 36-byte table.
+        let num_h_metrics = be16(table(b"hhea") + 34) as usize;
+        let hmtx = table(b"hmtx");
+
+        assert!(num_h_metrics > 0, "font has no horizontal metrics");
+        for i in 0..num_h_metrics {
+            let advance = be16(hmtx + i * 4);
+            assert_eq!(
+                advance, units_per_em,
+                "glyph {i} advances {advance}/{units_per_em} em — \
+                 song_row::ACTION_BTN_WIDTH assumes square glyphs"
+            );
+        }
+    }
+
     #[test]
     fn glyph_constants_are_unique() {
         let mut seen = std::collections::HashMap::new();
