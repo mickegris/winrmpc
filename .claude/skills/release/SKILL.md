@@ -1,80 +1,123 @@
 ---
 name: release
-description: Cut a full versioned release — bump version, branch + PR + merge to main, tag, GitHub release, and upload the built exe. Use when the user says "release", "cut a release", "create a release", or wants a new versioned binary published with a user-facing change.
+description: Cut a full versioned release — bump version, branch + PR + merge to main, tag, and let CI build and attach the Linux and Windows binaries. Use when the user says "release", "cut a release", "create a release", or wants a new versioned binary published with a user-facing change.
 ---
 
 # release
 
-Publish a new versioned release of winrmpc: version bump → branch → PR → merge → tag → GitHub release → exe upload. This is the heavier sibling of the **ship** skill; use it when the change is user-facing and should produce a downloadable binary.
+Publish a new versioned release of winrmpc: version bump → branch → PR → merge → tag → **CI builds and attaches both binaries**.
 
-## Determine the version
-- Read the current version from `Cargo.toml`.
-- Bump per semver intent: patch (`0.1.5 → 0.1.6`) for fixes/small features, minor for larger features. Confirm the target version with the user if it isn't obvious from their request.
+This is the heavier sibling of the **ship** skill; use it when the change is user-facing and should produce downloadable binaries.
+
+## The binaries are built by CI, not by you
+
+`.github/workflows/release.yml` owns the build. Pushing a `vX.Y.Z` tag makes it:
+
+1. run `cargo test --all-targets` on **ubuntu, windows and macOS**, and fail the release if any of them fails,
+2. build `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`,
+3. create the GitHub release (or upload into one that already exists) with both assets:
+   - `winrmpc-vX.Y.Z-linux-x86_64.tar.gz` — binary + `packaging/linux/` + README + LICENSE
+   - `winrmpc-vX.Y.Z-windows-x86_64.exe`
+
+**Do not try to build the `.exe` locally on Linux.** There is no cross toolchain in this repo's assumptions — it would need `cargo-xwin` + `clang`/`lld`, or mingw. Building on `windows-latest` also keeps the MSVC ABI earlier releases shipped.
+
+**A local `cargo build --release` is still worth doing** as a compile check, but its output is not what gets published.
+
+## Before releasing: get an .exe to test
+
+The release should not be the first time the Windows build is exercised. Trigger the workflow manually — it builds the same artifacts and **publishes nothing** (the `publish` job is gated on `refs/tags/`):
+
+```bash
+gh workflow run release.yml --ref <branch>
+gh run watch                      # or: gh run list --workflow=release.yml
+gh run download <run-id> -D ./ci-artifacts
+```
+
+> **`workflow_dispatch` only works once `release.yml` is on the default branch.**
+> GitHub will not offer a manual run for a workflow that exists solely on a
+> feature branch — `gh workflow run` fails with "could not find any workflows".
+> The `--ref` flag chooses which branch's *code* to build, but the workflow
+> itself must already be on `main`.
+>
+> So the first time round, the order is: **merge the workflow to `main` first**
+> (via `ship`), then dispatch a manual run from whatever branch you want to
+> test, then tag. After that it is available for every future release.
 
 ## Environment notes (this repo)
-- Run all commands from the repo root: `C:\Users\mikae\winrmpc`.
-- `gh` CLI: `C:\Program Files\GitHub CLI\gh.exe` (or `gh` if on PATH).
-- Shell is **PowerShell** — multiline strings use `@'...'@` here-strings, not bash heredocs.
-- `gh pr create`/`gh release create` choke on inline multiline markdown in PowerShell — write the body/notes to a temp file and use `--body-file` / `--notes-file`, then delete it.
-- Editing `Cargo.toml` may require a prior Read in-session, or just use `Set-Content`/an exact Edit on the `version = "X.Y.Z"` line.
+
+- Repo root: `/home/mikael/git/winrmpc`. Shell is **bash** — use `git commit -F -` with a heredoc for multi-line messages.
+  - *If running this on Windows/PowerShell instead*: multiline strings are `@'...'@` here-strings, and `gh pr create` / `gh release create` choke on inline multiline markdown — write the body to a temp file and use `--body-file` / `--notes-file`.
+- `gh` CLI must be authenticated (`gh auth status`).
+- Default branch is `main`.
 
 ## Steps
 
-1. **Branch + bump.** Create `release/vX.Y.Z`, then set `version = "X.Y.Z"` in `Cargo.toml`:
-   ```powershell
+1. **Determine the version.** Read the current one from `Cargo.toml`. Bump per semver intent: patch for fixes/small features, minor for larger ones. Confirm with the user if it isn't obvious from their request.
+
+2. **Branch and bump.**
+   ```bash
    git checkout -b release/vX.Y.Z
    ```
+   Set `version = "X.Y.Z"` in `Cargo.toml` **and** keep the `## Current Version` line in `CLAUDE.md` in sync.
 
-2. **Build the release binary** (also confirms it compiles; embeds the icon via build.rs):
-   ```powershell
-   cargo build --release   # → target\release\winrmpc.exe
+3. **Verify locally.**
+   ```bash
+   cargo test
+   cargo build --release
    ```
-   Run `cargo test` too if code changed.
-
-3. **Commit** the bump + changes with a descriptive body and the Co-Authored-By trailer:
-   ```powershell
-   git add <files> Cargo.toml
-   git commit -m @'
-   Bump to X.Y.Z: <one-line theme>
-
-   - <highlight>
-   - <highlight>
-
-   Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
-   '@
+   Zero warnings is the standard here (`cargo check --all-targets` with `RUSTFLAGS=-D warnings` is what CI enforces). If the change touches the MPD/Snapcast protocol or external lookups, also run the live suite against a real server:
+   ```bash
+   WINRMPC_TEST_MPD=host:6600 WINRMPC_TEST_SNAPCAST=host:1705 \
+     cargo test -- --ignored --test-threads=1
    ```
 
-4. **Push** and **open the PR** (body via temp file):
-   ```powershell
+4. **Commit** the bump plus any changes, with a body explaining the why and the trailer:
+   ```bash
+   git commit -F - <<'EOF'
+   chore: bump to X.Y.Z
+
+   <why this release exists, and what changed>
+
+   Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+   EOF
+   ```
+
+5. **Push and open the PR.**
+   ```bash
    git push -u origin release/vX.Y.Z
-   gh pr create --title "Release vX.Y.Z" --body-file pr_body.txt
-   Remove-Item pr_body.txt
+   gh pr create --title "Release vX.Y.Z" --body-file pr_body.md && rm pr_body.md
    ```
 
-5. **Merge, delete branch, sync main:**
-   ```powershell
+6. **Merge, delete the branch, sync main.**
+   ```bash
    gh pr merge <number> --merge --delete-branch
-   git checkout main
-   git pull
+   git checkout main && git pull
    ```
 
-6. **Tag and push the tag** (from the updated main):
-   ```powershell
+7. **Tag and push — this is what triggers the build.**
+   ```bash
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
 
-7. **Create the GitHub release** (notes via temp file), then upload the exe:
-   ```powershell
-   gh release create vX.Y.Z --title "vX.Y.Z" --notes-file release_notes.txt
-   Remove-Item release_notes.txt
-   gh release upload vX.Y.Z "target\release\winrmpc.exe"
+8. **Write the release notes while CI builds.** The build takes several minutes, so create the release with proper notes in that window; the workflow detects an existing release and uploads into it rather than creating its own with auto-generated notes:
+   ```bash
+   gh release create vX.Y.Z --title "vX.Y.Z" --notes-file release_notes.md && rm release_notes.md
    ```
-   Notes should be user-facing: group under "New features" / "Bug fixes".
+   Notes should be user-facing, grouped under **New features** / **Bug fixes** / **Under the hood**. If the workflow got there first, it will have used `--generate-notes`; replace them with `gh release edit vX.Y.Z --notes-file release_notes.md`.
 
-8. **Report** the release URL and confirm the exe is attached.
+9. **Watch the run and confirm both assets landed.**
+   ```bash
+   gh run watch
+   gh release view vX.Y.Z --json assets --jq '.assets[].name'
+   ```
+   Expect exactly two names: the `-linux-x86_64.tar.gz` and the `-windows-x86_64.exe`.
+
+10. **Report** the release URL and list the attached assets. If the Windows job failed, say so plainly — a release with only a Linux binary is a half-finished release, not a finished one.
 
 ## Pitfalls
-- If a commit hook fails, **never amend** — create a new commit.
-- Make sure the release build finished before uploading; upload from `target\release\winrmpc.exe`.
-- Keep the `## Current Version` line in `CLAUDE.md` in sync with the bump.
+
+- **Never amend after a hook failure** — create a new commit.
+- **Don't hand-upload a locally built binary.** On Linux you cannot produce the `.exe` at all, and a hand-built Linux binary skips the tarball packaging (`packaging/linux/` must travel with it, or the Wayland icon can't resolve).
+- **A tag push is the trigger.** Deleting and re-pushing a tag to re-run the build also re-runs `publish`; use `--clobber` semantics already in the workflow rather than deleting release assets by hand.
+- The workflow installs `libxkbcommon-dev`/`libwayland-dev`/`libx11-dev` on Linux and deliberately **not** `libssl-dev`. If it ever fails on a missing libssl, something re-enabled `native-tls` in `Cargo.toml` — see CLAUDE.md's "Outbound HTTP".
