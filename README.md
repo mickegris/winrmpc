@@ -295,14 +295,26 @@ On first launch winrmpc connects to MPD at `127.0.0.1:6600` and writes a config 
 
 If the config file is ever left in a state that can't be parsed, winrmpc runs on defaults for that session, says so in the **Log** view, and will not save over the file — fix or delete it and settings will start saving again.
 
-Configuration file (Windows path shown; Linux and macOS use their own standard config directories):
-```
-%APPDATA%\winrmpc\winrmpc\config\config.toml
-```
+### Where your settings and cache live
 
-Cache database (album art, lyrics, biographies, play history):
-```
-%LOCALAPPDATA%\winrmpc\winrmpc\cache\winrmpc.redb
+**Settings → Storage** shows both paths and gives you an **Open folder** button for each, which is the quickest way to get there. They're also written to the **Log** view at every startup.
+
+| | Settings (`config.toml`) | Cache (`winrmpc.redb`) |
+|---|---|---|
+| Windows | `%APPDATA%\winrmpc\winrmpc\config\` | `%LOCALAPPDATA%\winrmpc\winrmpc\cache\` |
+| Linux | `~/.config/winrmpc/` | `~/.cache/winrmpc/` |
+| macOS | `~/Library/Application Support/com.winrmpc.winrmpc/` | `~/Library/Caches/com.winrmpc.winrmpc/` |
+
+The cache holds album art, lyrics, biographies and play history. Deleting it is safe — everything except play history is re-fetched.
+
+On **macOS** those folders take some finding, which is why the in-app buttons exist: `~/Library` is hidden in Finder by default (press ⇧⌘. to reveal it, or use Go → Go to Folder), and the folder is named `com.winrmpc.winrmpc` rather than `winrmpc`, so searching Spotlight for "winrmpc" won't lead you there.
+
+Both locations can be overridden with environment variables, which is useful for a portable install or for running two independent profiles:
+
+```bash
+WINRMPC_CONFIG_DIR=~/winrmpc-profiles/lounge \
+WINRMPC_CACHE_DIR=~/winrmpc-profiles/lounge/cache \
+  winrmpc
 ```
 
 ### Example config.toml

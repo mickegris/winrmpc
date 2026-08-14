@@ -122,6 +122,11 @@ pub enum Message {
     CachesCleared,
     /// On-disk art size, for the readout next to the purge button.
     CacheSizeLoaded(u64),
+    /// Reveal a storage directory in the platform file manager (Settings →
+    /// Storage). Carries the *directory*, never the file — Explorer and
+    /// Finder both handle "open this folder" more predictably than "open this
+    /// .toml", which would launch a text editor instead.
+    OpenStorageFolder(String),
 
     // === Browser ===
     BrowsePath(String),

@@ -209,8 +209,34 @@ impl App {
             .or_else(|| config.servers.first().map(|s| s.name.clone()))
             .unwrap_or_else(|| "Default".into());
         let client = MpdClient::new(&config.server_addr(&active_server));
-        let cache_dir = AppConfig::cache_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("./cache"));
+        // Log both resolved paths at startup so they land in the in-app Log
+        // view. This is the zero-UI answer to "where does this thing keep its
+        // settings" — on macOS the directory is `~/Library/Application
+        // Support/com.winrmpc.winrmpc/`, which Finder hides by default and
+        // whose name doesn't contain "winrmpc" in any form anyone would search
+        // for. See also Settings → Storage.
+        match AppConfig::config_path() {
+            Some(p) => tracing::info!("Config file: {}", p.display()),
+            None => tracing::error!("No config file: settings will not be saved this session"),
+        }
+        let cache_dir = match AppConfig::cache_dir() {
+            Some(dir) => {
+                tracing::info!("Cache database: {}", dir.join("winrmpc.redb").display());
+                dir
+            }
+            None => {
+                // Relative to the *working directory*, which from a Finder or
+                // desktop launch is very often `/` — where the create fails
+                // and `Store::open` degrades to memory. Logged as ERROR by
+                // `cache_dir()` already; this records where we actually tried.
+                let fallback = std::path::PathBuf::from("./cache");
+                tracing::warn!(
+                    "falling back to {} for the cache, relative to the working directory",
+                    fallback.display()
+                );
+                fallback
+            }
+        };
         let store = Store::open(&cache_dir);
         let initial_recently_played = store.recently_played_get(&active_server);
 
@@ -607,7 +633,7 @@ impl App {
                         };
                         push_recent(&mut self.recent_albums, entry);
                         self.config.recent_albums = self.recent_albums.clone();
-                        self.config.save().ok();
+                        self.config.save_and_log("recent albums");
                     }
                 }
 
@@ -1060,7 +1086,7 @@ impl App {
             }
             Message::ToggleAlbumGridView => {
                 self.config.album_grid_view = !self.config.album_grid_view;
-                self.config.save().ok();
+                self.config.save_and_log("album grid layout");
                 // Both layouts show covers (the list just shows them small),
                 // so this only matters when the queue was never started for
                 // this list — it's a no-op when it already was.
@@ -1113,6 +1139,19 @@ impl App {
                 // Refill whatever list is open, so the covers come back
                 // without needing a navigation.
                 Task::batch([self.queue_album_art(), self.fetch_cache_size()])
+            }
+            Message::OpenStorageFolder(dir) => {
+                // Create it first: the paths are shown before anything has
+                // been written there, and "Open folder" on a folder that
+                // doesn't exist yet is a dead button.
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    tracing::error!(dir, error = %e, "could not create the folder to open");
+                    return Task::none();
+                }
+                if let Err(e) = open::that_detached(&dir) {
+                    tracing::error!(dir, error = %e, "could not open the folder");
+                }
+                Task::none()
             }
             Message::CacheSizeLoaded(bytes) => {
                 self.cache_size_bytes = Some(bytes);
@@ -1559,7 +1598,7 @@ impl App {
                     server.default_partition = Some(name.clone());
                 }
                 self.config.default_partition = Some(name.clone());
-                self.config.save().ok();
+                self.config.save_and_log("default partition");
                 let client = self.client.clone();
                 Task::perform(
                     async move {
@@ -1625,7 +1664,7 @@ impl App {
                 let url = self.radio_add_url.trim().to_string();
                 if !name.is_empty() && !url.is_empty() {
                     self.config.add_radio_station(name, url);
-                    self.config.save().ok();
+                    self.config.save_and_log("radio station (add)");
                     self.radio_add_name.clear();
                     self.radio_add_url.clear();
                 }
@@ -1633,7 +1672,7 @@ impl App {
             }
             Message::RadioRemoveStation(url) => {
                 self.config.remove_radio_station(&url);
-                self.config.save().ok();
+                self.config.save_and_log("radio station (remove)");
                 Task::none()
             }
 
@@ -1788,7 +1827,7 @@ impl App {
                         if self.config.default_server.as_deref() == Some(old_name.as_str()) {
                             self.config.default_server = Some(new_name.clone());
                         }
-                        self.config.save().ok();
+                        self.config.save_and_log("server rename");
                     }
                 }
                 self.settings_rename_input.clear();
@@ -1870,7 +1909,7 @@ impl App {
                     s.snapcast_host = snap_host;
                     s.snapcast_port = snap_port;
                 }
-                self.config.save().ok();
+                self.config.save_and_log("server details");
 
                 // Editing the server we're talking to means reconnecting to
                 // the new address; SwitchServer already does exactly that,
@@ -1891,7 +1930,7 @@ impl App {
                 if let Ok(mb) = self.settings_cache_size.trim().parse::<u32>() {
                     if mb > 0 {
                         self.config.art_cache_size_mb = mb;
-                        self.config.save().ok();
+                        self.config.save_and_log("art cache size");
                         // Applies to the next store; already-cloned handles
                         // keep the old limit for their remaining lifetime,
                         // which only affects fetches already in flight.
@@ -1907,7 +1946,7 @@ impl App {
                 } else {
                     Some(self.settings_cd_device.trim().to_string())
                 };
-                self.config.save().ok();
+                self.config.save_and_log("CD device");
                 Task::none()
             }
 
@@ -2071,7 +2110,7 @@ impl App {
             }
             Message::SetDefaultServer(name) => {
                 self.config.default_server = Some(name.clone());
-                self.config.save().ok();
+                self.config.save_and_log("default server");
                 // Also switch active connection so the sidebar dropdown reflects
                 // the new default immediately.
                 if name != self.active_server {
@@ -2101,7 +2140,7 @@ impl App {
                         snapcast_host: None,
                         snapcast_port: None,
                     });
-                    self.config.save().ok();
+                    self.config.save_and_log("server (add)");
                     self.settings_server_name.clear();
                     self.settings_host.clear();
                     self.settings_port.clear();
@@ -2119,7 +2158,7 @@ impl App {
                     self.config.default_server =
                         self.config.servers.first().map(|s| s.name.clone());
                 }
-                self.config.save().ok();
+                self.config.save_and_log("server (remove)");
                 let store = self.store.clone();
                 let removed = name.clone();
                 let delete_history = Task::perform(
@@ -3712,6 +3751,87 @@ fn settings_view(&self) -> Element<'_, Message> {
         ]
         .spacing(2);
 
+        // --- Storage section ---
+        //
+        // This exists because "I couldn't find the config file" is a real
+        // report, and on macOS it is entirely explicable: the directory is
+        // `~/Library/Application Support/com.winrmpc.winrmpc/`, which Finder
+        // hides by default, under a reverse-DNS name that doesn't contain
+        // "winrmpc" in the form anyone would search Spotlight for. Printing
+        // the resolved path and offering a button that opens it answers the
+        // question from inside the app, on every platform.
+        let storage_row = |label: &'static str,
+                           path: Option<String>,
+                           dir: Option<String>,
+                           note: Option<String>|
+         -> Element<'_, Message> {
+            let path_line: Element<'_, Message> = match &path {
+                Some(p) => text(p.clone())
+                    .size(11)
+                    .color(AppColors::TEXT_SECONDARY)
+                    .into(),
+                None => text("unavailable — this will not be saved this session")
+                    .size(11)
+                    .color(AppColors::ERROR)
+                    .into(),
+            };
+            let mut left = column![
+                text(label).size(12).color(AppColors::TEXT_PRIMARY),
+                path_line,
+            ]
+            .spacing(1);
+            if let Some(note) = note {
+                left = left.push(text(note).size(10).color(AppColors::WARNING));
+            }
+
+            let mut r = row![left.width(Length::Fill)].align_y(iced::Alignment::Center);
+            if let Some(dir) = dir {
+                r = r.push(
+                    button(text("Open folder").size(11))
+                        .on_press(Message::OpenStorageFolder(dir))
+                        .padding([4, 10]),
+                );
+            }
+            r.into()
+        };
+
+        let config_path = AppConfig::config_path();
+        let cache_dir = AppConfig::cache_dir();
+        let storage_section = column![
+            text("Storage").size(16).color(AppColors::TEXT_PRIMARY),
+            Space::with_height(4),
+            text(
+                "Where winrmpc keeps your settings and its cache. Both paths \
+                 can be overridden with the WINRMPC_CONFIG_DIR and \
+                 WINRMPC_CACHE_DIR environment variables."
+            )
+            .size(11)
+            .color(AppColors::TEXT_MUTED),
+            Space::with_height(8),
+            storage_row(
+                "Settings",
+                config_path.as_ref().map(|p| p.display().to_string()),
+                config_path
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                    .map(|d| d.display().to_string()),
+                None,
+            ),
+            Space::with_height(8),
+            storage_row(
+                "Cache",
+                cache_dir
+                    .as_ref()
+                    .map(|d| d.join("winrmpc.redb").display().to_string()),
+                cache_dir.as_ref().map(|d| d.display().to_string()),
+                (!self.store.is_persistent()).then(|| {
+                    "running in memory only — nothing cached will survive this session"
+                        .to_string()
+                }),
+            ),
+        ]
+        .spacing(2);
+
         let content = column![
             row![
                 text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
@@ -3728,6 +3848,8 @@ fn settings_view(&self) -> Element<'_, Message> {
             add_form,
             Space::with_height(24),
             cache_section,
+            Space::with_height(24),
+            storage_section,
         ]
         .spacing(4)
         .padding(20)

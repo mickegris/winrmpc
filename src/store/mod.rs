@@ -53,15 +53,36 @@ fn now_secs() -> u64 {
 #[derive(Clone)]
 pub struct Store {
     db: Arc<Database>,
+    /// `false` when [`Store::open`] fell all the way back to `InMemoryBackend`.
+    /// See [`Store::is_persistent`].
+    persistent: bool,
 }
 
 impl Store {
+    /// Whether this store is backed by a file on disk.
+    ///
+    /// `false` means the app is running with caching effectively off for the
+    /// session. The Settings → Storage section reports it, because a
+    /// `tracing::error!` alone is only visible to someone who thinks to open
+    /// the Log view — and the symptom (everything re-downloads, forever) does
+    /// not obviously point at storage.
+    pub fn is_persistent(&self) -> bool {
+        self.persistent
+    }
+
     /// Open (or create) the cache database under `cache_dir`. Falls back to an
     /// in-memory backend if the file can't be opened, so the app still runs
     /// (caches just won't persist that session).
     pub fn open(cache_dir: &Path) -> Self {
-        std::fs::create_dir_all(cache_dir).ok();
+        if let Err(e) = std::fs::create_dir_all(cache_dir) {
+            tracing::error!(
+                dir = %cache_dir.display(),
+                error = %e,
+                "could not create the cache directory"
+            );
+        }
         let path = cache_dir.join("winrmpc.redb");
+        let mut persistent = true;
         let db = match Database::create(&path) {
             Ok(db) => db,
             Err(first_err) => {
@@ -72,8 +93,19 @@ impl Store {
                 tracing::warn!("Cache DB at {path:?} couldn't be opened ({first_err}); rebuilding it");
                 std::fs::remove_file(&path).ok();
                 Database::create(&path).unwrap_or_else(|second_err| {
-                    tracing::warn!(
-                        "Rebuilding cache DB failed ({second_err}); using in-memory cache"
+                    // ERROR, not WARN: this is the app running with a core
+                    // feature off. Nothing — art, lyrics, bios, MBIDs, play
+                    // history — survives this session, and every cover
+                    // re-downloads on the next launch. It was previously a
+                    // WARN that nothing surfaced, so the only symptom was the
+                    // app being mysteriously slow forever.
+                    persistent = false;
+                    tracing::error!(
+                        path = %path.display(),
+                        error = %second_err,
+                        "cache database unavailable; running in memory only — \
+                         album art, lyrics, bios and play history will NOT \
+                         persist beyond this session"
                     );
                     Database::builder()
                         .create_with_backend(redb::backends::InMemoryBackend::new())
@@ -81,7 +113,10 @@ impl Store {
                 })
             }
         };
-        let store = Self { db: Arc::new(db) };
+        let store = Self {
+            db: Arc::new(db),
+            persistent,
+        };
         store.ensure_tables();
         store.purge_poisoned_negatives();
         store.cleanup_legacy(cache_dir);

@@ -205,14 +205,64 @@ impl AppConfig {
             .unwrap_or_else(|| self.mpd_addr())
     }
 
-    pub fn config_dir() -> Option<PathBuf> {
-        ProjectDirs::from("com", "winrmpc", "winrmpc")
-            .map(|p| p.config_dir().to_path_buf())
+    /// Environment override for the config directory. Set it to run a second
+    /// profile against a different server, or to reproduce someone's config
+    /// without touching your own.
+    pub const CONFIG_DIR_ENV: &'static str = "WINRMPC_CONFIG_DIR";
+    /// Environment override for the cache directory. See [`Self::CONFIG_DIR_ENV`].
+    pub const CACHE_DIR_ENV: &'static str = "WINRMPC_CACHE_DIR";
+
+    fn env_dir(var: &str) -> Option<PathBuf> {
+        std::env::var_os(var)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
     }
 
+    /// Where `config.toml` lives.
+    ///
+    /// `None` means home resolution failed (no `$HOME` on Linux, an unusual
+    /// service or sandbox context). That is not a theoretical case and it used
+    /// to be **completely silent**: `load_from(None)` returns the defaults
+    /// before attempting any write and `save_to(None)` is a no-op, so every
+    /// setting the user changed appeared to work and was gone at restart, with
+    /// no log line anywhere. Hence the ERROR.
+    pub fn config_dir() -> Option<PathBuf> {
+        if let Some(dir) = Self::env_dir(Self::CONFIG_DIR_ENV) {
+            return Some(dir);
+        }
+        match ProjectDirs::from("com", "winrmpc", "winrmpc") {
+            Some(p) => Some(p.config_dir().to_path_buf()),
+            None => {
+                tracing::error!(
+                    "could not resolve a config directory for this user — \
+                     settings will NOT be saved this session. Set {} to a \
+                     writable path to work around it.",
+                    Self::CONFIG_DIR_ENV
+                );
+                None
+            }
+        }
+    }
+
+    /// Where `winrmpc.redb` lives. `None` has the same cause as
+    /// [`Self::config_dir`]; the caller falls back to a relative path, which
+    /// from a desktop launch is often `/` and fails.
     pub fn cache_dir() -> Option<PathBuf> {
-        ProjectDirs::from("com", "winrmpc", "winrmpc")
-            .map(|p| p.cache_dir().to_path_buf())
+        if let Some(dir) = Self::env_dir(Self::CACHE_DIR_ENV) {
+            return Some(dir);
+        }
+        match ProjectDirs::from("com", "winrmpc", "winrmpc") {
+            Some(p) => Some(p.cache_dir().to_path_buf()),
+            None => {
+                tracing::error!(
+                    "could not resolve a cache directory for this user — \
+                     album art, lyrics and bios will be re-fetched every \
+                     launch. Set {} to a writable path to work around it.",
+                    Self::CACHE_DIR_ENV
+                );
+                None
+            }
+        }
     }
 
     pub fn config_path() -> Option<PathBuf> {
@@ -288,6 +338,34 @@ impl AppConfig {
 
     pub fn save(&self) -> anyhow::Result<()> {
         self.save_to(Self::config_path().as_deref())
+    }
+
+    /// `save()` for the call sites that can't do anything useful with the
+    /// error — which is all of them, since they're UI handlers.
+    ///
+    /// They all used to write `config.save().ok()`, which is defensible for a
+    /// frequent auto-save and useless to a user whose config directory is
+    /// read-only: every setting appears to stick and none of it survives a
+    /// restart, with nothing in the log. Every one of these is triggered by a
+    /// deliberate user action rather than a poll, so logging each failure is
+    /// not a spam risk.
+    pub fn save_and_log(&self, what: &str) {
+        if let Err(e) = self.save() {
+            tracing::error!(
+                setting = what,
+                error = %e,
+                "could not save settings to {}; this change will be lost at restart",
+                Self::config_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<no config path>".into()),
+            );
+        }
+    }
+
+    /// The resolved storage locations, for the Settings view and the startup
+    /// log line. `None` means persistence is off for this session.
+    pub fn storage_paths() -> (Option<PathBuf>, Option<PathBuf>) {
+        (Self::config_path(), Self::cache_dir())
     }
 
     fn save_to(&self, path: Option<&Path>) -> anyhow::Result<()> {
@@ -509,5 +587,83 @@ dark_mode = false
         assert_eq!(parsed.servers.len(), original.servers.len());
         assert_eq!(parsed.default_server, original.default_server);
         assert_eq!(parsed.mpd_port, original.mpd_port);
+    }
+
+    /// The env overrides exist so a portable install, a second profile, or a
+    /// reproduction of someone else's config never has to touch the real one.
+    ///
+    /// These mutate process-wide state, so they run as **one** test rather
+    /// than several — Rust runs tests in threads within a process, and two
+    /// tests setting the same var would race.
+    #[test]
+    fn env_overrides_take_precedence_over_the_platform_directories() {
+        // SAFETY: single-threaded within this test; see the doc comment above
+        // for why these aren't split into separate tests.
+        let platform_config = AppConfig::config_dir();
+        let platform_cache = AppConfig::cache_dir();
+
+        std::env::set_var(AppConfig::CONFIG_DIR_ENV, "/tmp/winrmpc-test-cfg");
+        std::env::set_var(AppConfig::CACHE_DIR_ENV, "/tmp/winrmpc-test-cache");
+        assert_eq!(
+            AppConfig::config_dir(),
+            Some(PathBuf::from("/tmp/winrmpc-test-cfg"))
+        );
+        assert_eq!(
+            AppConfig::cache_dir(),
+            Some(PathBuf::from("/tmp/winrmpc-test-cache"))
+        );
+        assert_eq!(
+            AppConfig::config_path(),
+            Some(PathBuf::from("/tmp/winrmpc-test-cfg/config.toml")),
+            "config_path must be built on top of the overridden dir"
+        );
+
+        // The override has to redirect *writes*, not just path lookups —
+        // otherwise `save()` still lands on the real user config, which is
+        // the accident this whole guard exists to prevent.
+        let scratch = std::env::temp_dir().join(format!(
+            "winrmpc-envtest-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::env::set_var(AppConfig::CONFIG_DIR_ENV, &scratch);
+        AppConfig::default().save_and_log("env override test");
+        assert!(
+            scratch.join("config.toml").exists(),
+            "save() must follow {}",
+            AppConfig::CONFIG_DIR_ENV
+        );
+        std::fs::remove_dir_all(&scratch).ok();
+
+        // An empty value is treated as unset, not as "the current directory" —
+        // an exported-but-empty variable is a common shell accident and would
+        // otherwise silently relocate the user's settings to wherever the app
+        // happened to be launched from.
+        std::env::set_var(AppConfig::CONFIG_DIR_ENV, "");
+        std::env::set_var(AppConfig::CACHE_DIR_ENV, "");
+        assert_eq!(AppConfig::config_dir(), platform_config);
+        assert_eq!(AppConfig::cache_dir(), platform_cache);
+
+        std::env::remove_var(AppConfig::CONFIG_DIR_ENV);
+        std::env::remove_var(AppConfig::CACHE_DIR_ENV);
+        assert_eq!(AppConfig::config_dir(), platform_config);
+        assert_eq!(AppConfig::cache_dir(), platform_cache);
+    }
+
+    /// **Never call `save()`/`save_and_log()` in a test without an env
+    /// override in place.** They resolve the *real* user config path, so an
+    /// unguarded call overwrites the developer's own servers and radio
+    /// stations with defaults. That is why every other test here goes through
+    /// the path-injectable `save_to`/`load_from` cores.
+    #[test]
+    fn save_to_reports_an_unwritable_path_and_the_wrapper_swallows_it() {
+        let config = AppConfig::default();
+        // `/proc` is not writable even as root.
+        let bad = Path::new("/proc/winrmpc-should-not-exist/config.toml");
+        config
+            .save_to(Some(bad))
+            .expect_err("writing under /proc should fail");
     }
 }

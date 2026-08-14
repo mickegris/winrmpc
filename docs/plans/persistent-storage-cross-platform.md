@@ -2,6 +2,17 @@
 
 Part of [cross-platform-and-ui-0.4.2](cross-platform-and-ui-0.4.2.md).
 
+> **Status (2026-08-14): implemented — A, B, C, D and E.** The Linux paths in
+> the table below were confirmed against the real filesystem; the macOS and
+> Windows rows are still read out of `directories` rather than observed. The
+> Settings → Storage section has not been seen rendered.
+>
+> **One thing this plan caused, recorded because it is exactly the hazard the
+> plan is about:** a test written for step C called `save_and_log()`, which
+> resolves the *real* user config path — and overwrote the developer's own
+> config with defaults. The guard is now written down in CLAUDE.md and the
+> test asserts the env override redirects the write.
+
 ## The short answer
 
 **Persistence does work on macOS and Linux.** The files were there during the
@@ -144,6 +155,58 @@ install's config and cache, and would need a migration path that reads the old
 location. The cache is disposable but the config is not — servers, radio
 stations and saved partitions all live there. Discoverability is better solved
 by A than by moving files out from under people.
+
+## What was actually built
+
+**A — Settings → Storage.** Both resolved paths, each with an **Open folder**
+button (`open::that_detached`). Two details the plan didn't specify and which
+matter: the button opens the *directory*, never the file (Explorer and Finder
+both treat "open this .toml" as "launch a text editor"), and it **creates the
+folder first**, since the paths are deliberately shown before anything has
+been written there and a button that does nothing is worse than no button.
+The in-memory-cache warning from finding 2 renders as a line under the Cache
+row.
+
+**B — startup logging.** One INFO line each for config and cache, plus a WARN
+recording the `./cache` fallback path when `cache_dir()` is `None`.
+
+**C — the three silent paths, made loud.** ERROR from both directory helpers,
+ERROR (was WARN) plus `Store::is_persistent()` on the in-memory fallback, and
+`AppConfig::save_and_log(what)` replacing all **12** `config.save().ok()` call
+sites. Each site passes a label ("default partition", "radio station (add)",
+…) so the log names the setting that was lost. All twelve are user actions
+rather than polls, so per-failure logging isn't a spam risk and no
+rate-limiting was added.
+
+**D — env overrides.** `WINRMPC_CONFIG_DIR` / `WINRMPC_CACHE_DIR`, as cheap as
+the plan predicted. One decision worth recording: **an empty value counts as
+unset**. An exported-but-empty variable is a common shell accident, and
+treating it as a path would silently relocate settings to the working
+directory — the same class of bug as the `./cache` fallback in finding 1.
+
+**E — documentation.** CLAUDE.md's Windows-only path became the three-row
+table; README gained a "Where your settings and cache live" section covering
+the table, the override variables, and the two specific reasons macOS is hard
+to find (`~/Library` hidden in Finder, folder named `com.winrmpc.winrmpc`).
+
+Test count 200 → 202.
+
+### A mistake made while building this, worth keeping
+
+The first version of the step-C test called `save_and_log()` directly. That
+resolves the **real** user config path, so running the test suite overwrote
+the developer's own `~/.config/winrmpc/config.toml` with defaults — servers,
+radio stations and saved partition included. It is the same failure this file
+opens by describing (settings silently replaced by defaults), arrived at from
+the test side rather than the parse side.
+
+The rule is now in CLAUDE.md: **never call `save()`/`save_and_log()` from a
+test without setting `WINRMPC_CONFIG_DIR` first.** Every other test in
+`config/settings.rs` already used the path-injectable `save_to`/`load_from`
+cores; those exist precisely so this can't happen, and the new test ignored
+them. The replacement test sets the override to a scratch directory and
+asserts the write landed *there* — which also makes it a real test of step D
+rather than just of the logging.
 
 ## How to confirm on the real OS
 
