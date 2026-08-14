@@ -659,11 +659,29 @@ dark_mode = false
     /// the path-injectable `save_to`/`load_from` cores.
     #[test]
     fn save_to_reports_an_unwritable_path_and_the_wrapper_swallows_it() {
+        // Put a *file* where the config directory would go, then try to save
+        // beneath it. `create_dir_all` refuses to treat an existing regular
+        // file as a directory on every platform, so this fails the same way
+        // everywhere.
+        //
+        // The first version of this test used `/proc/...`, which is
+        // unwritable on Linux and an ordinary creatable path on Windows —
+        // there the save succeeded and the assertion blew up. A platform
+        // assumption smuggled into a test, in the very batch of work that
+        // exists because of platform assumptions smuggled into code.
+        let blocker = std::env::temp_dir().join(format!(
+            "winrmpc-unwritable-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&blocker, b"not a directory").expect("scratch file");
+
         let config = AppConfig::default();
-        // `/proc` is not writable even as root.
-        let bad = Path::new("/proc/winrmpc-should-not-exist/config.toml");
-        config
-            .save_to(Some(bad))
-            .expect_err("writing under /proc should fail");
+        let result = config.save_to(Some(&blocker.join("config.toml")));
+
+        std::fs::remove_file(&blocker).ok();
+        result.expect_err("saving beneath a regular file should fail");
     }
 }
