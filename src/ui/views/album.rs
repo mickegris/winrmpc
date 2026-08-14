@@ -201,8 +201,8 @@ pub fn view<'a>(
             container(
                 row![
                     song_row::playing_marker(is_current),
-                    song_row::number(track_num.to_string(), 13),
                     actions,
+                    song_row::number(track_num.to_string(), 13),
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)

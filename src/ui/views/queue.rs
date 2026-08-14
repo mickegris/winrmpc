@@ -32,17 +32,15 @@ pub fn view<'a>(
 
     let header = container(
         row![
-            // Marker cell + the row's 8px spacing + the number column, so the
-            // header lines up with the rows. Right-aligned to sit over the
-            // right-aligned numbers.
+            // Covers the marker, the row's 8px spacing and the action group,
+            // so the "#" label lands over the number column and the header's
+            // FillPortions divide exactly what the rows' do.
+            Space::with_width(song_row::MARKER_WIDTH + 8 + ACTIONS_WIDTH),
             text("#")
                 .size(11)
-                .width(song_row::MARKER_WIDTH + 8 + song_row::NUMBER_WIDTH)
+                .width(song_row::NUMBER_WIDTH)
                 .align_x(iced::alignment::Horizontal::Right)
                 .color(AppColors::TEXT_MUTED),
-            // Holds the action group's slot so the header's FillPortions get
-            // exactly the same share of the row as the data's do.
-            Space::with_width(ACTIONS_WIDTH),
             text("Title").size(11).width(Length::FillPortion(3)).color(AppColors::TEXT_MUTED),
             text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
             text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
@@ -176,8 +174,8 @@ pub fn view<'a>(
             container(
                 row![
                     song_row::playing_marker(is_current),
-                    song_row::number(format!("{}", pos + 1), 12),
                     actions,
+                    song_row::number(format!("{}", pos + 1), 12),
                     title_btn,
                     artist_btn,
                     album_btn,

@@ -319,13 +319,13 @@ Six views mark the playing track: Queue, Album detail, Playlist detail, Search, 
 **Every track list uses one column order** (`widgets/song_row.rs` owns the cells):
 
 ```
-[playing marker 14] [number 30, right] [action group] [title Fill] … [duration 55, right]
+[playing marker 14] [action group] [number 30, right] [title Fill] … [duration 55, right]
 ```
 
-Number, then the buttons, then the title, with the length **last, at the far right**. `playlist_detail` used to split its seven actions across *both* sides of the title, and the five lists disagreed with each other about where anything went; they are now identical.
+The **number sits directly left of the title** — the two are read together — with the buttons leading and the length last at the far right. `playlist_detail` used to split its seven actions across *both* sides of the title, and the five lists disagreed with each other about where anything went; they are now identical.
 - **`number` and `duration` are right-aligned fixed-width cells**, and the action group is fixed width too (`action_group_width(n)`). All three have to be: the title is the only `Fill`, so any variable-width cell before it moves the title's start on that row alone — the failure that showed up as the queue's first and last rows drifting against the rest.
 - **Browser file rows have no number** — a directory listing's order is the server's, not an album's — so the buttons lead, occupying the slot the number would have.
-- **The Queue's header reserves the number and action slots** (`MARKER_WIDTH + 8 + NUMBER_WIDTH`, then `ACTIONS_WIDTH`) in the same positions, or its `FillPortion`s divide a different amount of space than the rows and every label drifts sideways.
+- **The Queue's header reserves the marker and action slots** (`MARKER_WIDTH + 8 + ACTIONS_WIDTH`) before its `#` label, or its `FillPortion`s divide a different amount of space than the rows and every label drifts sideways.
 
 **Row actions are a deliberate table, not per-view accident.** Every row action is an `icon_btn_tip` (or `icon_btn_danger` for destructive ones) carrying a fixed tooltip — the wording is part of the contract, so the same button never reads differently between views:
 

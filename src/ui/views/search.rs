@@ -109,8 +109,8 @@ pub fn view<'a>(
                     row![
                         Space::with_width(8),
                         song_row::playing_marker(is_current),
-                        song_row::number(track.to_string(), 12),
                         actions,
+                        song_row::number(track.to_string(), 12),
                         text(song.display_title())
                             .size(12)
                             .color(song_row::title_color(is_current))
