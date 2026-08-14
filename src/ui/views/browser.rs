@@ -1,13 +1,18 @@
 use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::icon_btn;
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::icon_btn_tip;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
+/// `current_file` marks the playing track among `DirectoryEntry::File` rows
+/// only — directories and playlists have no track identity.
 pub fn view<'a>(
     current_path: &'a str,
     entries: &'a [DirectoryEntry],
+    current_file: Option<&'a str>,
 ) -> Element<'a, Message> {
     let breadcrumb = {
         let parts: Vec<&str> = if current_path.is_empty() {
@@ -69,31 +74,55 @@ pub fn view<'a>(
 
     let mut items = column![].spacing(0);
     for (i, entry) in entries.iter().enumerate() {
-        let bg = if i % 2 == 0 {
-            AppColors::ROW_EVEN
-        } else {
-            AppColors::ROW_ODD
+        let is_current = match entry {
+            DirectoryEntry::File(s) => song_row::is_current_uri(&s.file, current_file),
+            _ => false,
         };
+        let bg = song_row::row_bg(i, is_current);
 
         match entry {
             DirectoryEntry::File(s) => {
-                // File rows show: [file] | artist – title | duration | ▶ | ＋
+                // File rows carry the same four actions as the album, search and
+                // playlist track lists — see the row-action table in CLAUDE.md.
                 let label = format!("{} – {}", s.display_artist(), s.display_title());
                 let duration = s.format_duration();
                 let file_uri = s.file.clone();
-                let play_uri = file_uri.clone();
                 items = items.push(
                     container(
+                        // No track number: a browser listing is a directory,
+                        // and file order is the server's, not an album's. The
+                        // buttons therefore lead, where the number would be.
                         row![
-                            icon_btn("▶", Message::PlaySong(play_uri)),
-                            icon_btn("+", Message::QueueAddOnly(file_uri)),
+                            song_row::playing_marker(is_current),
+                            icon_btn_tip(
+                                icon::PLAY,
+                                "Play now",
+                                Message::PlaySong(file_uri.clone())
+                            ),
                             text(label)
                                 .size(13)
-                                .color(AppColors::TEXT_PRIMARY)
+                                .color(song_row::title_color(is_current))
                                 .width(Length::Fill),
-                            text(duration)
-                                .size(11)
-                                .color(AppColors::TEXT_MUTED),
+                            song_row::duration(duration, 11),
+                            row![
+                                icon_btn_tip(
+                                    icon::ADD_QUEUE,
+                                    "Add to end of queue",
+                                    Message::QueueAddOnly(file_uri.clone())
+                                ),
+                                icon_btn_tip(
+                                    icon::PLAY_NEXT,
+                                    "Play next",
+                                    Message::QueueAddNext(file_uri.clone())
+                                ),
+                                icon_btn_tip(
+                                    icon::ADD_PLAYLIST,
+                                    "Add to playlist…",
+                                    Message::OpenAddToPlaylist(vec![file_uri])
+                                ),
+                            ]
+                            .spacing(song_row::ACTION_SPACING)
+                            .width(song_row::action_group_width(3)),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),

@@ -12,11 +12,25 @@ impl AppColors {
     // List row alternating
     pub const ROW_EVEN: Color = Color::from_rgb(0.13, 0.13, 0.16);
     pub const ROW_ODD: Color = Color::from_rgb(0.15, 0.15, 0.19);
+    /// The row holding the currently playing track, in every song list.
+    ///
+    /// Sits above `ROW_ODD` and below `BG_HOVER` on purpose: it has to read as
+    /// selected against *both* zebra stripes without being so bright that
+    /// hovering it produces no visible change. The Queue used to improvise
+    /// with `BG_TERTIARY`, which is the same colour as several card and
+    /// panel backgrounds — fine in isolation, wrong once five more views
+    /// want the same state.
+    pub const ROW_PLAYING: Color = Color::from_rgb(0.17, 0.19, 0.25);
 
     // Text
     pub const TEXT_PRIMARY: Color = Color::from_rgb(0.93, 0.93, 0.95);
     pub const TEXT_SECONDARY: Color = Color::from_rgb(0.62, 0.62, 0.68);
     pub const TEXT_MUTED: Color = Color::from_rgb(0.42, 0.42, 0.48);
+    /// An action that exists but doesn't apply here — the queue's "move up" on
+    /// the first row, "move down" on the last. Dim enough to read as
+    /// unavailable rather than merely low-priority, which is the distinction
+    /// `TEXT_MUTED` can't carry on its own.
+    pub const TEXT_DISABLED: Color = Color::from_rgb(0.24, 0.24, 0.28);
 
     // Accent
     pub const ACCENT: Color = Color::from_rgb(0.31, 0.76, 0.97);

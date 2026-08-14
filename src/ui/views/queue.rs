@@ -1,9 +1,16 @@
 use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::icon_btn;
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::{icon_btn_danger_maybe, icon_btn_tip, icon_btn_tip_maybe};
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
+
+/// The *trailing* group: move up, move down, add-to-playlist, remove. Play
+/// leads the row separately. All four are always rendered (disabled where they
+/// don't apply), so this width is constant.
+const ACTIONS_WIDTH: u16 = song_row::action_group_width(4);
 
 pub fn view<'a>(
     queue: &'a [Song],
@@ -26,11 +33,25 @@ pub fn view<'a>(
 
     let header = container(
         row![
-            text("#").size(11).width(40).color(AppColors::TEXT_MUTED),
+            // Covers the marker, the row's 8px spacing and the play button,
+            // so the "#" label lands over the number column.
+            Space::with_width(song_row::MARKER_WIDTH + 8 + song_row::ACTION_BTN_WIDTH),
+            text("#")
+                .size(11)
+                .width(song_row::NUMBER_WIDTH)
+                .align_x(iced::alignment::Horizontal::Right)
+                .color(AppColors::TEXT_MUTED),
             text("Title").size(11).width(Length::FillPortion(3)).color(AppColors::TEXT_MUTED),
             text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
             text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
-            text("Time").size(11).width(55).color(AppColors::TEXT_MUTED),
+            text("Time")
+                .size(11)
+                .width(song_row::DURATION_WIDTH)
+                .align_x(iced::alignment::Horizontal::Right)
+                .color(AppColors::TEXT_MUTED),
+            // Holds the trailing action group's slot, or the header's
+            // FillPortions divide more space than the rows' do.
+            Space::with_width(ACTIONS_WIDTH),
         ]
         .spacing(8)
         .padding([4, 12]),
@@ -59,21 +80,12 @@ pub fn view<'a>(
 
     for (i, song) in queue.iter().enumerate() {
         let pos = song.pos.unwrap_or(0);
-        let is_current = current_pos == Some(pos);
+        // The Queue is the one list that matches on position rather than URI —
+        // a queue can hold the same file twice. See `widgets::song_row`.
+        let is_current = song_row::is_current_pos(pos, current_pos);
 
-        let bg = if is_current {
-            AppColors::BG_TERTIARY
-        } else if i % 2 == 0 {
-            AppColors::ROW_EVEN
-        } else {
-            AppColors::ROW_ODD
-        };
-
-        let title_color = if is_current {
-            AppColors::ACCENT
-        } else {
-            AppColors::TEXT_PRIMARY
-        };
+        let bg = song_row::row_bg(i, is_current);
+        let title_color = song_row::title_color(is_current);
 
         // Title plays the track; artist and album navigate to their views.
         let title_btn = button(
@@ -124,35 +136,57 @@ pub fn view<'a>(
             shadow: iced::Shadow::default(),
         });
 
-        let mut actions = row![].spacing(2);
-        if i > 0 {
-            actions = actions.push(icon_btn("▲", Message::QueueMoveUp(pos)));
-        }
-        if i + 1 < queue.len() {
-            actions = actions.push(icon_btn("▼", Message::QueueMoveDown(pos)));
-        }
-        actions = actions.push(icon_btn(
-            "☰",
+        // No "add to end of queue" here: these rows already *are* the queue.
+        // See the row-action table in CLAUDE.md.
+        //
+        // Both arrows are always present, disabled at the ends rather than
+        // omitted. Omitting one narrows the whole action group, which hands
+        // the freed width back to the FillPortion columns to its left — so the
+        // first and last rows' Title/Artist/Album/Time drifted right against
+        // every row between them, and the last row's Move-up arrow rendered in
+        // the Move-down column.
+        let mut actions = row![].spacing(song_row::ACTION_SPACING);
+        actions = actions.push(icon_btn_tip_maybe(
+            icon::MOVE_UP,
+            "Move up",
+            (i > 0).then(|| Message::QueueMoveUp(pos)),
+        ));
+        actions = actions.push(icon_btn_tip_maybe(
+            icon::MOVE_DOWN,
+            "Move down",
+            (i + 1 < queue.len()).then(|| Message::QueueMoveDown(pos)),
+        ));
+        actions = actions.push(icon_btn_tip(
+            icon::ADD_PLAYLIST,
+            "Add to playlist…",
             Message::OpenAddToPlaylist(vec![song.file.clone()]),
         ));
-        if let Some(id) = song.id {
-            actions = actions.push(icon_btn("✕", Message::QueueRemove(id)));
-        }
+        // `id` is always set on a real queue response; disabled rather than
+        // omitted for the same layout reason as the arrows above.
+        actions = actions.push(icon_btn_danger_maybe(
+            icon::REMOVE,
+            "Remove from queue",
+            song.id.map(Message::QueueRemove),
+        ));
+
+        // Fixed width so the columns to the left land in the same place on
+        // every row, and so the header below can reserve the same amount.
+        let actions = actions.width(ACTIONS_WIDTH);
 
         items = items.push(
             container(
                 row![
-                    text(format!("{}", pos + 1))
-                        .size(12)
-                        .width(40)
-                        .color(AppColors::TEXT_MUTED),
+                    song_row::playing_marker(is_current),
+                    // The queue's title is clickable too, but nothing said so
+                    // — this is the same visible play affordance every other
+                    // track list has. `QueuePlay(pos)` plays *this* queue
+                    // entry; `PlaySong(uri)` would enqueue a second copy.
+                    icon_btn_tip(icon::PLAY, "Play now", Message::QueuePlay(pos)),
+                    song_row::number(format!("{}", pos + 1), 12),
                     title_btn,
                     artist_btn,
                     album_btn,
-                    text(song.format_duration())
-                        .size(11)
-                        .width(55)
-                        .color(AppColors::TEXT_MUTED),
+                    song_row::duration(song.format_duration(), 11),
                     actions,
                 ]
                 .spacing(8)

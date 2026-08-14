@@ -5,11 +5,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const LRCLIB_BASE: &str = "https://lrclib.net/api";
-const USER_AGENT: &str = concat!(
-    "winrmpc/",
-    env!("CARGO_PKG_VERSION"),
-    " (https://github.com/mickegris/winrmpc)"
-);
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -21,7 +16,7 @@ pub struct LyricLine {
 }
 
 /// Lyrics for one track. `plain` and `synced` are not mutually exclusive;
-/// LRCLIB often provides both. Phase-2 highlighting will use `synced`.
+/// LRCLIB often provides both.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lyrics {
     pub plain: Option<String>,
@@ -29,20 +24,67 @@ pub struct Lyrics {
     pub instrumental: bool,
 }
 
+/// Seconds to delay synced-lyric highlighting.
+///
+/// LRCLIB timestamps mark where a line *starts*, which tends to land slightly
+/// ahead of the audible vocal, so each line is held a touch longer before
+/// advancing. Lives here rather than in the view because it's a property of
+/// LRCLIB's data, and because the view and the autoscroll must apply the
+/// identical value — see [`active_line`].
+pub const SYNC_OFFSET: f64 = 0.5;
+
+/// Index of the synced line that should be highlighted at `elapsed` seconds
+/// into the track, or `None` before the first line's timestamp.
+///
+/// **One implementation on purpose.** The highlight (in the view) and the
+/// autoscroll target (in `App::lyrics_autoscroll`) computed this separately
+/// with copy-pasted arithmetic; if those two ever disagreed, the pane would
+/// scroll to a different line than the one it highlights, which is both
+/// obviously wrong and hard to attribute.
+///
+/// Assumes `lines` is sorted by `secs` — [`parse_lrc`] guarantees that, and
+/// `live_lrclib_returns_parseable_synced_lyrics` asserts it against real
+/// LRCLIB responses.
+pub fn active_line(lines: &[LyricLine], elapsed: f64) -> Option<usize> {
+    let t = elapsed - SYNC_OFFSET;
+    lines.iter().rposition(|line| line.secs <= t)
+}
+
+impl Lyrics {
+    /// [`active_line`] over this track's synced lines, if it has any.
+    pub fn active_line(&self, elapsed: f64) -> Option<usize> {
+        self.synced.as_deref().and_then(|l| active_line(l, elapsed))
+    }
+}
+
 /// Async LRCLIB client. Clone-cheap because `reqwest::Client` is Arc-backed.
 #[derive(Clone)]
 pub struct LyricsClient {
-    http: Client,
+    /// `None` when the HTTP client could not be built — see [`crate::net`].
+    /// This used to be `unwrap_or_default()`, which quietly substituted a
+    /// client with neither the User-Agent nor the timeout this code asks for,
+    /// and would have panicked anyway if the real cause was the TLS backend
+    /// (`Client::default()` is `Client::new()`, which panics).
+    http: Option<Client>,
 }
 
 impl LyricsClient {
     pub fn new() -> Self {
-        let http = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
-        Self { http }
+        Self {
+            http: crate::net::client("LRCLIB lyrics"),
+        }
+    }
+
+    /// See `MusicBrainzClient::get` — same reasoning, same shape.
+    async fn get(&self, url: &str) -> Option<reqwest::Response> {
+        let http = self.http.as_ref()?;
+        match http.get(url).send().await {
+            Ok(resp) => Some(resp),
+            Err(e) => {
+                tracing::debug!(url, error = %e, "LRCLIB request failed");
+                None
+            }
+        }
     }
 
     /// Fetch lyrics for a track. Tries an exact match first (duration narrows
@@ -66,7 +108,7 @@ impl LyricsClient {
             exact_url.push_str(&format!("&duration={}", dur as u32));
         }
 
-        if let Ok(resp) = self.http.get(&exact_url).send().await {
+        if let Some(resp) = self.get(&exact_url).await {
             if resp.status().is_success() {
                 if let Ok(data) = resp.json::<LrclibResponse>().await {
                     let lyrics = parse_response(data);
@@ -84,7 +126,7 @@ impl LyricsClient {
             urlencoding::encode(artist),
             urlencoding::encode(title),
         );
-        if let Ok(resp) = self.http.get(&search_url).send().await {
+        if let Some(resp) = self.get(&search_url).await {
             if resp.status().is_success() {
                 if let Ok(results) = resp.json::<Vec<LrclibResponse>>().await {
                     if let Some(data) = results.into_iter().next() {
@@ -173,6 +215,96 @@ pub fn cache_path(lyrics_dir: &std::path::Path, key: &str) -> std::path::PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lines(times: &[f64]) -> Vec<LyricLine> {
+        times
+            .iter()
+            .enumerate()
+            .map(|(i, &secs)| LyricLine {
+                secs,
+                text: format!("line {i}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_line_is_active_before_the_first_timestamp() {
+        // Real tracks routinely open with 20-30s of intro — "Creep" starts at
+        // 19.16s — so this is the normal state at the start of a song, not an
+        // edge case.
+        let l = lines(&[19.16, 24.0, 28.0]);
+        assert_eq!(active_line(&l, 0.0), None);
+        assert_eq!(active_line(&l, 10.0), None);
+    }
+
+    #[test]
+    fn the_active_line_is_the_last_one_whose_timestamp_has_passed() {
+        let l = lines(&[10.0, 20.0, 30.0]);
+        assert_eq!(active_line(&l, 10.0 + SYNC_OFFSET), Some(0));
+        assert_eq!(active_line(&l, 25.0), Some(1));
+        assert_eq!(active_line(&l, 999.0), Some(2), "must hold the last line to the end");
+    }
+
+    #[test]
+    fn the_sync_offset_delays_the_advance_rather_than_hurrying_it() {
+        // The offset exists because LRCLIB marks where a line *starts*, which
+        // runs slightly ahead of the audible vocal. Getting its sign wrong
+        // would make the highlight lead the song instead of trailing it — and
+        // would still "work" in a casual glance, so it is worth pinning.
+        let l = lines(&[10.0, 20.0]);
+        assert_eq!(
+            active_line(&l, 10.0 - 0.01),
+            None,
+            "must not highlight before the timestamp"
+        );
+        assert_eq!(
+            active_line(&l, 20.0 + SYNC_OFFSET - 0.01),
+            Some(0),
+            "line 0 should still be held just before the offset elapses"
+        );
+        assert_eq!(active_line(&l, 20.0 + SYNC_OFFSET), Some(1));
+    }
+
+    #[test]
+    fn repeated_timestamps_settle_on_the_last_of_them() {
+        // Two lines at the same instant is common in chorus transcriptions;
+        // rposition picks the later one, which is what a reader expects to see
+        // highlighted, and matters because the autoscroll targets this index.
+        let l = lines(&[10.0, 10.0, 20.0]);
+        assert_eq!(active_line(&l, 15.0), Some(1));
+    }
+
+    #[test]
+    fn active_line_on_lyrics_needs_synced_data() {
+        let plain_only = Lyrics {
+            plain: Some("just words".into()),
+            synced: None,
+            instrumental: false,
+        };
+        assert_eq!(plain_only.active_line(30.0), None);
+
+        let synced = Lyrics {
+            plain: None,
+            synced: Some(lines(&[0.0, 10.0])),
+            instrumental: false,
+        };
+        assert_eq!(synced.active_line(30.0), Some(1));
+    }
+
+    #[test]
+    fn empty_synced_lyrics_never_report_an_active_line() {
+        assert_eq!(active_line(&[], 42.0), None);
+    }
+
+    #[test]
+    fn parse_lrc_output_is_ordered_so_active_line_can_use_rposition() {
+        // active_line's correctness depends on parse_lrc's sort; assert the
+        // contract between them directly rather than trusting it.
+        let lrc = "[00:20.00] Late\n[00:05.00] Early\n[00:12.50] Middle\n";
+        let parsed = parse_lrc(lrc).unwrap();
+        assert!(parsed.windows(2).all(|w| w[0].secs <= w[1].secs));
+        assert_eq!(active_line(&parsed, 13.0 + SYNC_OFFSET), Some(1));
+    }
 
     #[test]
     fn parse_lrc_basic_timestamps() {

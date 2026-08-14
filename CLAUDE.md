@@ -18,7 +18,7 @@ cargo test <name>        # run tests whose name matches <name>
 cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 ```
 
-- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 181 offline tests; none touch the network or need an MPD server (the `store` ones do open a real redb, over `InMemoryBackend`):
+- **Tests**: inline `#[cfg(test)] mod tests` blocks (this is a *binary* crate — a top-level `tests/` dir can't reach internal/private items like `escape` and `parse_ack`). 185 offline tests; none touch the network or need an MPD server (the `store` ones do open a real redb, over `InMemoryBackend`):
   - `mpd/client.rs` — `escape` injection safety (quotes, backslashes, ordering)
   - `mpd/protocol.rs` — `pairs_to_map`, `split_groups`, `parse_ack`
   - `mpd/commands.rs` — every response parser (`parse_status`/`song`/`songs`/`outputs`/`partitions`/`directory_listing`/`stats`/`tag_list`); note the `Time`→`duration` fallback rule
@@ -28,9 +28,10 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
   - `store/mod.rs` — `bios`/`mb_ids`/`recently_played` round trips over an in-memory redb, including the absent-vs-`Some(None)` distinction and per-server key isolation
   - `snapcast/types.rs` + `snapcast/protocol.rs` — `decode_snap_groups`/`decode_snap_streams` from fixtures, degrade-to-empty on unexpected JSON, `extract_result`'s error/null handling, and response-id matching among interleaved notification lines
   - Not yet covered (would need a mock `AsyncRead`/`AsyncWrite`): the `protocol.rs` read loops & EOF guards.
+  - `icon.rs` — the window icon builds, corners are transparent / centre is bar-coloured, the committed `packaging/linux/` PNGs still match the generator, and `svg()` emits one circle + one rect per bar
   - `config/settings.rs` — TOML shapes (the README's multi-server example, a legacy single-server file, a minimal config, a partial `[theme]` table, a `save()`→`load()` round trip) plus the three `load_from` cases against a scratch path: a missing file is **created**, an unparseable one is **never overwritten**, a legacy one is **migrated and persisted**. Every legacy field is `#[serde(default)]` *by necessity* — a shape that fails to deserialize used to cost the user their settings, since `load` fell back to defaults and the next `save` wrote them over the file. `load_failed` now disarms `save` instead, but the defaults are still what keeps a valid-but-old file parsing at all.
   - `live_tests.rs` — integration tests against a **real** MPD/Snapcast server, all `#[ignore]`d so `cargo test` stays offline. Run with `WINRMPC_TEST_MPD=host:6600 WINRMPC_TEST_SNAPCAST=host:1705 cargo test -- --ignored --test-threads=1`. They cover `add_all`'s bulk enqueue and its stop-at-first-failure semantics, `group_albums_by_artist` against a real album list, and Snapcast `Server.GetStatus` decoding. Anything that mutates state creates a throwaway MPD **partition**, works there, and deletes it — the default partition's queue is never touched.
-  - Four of them are **diagnostics rather than assertions**, and they are the fastest way to answer "why is this album's cover blank" — reach for them before theorising: `live_diagnose_album_art_sources` prints, per album, which stage answers (`readpicture` / `albumart` / nothing) plus the raw artist tags; `live_probe_cue_album_art_fallback` checks whether a CUE-sheet track's cover is reachable via the `.cue` path (on this library: no); `live_musicbrainz_resolves_locally_artless_albums` and `live_wikipedia_bios_for_awkward_tags` run the real external lookups over the tag shapes that used to defeat them. The last two need **`WINRMPC_TEST_MUSICBRAINZ=1`** on top of `--ignored`, so a routine sweep can't start hammering a free community service. Two Snapcast tests in this file are *not* ignored: they drive the client against a local `TcpListener` mock to prove a dead socket is dropped (so the view can reconnect) while an RPC error response is not.
+  - Four of them are **diagnostics rather than assertions**, and they are the fastest way to answer "why is this album's cover blank" — reach for them before theorising: `live_diagnose_album_art_sources` prints, per album, which stage answers (`readpicture` / `albumart` / nothing) plus the raw artist tags; `live_probe_cue_album_art_fallback` checks whether a CUE-sheet track's cover is reachable via the `.cue` path (on this library: no); `live_musicbrainz_resolves_locally_artless_albums` and `live_wikipedia_bios_for_awkward_tags` run the real external lookups over the tag shapes that used to defeat them. The last two need **`WINRMPC_TEST_MUSICBRAINZ=1`** on top of `--ignored`, so a routine sweep can't start hammering a free community service. `live_tls_reaches_every_lookup_host` (gated on **`WINRMPC_TEST_NETWORK=1`**) is the odd one out: it needs **no MPD server at all** and issues one cheap request to each of the four hosts, so it's the acceptance check for the rustls switch and the fastest way to tell "the network is broken" from "the lookup logic is broken". Two Snapcast tests in this file are *not* ignored: they drive the client against a local `TcpListener` mock to prove a dead socket is dropped (so the view can reconnect) while an RPC error response is not.
 - Icon embedding (`build.rs` → `winres`) needs `rc.exe`/`windres` on PATH; if absent it's skipped with a `cargo:warning`, build still succeeds.
 
 ## Tech Stack
@@ -39,7 +40,7 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 - `tokio` — async runtime
 - `redb 4` — embedded key-value DB backing the art + lyrics cache (`src/store/mod.rs`)
 - `image 0.25` — decode/downscale album art
-- `reqwest 0.12` — HTTP for MusicBrainz / Wikipedia / LRCLIB
+- `reqwest 0.12` — HTTP for MusicBrainz / Wikipedia / LRCLIB. **Pinned to `default-features = false` + rustls**; see "Outbound HTTP" below before touching its features
 - `serde` / `serde_json` / `toml` — config + cache serialization
 - `directories` — platform config/cache paths
 - `fuzzy-matcher` — search ranking; `flume` — channels; `open` — launch URLs; `urlencoding`; `chrono`
@@ -49,9 +50,12 @@ cargo test <mod>::tests::<fn> -- --exact   # run one specific test
 
 ```
 build.rs                     (repo root, not src/) Generates 16×16+32×32 BMP-in-ICO, embeds via winres on Windows
+assets/fonts/                Bundled icon font (committed; rebuilt by packaging/fonts/build-icon-font.py)
+packaging/                   Desktop-integration assets: linux/ (.desktop + hicolor icons + install.sh), fonts/ (icon-font generator)
 src/
   main.rs                    Entry point: windows_subsystem, tracing layers, window icon, launches iced
   logger.rs                  InAppLayer (tracing Layer) + static ring-buffer; get_entries() / clear_entries()
+  net.rs                     Shared User-Agent + HTTP client construction for every outbound fetch
   icon.rs                    Programmatic 32×32 RGBA icon (equalizer bars); make_icon() → iced::window::Icon
   live_tests.rs              Opt-in #[ignore]d integration tests against a real MPD/Snapcast server
   config/
@@ -113,13 +117,23 @@ src/
       player_bar.rs          Transport controls bar (play/pause/stop/prev/next, seek, volume)
       sidebar.rs             Navigation sidebar — fixed `SIDEBAR_WIDTH` (132px), wrapped in a `scrollable` with a slimmed 4px scrollbar; with a `Length::Fill` spacer the bottom group (Settings/Log/Stats) used to be pushed off a short window with no way to reach it, and at the old 90px width "Recently Added" wrapped to two lines and the connection line was clipped
       art_image.rs           Bytes → iced ImageHandle helper
-      link.rs                Clickable hyperlink widget (opens URLs via `open`)
+      icon.rs                Bundled icon font + every glyph constant the UI draws
+      song_row.rs            Shared song-list row state: is-current predicates, row/title colours, playing marker
+      link.rs                Clickable hyperlink widget (opens URLs via `open`), icon buttons, tooltips
       album_grid.rs          Shared cover-grid: tile/grid/layout_toggle/art_for, used by Albums, Recently Added and Recently Played
       mod.rs
 ```
 
 ## AppConfig (`src/config/settings.rs`)
-Fields saved to TOML via `directories` (Windows: `%APPDATA%\winrmpc\winrmpc\config\config.toml`):
+Fields saved to TOML via `directories`, from one `ProjectDirs::from("com", "winrmpc", "winrmpc")` call:
+
+| | config (`config.toml`) | cache (`winrmpc.redb`) |
+|---|---|---|
+| **Windows** | `%APPDATA%\winrmpc\winrmpc\config\` | `%LOCALAPPDATA%\winrmpc\winrmpc\cache\` |
+| **Linux** | `~/.config/winrmpc/` | `~/.cache/winrmpc/` |
+| **macOS** | `~/Library/Application Support/com.winrmpc.winrmpc/` | `~/Library/Caches/com.winrmpc.winrmpc/` |
+
+Overridable with **`WINRMPC_CONFIG_DIR`** / **`WINRMPC_CACHE_DIR`** (an empty value counts as unset — an exported-but-empty variable is a common shell accident and must not relocate settings to the working directory). See "Storage discoverability" below. Fields:
 - **Multi-server** (v0.4.0): `servers: Vec<MpdServer>` + `default_server: Option<String>` (name). `MpdServer { name, host, port, password, default_partition, snapcast_host, snapcast_port }` — partition is **per-server** (partitions live on one MPD instance). Helpers: `server(name)`, `server_mut(name)`, `server_addr(name)` (falls back to first server, then legacy `mpd_addr()`); `MpdServer::snapcast_addr()` falls back to the MPD `host` and port `1705` when `snapcast_host`/`snapcast_port` are unset (the common deployment: Snapcast colocated with MPD). There's no Settings UI yet for editing `snapcast_host`/`snapcast_port` directly — only the config fields and the fallback exist; a per-server form field is a deliberate follow-up, not an oversight.
 - **Legacy single-server fields** kept for back-compat: `mpd_host`, `mpd_port`, `mpd_password`, `default_partition`. Mirror the active server; drop in a future release.
 - `art_cache_size_mb: u32` — enforced via LRU eviction in the redb store (not just advisory)
@@ -267,10 +281,78 @@ Sibling module to `mpd/`, not bolted onto `MpdClient` — Snapcast is a fully in
 ## Recently Added / Recently Played (`src/mpd/types.rs`, `src/ui/views/{albums_list,recently_played}.rs`)
 Two distinct features sharing one plan (`docs/plans/recently-added-and-played-history.md`) because both extend history-adjacent state — **not to be confused with `RecentAlbum`/`recent_albums`**, the pre-existing 8-item "what's been playing this session" strip shown inline in Now Playing, which is untouched by this section.
 - **Recently Added** (`View::RecentlyAdded`, sidebar beneath Genres): `MpdClient::find_recently_added(since, limit)` sends `find "(modified-since '…')" window 0:limit` — always bounded (an unbounded `modified-since` scan can outrun the socket read on a large library). `on_view_enter` computes `since` as `now - 30 days`. Songs are sorted newest-`last_modified`-first and collapsed to unique album names, rendered through the same `views::albums_list::view` used for the plain Albums list (now takes a `title: &str` param so it can say "Recently Added" instead of "Albums").
-- **Recently Played** (`View::RecentlyPlayed`, opened via a "🕐 History" link in Now Playing's toggle row, not the sidebar): per-server track-level history, distinct from `recent_albums`. `PlayRecorder` (`types.rs`) is a self-contained tick-based reducer — call `tick(file, is_playing, elapsed_secs, duration_secs)` on every `StatusUpdated`; it tracks its own last-seen elapsed internally (no caller-side delta bookkeeping needed) and returns `true` the moment a play should commit: `accumulated >= min(30, max(5, duration/2))` seconds of actual playback, capping any single delta at 5s so a seek or coarse poll gap can't fast-forward the threshold. A commit pushes a `RecentlyPlayedEntry` to `self.recently_played`, prunes to 30 days / 100 entries (`prune_recently_played`), and persists via `spawn_blocking`. **CD tracks are skipped** (no recording at all while `cdda://` is playing); radio streams are recorded (unlike `recent_albums`, which effectively excludes them via its "Unknown Album" filter). The view's Albums mode **derives** groups from track history (`recently_played_albums` — first occurrence per (artist, album) wins, since entries are already newest-first) rather than recording albums separately, so there's one source of truth. `RecentlyPlayedEntry` carries **both** artists: `artist` (`display_artist()`, the track artist, shown per row) and `album_artist` (`display_album_artist()`, `#[serde(default)]` for pre-existing history). `RecentlyPlayedEntry::art_artist()` returns `album_artist` when set and falls back to `artist`, and it's what `recently_played_albums` groups and labels by — art is only ever cached under `Song::art_key()`, i.e. the *album* artist, so grouping by the track artist both split compilations into one tile per guest artist and made every one of those tiles miss the art cache.
+- **Recently Played** (`View::RecentlyPlayed`, opened via a `icon::HISTORY` + "History" link in Now Playing's toggle row, not the sidebar): per-server track-level history, distinct from `recent_albums`. `PlayRecorder` (`types.rs`) is a self-contained tick-based reducer — call `tick(file, is_playing, elapsed_secs, duration_secs)` on every `StatusUpdated`; it tracks its own last-seen elapsed internally (no caller-side delta bookkeeping needed) and returns `true` the moment a play should commit: `accumulated >= min(30, max(5, duration/2))` seconds of actual playback, capping any single delta at 5s so a seek or coarse poll gap can't fast-forward the threshold. A commit pushes a `RecentlyPlayedEntry` to `self.recently_played`, prunes to 30 days / 100 entries (`prune_recently_played`), and persists via `spawn_blocking`. **CD tracks are skipped** (no recording at all while `cdda://` is playing); radio streams are recorded (unlike `recent_albums`, which effectively excludes them via its "Unknown Album" filter). The view's Albums mode **derives** groups from track history (`recently_played_albums` — first occurrence per (artist, album) wins, since entries are already newest-first) rather than recording albums separately, so there's one source of truth. `RecentlyPlayedEntry` carries **both** artists: `artist` (`display_artist()`, the track artist, shown per row) and `album_artist` (`display_album_artist()`, `#[serde(default)]` for pre-existing history). `RecentlyPlayedEntry::art_artist()` returns `album_artist` when set and falls back to `artist`, and it's what `recently_played_albums` groups and labels by — art is only ever cached under `Song::art_key()`, i.e. the *album* artist, so grouping by the track artist both split compilations into one tile per guest artist and made every one of those tiles miss the art cache.
+
+## Storage discoverability + loud failures (`src/config/settings.rs`, `src/store/mod.rs`)
+Persistence **works** on all three platforms; what it wasn't was discoverable, or loud when it failed.
+- **macOS is why this exists.** `~/Library` is hidden in Finder by default, the directory is named `com.winrmpc.winrmpc` (reverse-DNS, the platform convention `directories` follows) rather than `winrmpc`, and Spotlight doesn't index `~/Library` — so "I couldn't find the config file" was an entirely reasonable report. On macOS `config_dir()` and `data_dir()` are the *same* directory; that's the convention, not a bug.
+- **Settings → Storage** prints both resolved paths with an **Open folder** button each (`open::that_detached`, mapping to Explorer/Finder/`xdg-open`). It opens the *directory*, never the file — "open this .toml" launches a text editor. The folder is created on click, since the paths are shown before anything has been written there and a dead button is worse than no button.
+- **Both paths are logged at INFO on startup**, so they land in the Log view even without visiting Settings.
+- **The three silent paths are now loud**, which was the actual bug class here:
+  - `config_dir()`/`cache_dir()` returning `None` (no `$HOME`, odd sandbox) logs **ERROR** naming the consequence. Previously `load_from(None)` returned defaults before attempting any write and `save_to(None)` was a silent `Ok(())` — every setting appeared to work and was gone at restart, with nothing in the log at all.
+  - `Store::open`'s final `InMemoryBackend` fallback is **ERROR, not WARN** (the app is running with a core feature off), and `Store::is_persistent()` surfaces it in Settings → Storage. The symptom otherwise is just "everything re-downloads, forever", which doesn't point at storage.
+  - **`AppConfig::save_and_log(what)`** replaces all 12 `config.save().ok()` call sites. Each is a deliberate user action rather than a poll, so logging every failure is not a spam risk.
+- **`ProjectDirs::from("com", "winrmpc", "winrmpc")` is deliberately unchanged.** A friendlier macOS directory name would orphan every existing install's config and cache and need a migration that reads the old location. The cache is disposable; the config is not.
+- ⚠️ **Never call `AppConfig::save()` or `save_and_log()` from a test without setting `WINRMPC_CONFIG_DIR` first.** They resolve the *real* user config path, so an unguarded call overwrites your own servers and radio stations with defaults. This has happened. Every other test in `config/settings.rs` uses the path-injectable `save_to`/`load_from` cores for exactly this reason; the one test that exercises the env override sets it to a scratch dir and asserts the write landed there.
+
+## Current-song highlighting (`src/ui/widgets/song_row.rs`)
+Six views mark the playing track: Queue, Album detail, Playlist detail, Search, Browser and Recently Played (Tracks mode). One shared helper owns the styling (`row_bg`, `title_color`, `playing_marker`) plus the two match predicates.
+- **The Queue matches on queue *position*; every other list matches on the song's *URI*.** This is the whole design decision, and getting it wrong produces **wrong** highlighting rather than missing highlighting. A queue can legitimately hold the same file twice, and `status.song_pos` is what distinguishes the two entries — so the Queue keeps `is_current_pos`. Every other list is a *library* listing whose rows have no queue position at all: **`playlist_detail`'s `pos` is the playlist index**, unrelated to `song_pos`, so a position compare there lights up an arbitrary row. `song_row::tests::a_playlist_row_at_the_playing_queue_position_does_not_match_by_position` is that exact bug, asserted.
+- `App::current_file()` hands views `Option<&str>`, not `&Option<Song>` — it makes the match rule obvious at the call site and keeps views from reaching for other fields.
+- **`playing_marker` is a fixed-width cell that is either the glyph or blank**, never a widget pushed in only when current — otherwise every other column shifts depending on what's playing. The Queue's `#` header is 48px to stay aligned with it (14 marker + 8 spacing + 26 number).
+- **`AppColors::ROW_PLAYING`** is new. It sits above `ROW_ODD` and below `BG_HOVER` so it reads as selected against *both* zebra stripes while still changing visibly on hover; a test asserts it equals none of the three. The Queue previously improvised with `BG_TERTIARY`, which is also several panels' background colour.
+- **A stopped player still highlights.** MPD keeps a current song when stopped and the Queue already behaved this way; the player bar communicates play/pause/stop. Consistency with the existing view beat the distinction.
+- **Accepted consequence**: the same track twice in one album or playlist highlights **both** rows. Rare enough not to complicate the rule, and asserted so it stays a decision.
+- **Not done** (deliberately deferred, plan step D): album-level highlighting — marking the album *containing* the playing track in the grids and album lists. It's a different comparison (`album_scoped_key` against the disc-collapsed base, so a playing Disc 2 track marks the single collapsed row) with its own edge cases, and landing it separately keeps an album-key bug from holding up the track-list work. Also out of scope (step E): auto-scrolling a list to the playing track, and the Radio view.
+
+## Icon font + row actions (`src/ui/widgets/icon.rs`, `link.rs`)
+**Every glyph in the UI comes from the bundled icon font — never from a system font, and never from a bare Unicode literal in a view.** `ui::widgets::icon` owns `assets/fonts/winrmpc-icons.ttf` (a ~2.6 KB, 17-glyph subset of Material Symbols, Apache-2.0), registered once at startup via `iced::application().font(icon::FONT_BYTES)` in `main.rs`, and exposes one `pub const` per glyph plus `icon()`/`icon_sized()`.
+- **Why bundling, not naming a font**: `link.rs` used to say `Font::with_name("Segoe UI Symbol")` with a comment explaining that the default font renders `▶`/`＋` as tofu. But iced only bundles `Iced-Icons.ttf` on native targets (`iced_graphics-0.13.0/src/text.rs:159`) and resolves every other family through **system** fonts — so on macOS and Linux that lookup fell back to precisely the font the comment called broken, and the row actions rendered as **empty boxes**. Naming any system font is the bug; the fix is to carry the glyphs.
+- **Constants are named for the action, not the upstream icon** (`ADD_PLAYLIST`, not `playlist_add`), so call sites read as intent.
+- **Two glyphs were re-picked, not just re-fonted**: `⏭` (the universal *skip-to-next* transport glyph, sitting inches from the player bar's actual Next button) became `PLAY_NEXT`, and `☰` — which meant *both* "add to playlist" and "list layout" on the same screen — split into `ADD_PLAYLIST` and `LIST`.
+- **`DOT` is the one glyph instanced at `FILL=1`.** Outlined, `fiber_manual_record` is a hollow ring, and that glyph's entire job is to be a solid status dot. `packaging/fonts/build-icon-font.py` instances the two fills separately and merges them.
+- **Icon and label are always separate widgets** (`link_icon`, `layout_toggle`, `centered_icon_note`, the Log view's slow marker). One `text` carries one font, so `"🕐 History"` as a single string could only ever render one half correctly — and the Log line is monospace besides.
+- **Typographic punctuation stays as text**: `…`, `–`, `—`, `·` are General Punctuation and covered essentially everywhere. `→` did *not* stay — it's in the Arrows block, whose coverage is far less certain, so it became `ARROW_FORWARD`.
+- **The font is committed and kept honest by tests**, mirroring the app-icon PNGs: `icon.rs`'s tests parse the TTF's `cmap` and assert every constant resolves to a glyph, that the font carries no glyph without a constant, that no two constants collide, and that the family name is the bundled one. Change the icon set → edit `build-icon-font.py`, rerun it, add the constant.
+- **Regenerating** needs `fonttools` (a dev-only dependency, not part of `cargo build`): `python3 -m venv .venv && .venv/bin/pip install fonttools brotli && .venv/bin/python3 packaging/fonts/build-icon-font.py`.
+
+**Every track list uses one column order** (`widgets/song_row.rs` owns the cells):
+
+```
+[playing marker 14] [play] [number 30, right] [title Fill] … [duration 55, right] [function buttons]
+```
+
+**Play is separated from the rest of the actions**: it's the primary action on a row, so it leads, next to the number and title it acts on. Everything else is a secondary "function" and sits right of the length. The number stays directly left of the title — the two are read together. The five lists were each doing something different (and `playlist_detail` split its actions across both sides of the title *unintentionally*); they are now identical, and the split here is deliberate.
+- **`number` and `duration` are right-aligned fixed-width cells**, and the action group is fixed width too (`action_group_width(n)`). All three have to be: the title is the only `Fill`, so any variable-width cell before it moves the title's start on that row alone — the failure that showed up as the queue's first and last rows drifting against the rest.
+- **Browser file rows have no number** — a directory listing's order is the server's, not an album's — so the buttons lead, occupying the slot the number would have.
+- **The Queue's header reserves both slots** — `MARKER_WIDTH + 8 + ACTION_BTN_WIDTH` before its `#` label, and `ACTIONS_WIDTH` after `Time` — or its `FillPortion`s divide a different amount of space than the rows and every label drifts sideways.
+- **The Queue has a leading play button too**, emitting `QueuePlay(pos)` — *not* `PlaySong(uri)`, which would enqueue a second copy of a track that is already in the queue. Its title remains clickable; the button just makes that affordance visible.
+
+**Row actions are a deliberate table, not per-view accident.** Every row action is an `icon_btn_tip` (or `icon_btn_danger` for destructive ones) carrying a fixed tooltip — the wording is part of the contract, so the same button never reads differently between views:
+
+| Action | Glyph | Tooltip | album | search | browser | playlist_detail | queue |
+|---|---|---|---|---|---|---|---|
+| `PlaySong` / `PlaylistPlayAt` / `QueuePlay` | `PLAY` | Play now | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `QueueAddOnly` | `ADD_QUEUE` | Add to end of queue | ✓ | ✓ | ✓ | ✓ | — |
+| `QueueAddNext` | `PLAY_NEXT` | Play next | ✓ | ✓ | ✓ | ✓ | — |
+| `OpenAddToPlaylist` | `ADD_PLAYLIST` | Add to playlist… | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `QueueMoveUp`/`Down` | `MOVE_UP`/`MOVE_DOWN` | Move up / Move down | — | — | — | — | ✓ |
+| `PlaylistMoveSongUp`/`Down` | `MOVE_UP`/`MOVE_DOWN` | Move up in playlist / Move down in playlist | — | — | — | ✓ | — |
+| `QueueRemove` | `REMOVE` | Remove from queue | — | — | — | — | ✓ |
+| `PlaylistRemoveSong` | `REMOVE` | Remove from playlist | — | — | — | ✓ | — |
+
+Play is drawn separately at the head of the row; the counts above are of the *trailing* group, so playlist detail carries six there, the queue four, and album/search/browser three.
+
+The one deliberate gap: **the queue has no "add to end of queue"** (those rows already *are* the queue). **Only reorderable lists get move arrows** (you can't reorder an album). Browser file rows gained the full four — they previously had play/add only, for no stated reason. The ellipsis in "Add to playlist…" is load-bearing: it's the only row action that opens a picker rather than acting immediately.
+
+Tooltips sit **above** the button (`tooltip::Position::Top`) because the right-most actions are near the window edge, where a side-placed tooltip clips.
+
+**An action that doesn't apply is disabled, never omitted** (`icon_btn_tip_maybe` / `icon_btn_danger_maybe`, with a `Status::Disabled` arm giving `TEXT_DISABLED`). Row columns are `FillPortion`s laid out *before* the action group, so dropping a button narrows the group, hands the freed width back to the fill columns, and shifts Title/Artist/Album/Time **on that row alone**. The Queue showed this plainly: its first and last rows drifted right against every row between them, and the last row's Move-up arrow rendered in the Move-down column. Same principle as `song_row::playing_marker` — hold the slot, change what's in it.
+
+**A header row must reserve `song_row::action_group_width(n)`.** The Queue's header had no action column at all, so its `FillPortion`s divided ~134px more than the rows beneath and every label sat visibly right of its data. `ACTION_BTN_WIDTH` is *derived*, not eyeballed: every glyph in the bundled font advances exactly one em (`icon::tests::every_glyph_advances_exactly_one_em` parses `hmtx` and asserts it), so a glyph is exactly `icon::SIZE` px and `padding([2, 8])` adds 8 each side. Regenerate the font with non-square glyphs and that test fails rather than the layout quietly drifting.
 
 ## Album cover grid vs list (`src/ui/widgets/album_grid.rs`)
-The Albums list, Recently Added and Recently Played (Albums mode) all render through one shared widget, so they look and behave identically. `album_grid` exposes `tile()` (cover + title + subtitle + optional caption), `grid()`, `list_thumb()` (the list-mode cover), `layout_toggle()` (the ▦ Grid / ☰ List button) and `art_for()` (cache lookup via `art_key_for`).
+The Albums list, Recently Added and Recently Played (Albums mode) all render through one shared widget, so they look and behave identically. `album_grid` exposes `tile()` (cover + title + subtitle + optional caption), `grid()`, `list_thumb()` (the list-mode cover), `layout_toggle()` (the Grid / List button — `icon::GRID` / `icon::LIST` plus a text label) and `art_for()` (cache lookup via `art_key_for`).
 - **One flag for all three views**: `AppConfig::album_grid_view` (`#[serde(default)]`, persisted), toggled by `Message::ToggleAlbumGridView`. Deliberately not per-view — three independent layout memories would feel arbitrary.
 - **List mode also shows art** in all three, via the shared `list_thumb()` (36px), so switching layouts changes the density and never *which* albums appear to have a cover.
 - **`grid()` is a wrapping row** (`row(tiles).width(Fill).wrap()`), so the column count follows the window width. It used to chunk into a fixed 5 per row, which left a widening band of dead space to the right on any window wider than 5 tiles.
@@ -300,14 +382,26 @@ Mirrors mikMPD's setup. `PlaylistInfo` (`src/mpd/types.rs`) backs `View::Playlis
 
 ## Lyrics (`src/lyrics/lrclib.rs`, `src/ui/views/now_playing.rs`)
 `LyricsClient` fetches synced/plain lyrics from LRCLIB for the current song; `parse_lrc` parses `[mm:ss.xx]` timestamps. Results cache through the redb `Store` (`lyrics_get`/`lyrics_put`, keyed like art) so they're fetched once per track.
-- **State**: `lyrics: HashMap<String, Option<Lyrics>>` on `App` — `None` entry = loading, `Some(None)` = fetched-but-none-found, `Some(Some(l))` = have lyrics. `show_lyrics: bool` (default `true`) toggled by `Message::ToggleLyrics`.
-- **Now Playing layout**: when `show_lyrics`, the view splits into a left column (art/info/recents) and a right `FillPortion(2)` lyrics panel; synced lines highlight the one matching `elapsed - LYRIC_SYNC_OFFSET` (0.5s, since LRCLIB timestamps tend to lead slightly) and auto-scroll via `lyrics_scroll_id`.
+- **State**: `lyrics: HashMap<String, Option<Lyrics>>` on `App` — `None` entry = loading, `Some(None)` = fetched-but-none-found, `Some(Some(l))` = have lyrics. `show_lyrics: bool` (default `true`) toggled by `Message::ToggleLyrics`; `lyrics_follow: bool` (default `true`) toggled by `Message::ToggleLyricsFollow`. Neither is persisted — both are "how I want to read *this* track", not a durable preference.
+- **Now Playing layout**: when `show_lyrics`, the view splits into a left column (art/info/recents) and a right `FillPortion(2)` lyrics panel.
+- **Sync vs Scroll is a real toggle, and it has to be.** `lyrics_autoscroll()` runs off the 500ms status poll and calls `snap_to` unconditionally, so while following, any manual scroll is undone within half a second — the pane was effectively unreadable anywhere but the current line. `lyrics_follow` gates it, and the panel shows a **Sync / Scroll** switch (only when synced lyrics exist; on plain lyrics there's no autoscroll to disable, so the button would do nothing). Toggling *back* to Sync snaps immediately rather than waiting for the next tick. **The highlight stays in both modes** — while scrolled away it's the only indication of where the song actually is. Auto-detecting a user scroll instead was rejected: `on_scroll` fires for our own `snap_to` too, so it would feed back and switch itself off.
+- **`lyrics::active_line(lines, elapsed)` is the single implementation** of "which line is current", used by both the view's highlight and the autoscroll's target. Those were separate copy-pasted expressions; if they drifted the pane would scroll to a different line than it highlights. `SYNC_OFFSET` (0.5s) moved into `lyrics/` with it — it's a property of LRCLIB's data, which marks where a line *starts*, slightly ahead of the audible vocal. The offset **delays** the advance; a sign flip would make the highlight lead the song and still look plausible, so a test pins it.
+- **`Song::lyrics_key()`** is the one builder for the lyrics cache key (`artist\x1ftitle\x1falbum`). The same `format!` was written by hand in three places — the fetch, the view's lookup and the autoscroll's lookup — and any drift would have been silent, showing as lyrics that load and then never scroll. Unlike `art_key()` it is **per track and not disc-folded** (two discs hold different songs) and it uses the **track** artist, matching what `fetch_lyrics` sends to LRCLIB.
+- **The autoscroll's offset is `active / (len - 1)` as a `RelativeOffset`**, which lands the active line a proportional distance down the viewport: near the top early in the track, centred mid-track, near the bottom at the end. Not a true "keep it centred" — that would need per-line heights iced doesn't expose — but continuous and predictable.
 - **Both lyric branches must carry `.id(lyrics_scroll_id)`.** iced reuses widget state by *(tree position, widget type)* only — `scrollable::Id` is for targeting operations, not identity — so the synced and plain scrollables, which sit at the same tree path, share scroll state. The plain branch originally had no id: it inherited the synced branch's autoscrolled offset (near the bottom), opened scrolled past its own much shorter content, i.e. **blank**, and had no id to reset and no autoscroll to re-sync. `App::reset_lyrics_scroll()` snaps to `RelativeOffset::START` on track change and on entering Now Playing. `lyrics_autoscroll()` is additionally gated on `current_view == View::NowPlaying`, since off that view the operation walks the tree every 500ms to reach a widget that isn't there.
 - `fetch_lyrics(song)` (`app.rs`) skips the request if the key is already in `self.lyrics`.
+- **Verified against real LRCLIB data**: `live_lrclib_returns_parseable_synced_lyrics` (needs `WINRMPC_TEST_NETWORK=1`, no MPD server) fetches three well-covered tracks and asserts the properties the panel depends on — sorted timestamps (the active-line search uses `rposition`), non-empty text, advancing times, and nothing past the track duration. Real tracks routinely open with 20-30s of intro (Creep's first line is at 19.16s), so "no line active yet" is the normal opening state, not an edge case.
 
 ## Album Art Fetch Order (`src/mpd/client.rs`, `App::fetch_art`)
 **Tag → cover file → internet.** `MpdClient::tag_art(uri)` (`readpicture`) is tried before `cover_file_art(uri)` (`albumart`) — tag art is probed first because on a tagged library it's the one that actually exists; probing the separate-cover-file path first would cost a wasted round trip per album on every well-tagged library. Both share one private `fetch_binary_art(verb, uri)` chunked-read loop. `App::fetch_art` sequences them, falling through to `MusicBrainzClient::fetch_album_art` only if both MPD paths miss.
 - **`art_fetch_gate: Arc<Semaphore>`** (size 4, on `App`) bounds peak concurrent art fetches — acquired in `fetch_art`/`fetch_artist_art`/the `ArtistAlbumsLoaded` per-album loop before touching MPD or MusicBrainz. Without it, opening an artist with many uncached albums fires one unbounded fetch task per album.
+
+## Outbound HTTP (`src/net.rs`, `Cargo.toml`)
+Every outbound request — MusicBrainz, Cover Art Archive, Wikipedia, LRCLIB — goes through one place.
+- **`reqwest` is pinned to `default-features = false` + `rustls-tls-native-roots`.** Default features mean `native-tls`, which is schannel on Windows, Security.framework on macOS and **OpenSSL on Linux** — so only the Linux build carried a system dependency (`openssl-devel` + `pkg-config` to build, a matching `libssl` soname to run, meaning a binary built on one distro could fail to start on another). rustls is the same pure-Rust stack everywhere. **`default-features = false` drops more than TLS**, so `json`, `charset`, `http2` and `macos-system-configuration` are re-added deliberately — without the last one macOS silently stops honouring system proxy settings. `native-roots` rather than `webpki-roots` so a corporate MITM proxy or a custom CA in the OS trust store keeps working. Verify with `cargo tree -i openssl-sys` (must not match); `openssl-probe` in `Cargo.lock` is a red herring — it's a pure-Rust crate that only *locates* certificate files.
+- **`net::USER_AGENT` is the single User-Agent**, built from `CARGO_PKG_VERSION`. MusicBrainz requires a UA that identifies the application with real contact information and throttles or blocks clients without one; this was hardcoded to `winrmpc/0.1.0 (https://github.com/user/winrmpc)` — a version four releases stale and a URL identifying nobody. A unit test asserts the placeholder can't come back.
+- **`net::client(purpose)` returns `Option<Client>`, never panicking.** The two clients previously disagreed: `musicbrainz.rs` used `.expect(...)` (took the app down) and `lrclib.rs` used `.unwrap_or_default()` (silently discarded the UA and timeout — and `Client::default()` is `Client::new()`, which panics anyway, so it wasn't even a real fallback). Both now hold `http: Option<Client>` and route every request through a private `get()` that turns "no client" and "request failed" into the same `None`, so exactly one place knows the client is optional. Failure logs at ERROR naming which lookups are unavailable.
+- **`ALBUM_ART_DEADLINE` (45s) bounds a whole album's remote lookup**, not just one request. The 10s per-request timeout doesn't help when one album issues the `search_queries` ladder, then a release-group lookup, then the CAA image fetch, each behind a ~1.1s throttle wait. Stage 2 of the art queue is one-at-a-time and unbounded by design, so one pathological album could stall the whole background sweep.
 
 ## Wikipedia / MusicBrainz (`src/art/musicbrainz.rs`)
 - **`MusicBrainzClient`** is `Clone` and holds a `Store` (for MBID/negative caching) plus a `MusicBrainzThrottle`; `App` constructs **one** instance (`self.mb_client`) and every fetch site clones it — do not `MusicBrainzClient::new(...)` ad hoc, it defeats connection pooling.
@@ -348,8 +442,31 @@ gh pr create ...
 gh pr merge ... --merge
 git checkout main && git pull
 git tag vX.Y.Z && git push origin vX.Y.Z
-gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
+# .github/workflows/release.yml takes it from here — see below
 ```
+
+**`.github/workflows/release.yml` builds and attaches the binaries.** Pushing a
+`vX.Y.Z` tag runs the suite on ubuntu/windows/macOS, builds
+`x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`, and creates the
+release with `--generate-notes` (or uploads to an existing release, so
+hand-written notes survive). Do **not** `gh release create` by hand first
+unless you want to write the notes yourself.
+- **The Windows `.exe` is built in CI, not locally.** Cross-compiling it from
+  Linux needs either `cargo-xwin` + `clang`/`lld` or a mingw toolchain, none of
+  which this repo assumes.
+- **"Run workflow" (`workflow_dispatch`) builds the same artifacts and
+  publishes nothing** — the way to get an `.exe` to test without committing to
+  a release. The `publish` job is gated on `refs/tags/`, so a manual run cannot
+  touch a release.
+- **The Linux artifact is a `.tar.gz`, not a bare binary**, carrying
+  `packaging/linux/` with it: on Wayland the window icon only resolves once the
+  `.desktop` file is installed, so shipping the binary alone would ship a
+  knowingly icon-less app.
+- **macOS is tested but not shipped** — there is no `.app` bundle yet (plan 1
+  steps D/E).
+- The Linux CI job installs `libxkbcommon-dev`/`libwayland-dev`/`libx11-dev`
+  and deliberately **not** `libssl-dev`. If the build ever fails on a missing
+  libssl, something re-enabled `native-tls` — see "Outbound HTTP".
 
 ## In-App Log (`src/logger.rs`)
 - `InAppLayer` implements `tracing_subscriber::Layer` — appends INFO+ events to a static `Mutex<Vec<LogEntry>>`
@@ -366,15 +483,33 @@ gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."
 Two tracing layers: `fmt` (stderr, useful in dev) + `InAppLayer` (ring-buffer for the in-app view).
 
 ## App Icon
-`src/icon.rs` — `make_icon()` generates RGBA pixels at runtime for the iced window icon.  
-`build.rs` — generates the same design as 16×16 + 32×32 BMP-in-ICO and embeds it via `winres`.  
-Build dependency: `winres = "0.1"` in `[build-dependencies]`.
+**`src/icon_design.rs` is the single generator** — a dark-navy circle with three cyan equalizer bars, drawn procedurally on a 32-unit grid so every size is free and no source image exists. It holds `APP_ID`, the colours, `rgba_pixels(size)` and `svg()`. Three consumers share it, two of them via `include!` because neither a build script nor an example can `use` a crate module:
+- `src/icon.rs` — thin iced wrapper (`make_icon()`, 32×32) + the icon tests.
+- `build.rs` — `include!`s it, then does the *only* Windows-specific work: row flip + RGBA→BGRA swizzle + the BMP-in-ICO container, embedded via `winres` (`winres = "0.1"` in `[build-dependencies]`).
+- `examples/emit_icons.rs` — `include!`s it and writes `packaging/linux/icons/hicolor/**` (PNG at 8 sizes + scalable SVG).
+
+**Two constraints on `icon_design.rs`, both load-bearing**: `std` only (no `iced`, no `image`, no `use crate::…`), and **no inner `//!` doc comments anywhere in the file** — `include!` splices it mid-file where inner docs are a hard `E0753` error.
+
+**What the runtime icon actually does, per platform** — it is not uniform, and the two no-ops are why `packaging/` exists:
+
+| Platform | `window::Settings.icon` |
+|---|---|
+| Windows | Works; `build.rs` also embeds the ICO for Explorer/taskbar |
+| Linux / X11 | Works (`_NET_WM_ICON`) |
+| Linux / Wayland | **No-op** — `winit .../wayland/window/mod.rs:433` is an empty fn |
+| macOS | **No-op** — `winit .../macos/window_delegate.rs:1541`, documented |
+
+Wayland resolves an icon by matching the surface's `app_id` to a `.desktop` basename, so `main.rs` sets `platform_specific.application_id` from `icon_design::APP_ID` (`io.github.mickegris.winrmpc`). `PlatformSpecific` is a **different type per OS**, hence the cfg-split `platform_specific()` helper next to `window_settings()`. That id must stay byte-identical in three places — the `app_id`, the `.desktop` filename, and the icon filenames — or the icon silently doesn't resolve. **macOS has no packaging yet** and therefore still no icon; see `docs/plans/app-icon-cross-platform.md`.
+
+The generated PNGs **are committed** (packagers shouldn't need a Rust toolchain), and `icon::tests::packaged_png_assets_match_the_generator` keeps them honest by decoding each one and comparing *pixels* — not encoded bytes, so an `image` upgrade can't fail it spuriously. Change the design → run `cargo run --example emit_icons`, or `cargo test` fails and tells you to.
 
 ## Planning Docs (`docs/plans/`)
 Design docs written before implementing a feature — read the relevant one before starting related work, and add new ones there for anything non-trivial. `mikmpd-parity-overview.md` tracks the gap between winrmpc and its sibling iOS client [mikMPD](https://github.com/mickegris/mikMPD) (`../mikMPD`), with one linked plan file per gap (queue editing, multi-disc album grouping, recently-added/played history, server stats & diagnostics, Snapcast control, Now Playing quick controls). `server-discovery.md` is kept only as a record — that feature was **removed** in 0.4.1. `playlists.md` and `enhancements.md` (playlists, MPD log, lyrics) are earlier plans from this same parity effort — already shipped. Others not covered by the parity overview: `art-wikipedia-fetch-order-and-caching.md` (the tag → cover-file → internet order and the fetch gate), `local-database.md` (the redb store), `review-fixes-correctness.md` / `review-fixes-performance.md` (the two code-review rounds, including the deferrals listed in `docs/status.md`), and `iced-0.14-migration.md` — whose **§9 post-mortem is the part that matters**: the migration was tried and reverted, and §§0–8 predate that.
 
+`cross-platform-and-ui-0.4.2.md` is the newest umbrella (targeting 0.4.2), linking five plans: `app-icon-cross-platform.md`, `persistent-storage-cross-platform.md`, `current-song-highlighting.md`, `row-action-affordance.md`, `network-fetch-cross-platform.md`. **Read that umbrella before touching fonts, glyphs, the window icon, `ProjectDirs`, or the `reqwest` features** — three of the five findings are one recurring mistake (a Windows-only resource named directly, silently falling back to nothing on macOS/Linux). The `Segoe UI Symbol` reference in `ui/widgets/link.rs` was the load-bearing example — the fallback font was the one its own comment said renders tofu — and is **fixed**: see "Icon font + row actions" above. Every claim in those plans is sourced from the vendored `iced`/`winit` crates with file:line references and **none is yet verified on real macOS or Linux hardware** — each plan's "How to confirm on the real OS" section is the acceptance criterion.
+
 ## Current Version
-`0.4.1` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
+`0.4.2` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
 
 `Cargo.lock` **is committed** (`.gitignore` has `*.lock` with a `!Cargo.lock` exception). This is a binary crate, so the lockfile belongs in version control: without it every machine resolves its own versions, builds aren't reproducible, and a bad upstream patch release can't be pinned back.
 

@@ -1,16 +1,22 @@
 use crate::mpd::types::Song;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::icon_btn;
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::icon_btn_tip;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, container, image, row, text, Column, Space};
 use iced::{Alignment, Element, Length};
 
+/// `current_file` is the playing track's URI, not its queue position — this is
+/// a library listing, so a position compare would mark an unrelated row. See
+/// `widgets::song_row`.
 pub fn view<'a>(
     album_name: &'a str,
     songs: &'a [Song],
     art_handle: Option<&'a iced::widget::image::Handle>,
     bio: Option<&'a str>,
     show_bio: bool,
+    current_file: Option<&'a str>,
 ) -> Element<'a, Message> {
     let artist = songs
         .first()
@@ -166,31 +172,46 @@ pub fn view<'a>(
             }
         }
 
-        let bg = if i % 2 == 0 {
-            AppColors::ROW_EVEN
-        } else {
-            AppColors::ROW_ODD
-        };
+        let is_current = song_row::is_current_uri(&song.file, current_file);
+        let bg = song_row::row_bg(i, is_current);
         let track_num = song.track.as_deref().unwrap_or("-");
+
+        let actions = row![
+            icon_btn_tip(
+                icon::ADD_QUEUE,
+                "Add to end of queue",
+                Message::QueueAddOnly(song.file.clone())
+            ),
+            icon_btn_tip(
+                icon::PLAY_NEXT,
+                "Play next",
+                Message::QueueAddNext(song.file.clone())
+            ),
+            icon_btn_tip(
+                icon::ADD_PLAYLIST,
+                "Add to playlist…",
+                Message::OpenAddToPlaylist(vec![song.file.clone()])
+            ),
+        ]
+        .spacing(song_row::ACTION_SPACING)
+        .width(song_row::action_group_width(3));
 
         track_list = track_list.push(
             container(
                 row![
-                    icon_btn("▶", Message::PlaySong(song.file.clone())),
-                    icon_btn("+", Message::QueueAddOnly(song.file.clone())),
-                    icon_btn("⏭", Message::QueueAddNext(song.file.clone())),
-                    icon_btn("☰", Message::OpenAddToPlaylist(vec![song.file.clone()])),
-                    text(track_num.to_string())
-                        .size(13)
-                        .width(30)
-                        .color(AppColors::TEXT_MUTED),
+                    song_row::playing_marker(is_current),
+                    icon_btn_tip(
+                        icon::PLAY,
+                        "Play now",
+                        Message::PlaySong(song.file.clone())
+                    ),
+                    song_row::number(track_num.to_string(), 13),
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
-                        .color(AppColors::TEXT_PRIMARY),
-                    text(song.format_duration())
-                        .size(12)
-                        .color(AppColors::TEXT_MUTED),
+                        .color(song_row::title_color(is_current)),
+                    song_row::duration(song.format_duration(), 12),
+                    actions,
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),

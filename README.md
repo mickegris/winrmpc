@@ -189,6 +189,79 @@ For development builds (faster compilation, slower runtime):
 cargo build
 ```
 
+## Desktop integration (Linux)
+
+Running the binary directly works fine, but the window will have a generic
+icon and winrmpc won't show up in your application menu. `packaging/linux/`
+has everything needed to fix that — the same equalizer icon the Windows build
+embeds in its `.exe`, emitted as standard freedesktop icons.
+
+```bash
+cargo build --release
+./packaging/linux/install.sh
+```
+
+That installs, under `~/.local` by default:
+
+| What | Where |
+|---|---|
+| Desktop entry | `share/applications/io.github.mickegris.winrmpc.desktop` |
+| Icons (16–512px + SVG) | `share/icons/hicolor/*/apps/io.github.mickegris.winrmpc.*` |
+| Binary | `bin/winrmpc` (only if `target/release/winrmpc` exists) |
+
+For a system-wide install, set `PREFIX` (this needs root):
+```bash
+sudo PREFIX=/usr/local ./packaging/linux/install.sh
+```
+
+To remove everything it installed:
+```bash
+./packaging/linux/install.sh --uninstall
+```
+
+Make sure the install prefix's `bin/` is on your `PATH` — the desktop entry
+uses `Exec=winrmpc` and the launcher resolves it there. The script warns you if
+it isn't. You may need to log out and back in before the icon appears.
+
+### Why the extra step is needed on Wayland
+
+**Wayland has no per-window icon protocol.** An application cannot hand its
+compositor an icon at runtime the way it can on Windows or X11. Instead the
+compositor matches the window's `app_id` against the basename of an installed
+`.desktop` file and reads that file's `Icon=` key. So until the files above are
+installed, a Wayland window genuinely has no icon to show — nothing the app
+does at runtime can change that.
+
+Three strings have to match exactly for the chain to resolve, all of them
+`io.github.mickegris.winrmpc`: the `app_id` winrmpc sets at startup, the
+`.desktop` filename, and the icon filenames. They all come from one constant
+(`APP_ID` in `src/icon_design.rs`).
+
+X11 is less strict — it gets an icon from the running application either way —
+but still needs the desktop entry to appear in menus.
+
+### Regenerating the icons
+
+The icon is drawn procedurally, not stored as a source image, so one generator
+feeds all three platforms: the runtime window icon, the Windows `.ico` resource
+embedded by `build.rs`, and these Linux assets. The generated PNGs and SVG are
+committed so packaging needs no toolchain, but if you change the design in
+`src/icon_design.rs`, regenerate them:
+
+```bash
+cargo run --example emit_icons
+```
+
+`cargo test` fails if the committed assets fall behind the generator, so this
+can't be forgotten silently.
+
+### macOS
+
+Not yet packaged. macOS takes its Dock and Finder icon from an `.app` bundle's
+`.icns` file, and winrmpc doesn't build one — a bare binary gets the generic
+executable icon. Tracked in
+[`docs/plans/app-icon-cross-platform.md`](docs/plans/app-icon-cross-platform.md).
+
 ### Running tests
 
 ```bash
@@ -222,14 +295,26 @@ On first launch winrmpc connects to MPD at `127.0.0.1:6600` and writes a config 
 
 If the config file is ever left in a state that can't be parsed, winrmpc runs on defaults for that session, says so in the **Log** view, and will not save over the file — fix or delete it and settings will start saving again.
 
-Configuration file (Windows path shown; Linux and macOS use their own standard config directories):
-```
-%APPDATA%\winrmpc\winrmpc\config\config.toml
-```
+### Where your settings and cache live
 
-Cache database (album art, lyrics, biographies, play history):
-```
-%LOCALAPPDATA%\winrmpc\winrmpc\cache\winrmpc.redb
+**Settings → Storage** shows both paths and gives you an **Open folder** button for each, which is the quickest way to get there. They're also written to the **Log** view at every startup.
+
+| | Settings (`config.toml`) | Cache (`winrmpc.redb`) |
+|---|---|---|
+| Windows | `%APPDATA%\winrmpc\winrmpc\config\` | `%LOCALAPPDATA%\winrmpc\winrmpc\cache\` |
+| Linux | `~/.config/winrmpc/` | `~/.cache/winrmpc/` |
+| macOS | `~/Library/Application Support/com.winrmpc.winrmpc/` | `~/Library/Caches/com.winrmpc.winrmpc/` |
+
+The cache holds album art, lyrics, biographies and play history. Deleting it is safe — everything except play history is re-fetched.
+
+On **macOS** those folders take some finding, which is why the in-app buttons exist: `~/Library` is hidden in Finder by default (press ⇧⌘. to reveal it, or use Go → Go to Folder), and the folder is named `com.winrmpc.winrmpc` rather than `winrmpc`, so searching Spotlight for "winrmpc" won't lead you there.
+
+Both locations can be overridden with environment variables, which is useful for a portable install or for running two independent profiles:
+
+```bash
+WINRMPC_CONFIG_DIR=~/winrmpc-profiles/lounge \
+WINRMPC_CACHE_DIR=~/winrmpc-profiles/lounge/cache \
+  winrmpc
 ```
 
 ### Example config.toml

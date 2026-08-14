@@ -1,15 +1,11 @@
 use crate::mpd::types::*;
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
-use crate::ui::widgets::link::{icon_btn, link, link_accent};
+use crate::ui::widgets::icon;
+use crate::ui::widgets::link::{link, link_accent, link_icon};
 use iced::widget::{button, column, container, image, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
-
-/// Seconds to delay synced-lyric highlighting. LRCLIB timestamps tend to mark
-/// when a line *starts* slightly early relative to the audible vocal, so we
-/// hold each line a touch longer before advancing.
-pub(crate) const LYRIC_SYNC_OFFSET: f64 = 0.5;
 
 pub fn view<'a>(
     current_song: &'a Option<Song>,
@@ -20,6 +16,7 @@ pub fn view<'a>(
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     lyrics: Option<Option<&'a crate::lyrics::Lyrics>>,
     show_lyrics: bool,
+    lyrics_follow: bool,
     lyrics_scroll_id: iced::widget::scrollable::Id,
     playing_from: Option<&'a str>,
 ) -> Element<'a, Message> {
@@ -32,7 +29,7 @@ pub fn view<'a>(
         Space::with_width(12),
         link("Partitions", 12, Message::NavigateTo(View::Partitions)),
         Space::with_width(12),
-        link("\u{1F551} History", 12, Message::NavigateTo(View::RecentlyPlayed)),
+        link_icon(icon::HISTORY, "History", 12, Message::NavigateTo(View::RecentlyPlayed)),
         Space::with_width(Length::Fill),
         lyrics_toggle(show_lyrics),
     ]
@@ -89,8 +86,9 @@ pub fn view<'a>(
             ];
 
             if let Some(name) = playing_from {
-                info_items.push(link(
-                    format!("▤ Playing from {name}"),
+                info_items.push(link_icon(
+                    icon::QUEUE_MUSIC,
+                    format!("Playing from {name}"),
                     13,
                     Message::PlaylistSelected(name.to_string()),
                 ));
@@ -131,7 +129,7 @@ pub fn view<'a>(
                     info_items.push(
                         button(
                             row![
-                                text("▶  ").size(13).color(AppColors::ACCENT),
+                                icon::icon_sized(icon::PLAY, 13).color(AppColors::ACCENT),
                                 text(next.display_title())
                                     .size(14)
                                     .color(AppColors::TEXT_PRIMARY),
@@ -215,7 +213,8 @@ pub fn view<'a>(
                 .width(Length::FillPortion(3))
                 .height(Length::Fill);
 
-                let right_col = lyrics_column(lyrics, elapsed, lyrics_scroll_id);
+                let right_col =
+                    lyrics_column(lyrics, elapsed, lyrics_follow, lyrics_scroll_id);
 
                 column![
                     toggle_row,
@@ -335,6 +334,42 @@ fn recent_thumb<'a>(
     .into()
 }
 
+/// The synced-lyrics mode switch: **Sync** follows the song, **Scroll** lets
+/// the user read freely.
+///
+/// It has to exist because the autoscroll runs off the 500ms status poll and
+/// calls `snap_to` unconditionally — so in Sync mode any manual scroll is
+/// undone within half a second. There is no way to tell a user scroll from our
+/// own programmatic one (`on_scroll` fires for both, so auto-detecting would
+/// feed back and disable itself), which is why this is an explicit switch
+/// rather than "stop following when the user scrolls".
+///
+/// The active-line highlight stays in **both** modes: while scrolling ahead
+/// it's the only thing showing where the song actually is.
+fn follow_toggle<'a>(follow: bool) -> Element<'a, Message> {
+    let (glyph, label, hint) = if follow {
+        (icon::HISTORY, "Sync", "Following the song — click to scroll freely")
+    } else {
+        (icon::LIST, "Scroll", "Free scrolling — click to follow the song")
+    };
+    row![
+        button(
+            row![
+                icon::icon_sized(glyph, 13),
+                text(label).size(12),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+        )
+        .on_press(Message::ToggleLyricsFollow)
+        .padding([3, 10]),
+        Space::with_width(8),
+        text(hint).size(10).color(AppColors::TEXT_MUTED),
+    ]
+    .align_y(Alignment::Center)
+    .into()
+}
+
 /// Small "Show lyrics" / "Hide lyrics" toggle button.
 fn lyrics_toggle<'a>(show: bool) -> Element<'a, Message> {
     let label = if show { "Hide lyrics" } else { "Show lyrics" };
@@ -374,21 +409,25 @@ fn lyrics_toggle<'a>(show: bool) -> Element<'a, Message> {
 fn lyrics_column<'a>(
     lyrics: Option<Option<&'a crate::lyrics::Lyrics>>,
     elapsed: f64,
+    follow: bool,
     scroll_id: iced::widget::scrollable::Id,
 ) -> Element<'a, Message> {
+    // The Sync/Scroll switch is only shown when there is something to sync
+    // *to* — on plain lyrics there is no autoscroll to turn off, so the button
+    // would be a control that does nothing.
+    let has_synced = matches!(lyrics, Some(Some(l)) if l.synced.is_some() && !l.instrumental);
+
     let inner: Element<'a, Message> = match lyrics {
         None => centered_note("Loading lyrics…"),
         Some(None) => centered_note("No lyrics available"),
-        Some(Some(l)) if l.instrumental => centered_note("♪ Instrumental"),
+        Some(Some(l)) if l.instrumental => centered_icon_note(icon::MUSIC_NOTE, "Instrumental"),
 
         Some(Some(l)) => {
             // Prefer synced (for highlighting); fall back to plain text.
             if let Some(ref synced) = l.synced {
-                // Active line = the last one whose timestamp has passed,
-                // nudged by LYRIC_SYNC_OFFSET so the highlight doesn't run
-                // ahead of the vocals.
-                let t = elapsed - LYRIC_SYNC_OFFSET;
-                let active = synced.iter().rposition(|line| line.secs <= t);
+                // Shared with the autoscroll so the highlighted line and the
+                // scrolled-to line can never disagree.
+                let active = crate::lyrics::active_line(synced, elapsed);
 
                 let mut col = column![].spacing(8).width(Length::Fill);
                 for (i, line) in synced.iter().enumerate() {
@@ -430,9 +469,18 @@ fn lyrics_column<'a>(
         }
     };
 
+    let body: Element<'a, Message> = if has_synced {
+        column![follow_toggle(follow), Space::with_height(8), inner]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    } else {
+        inner
+    };
+
     // Wrap in a subtle panel so the lyrics read as a distinct pane, not an
     // empty black void next to the song info.
-    container(inner)
+    container(body)
         .width(Length::FillPortion(2))
         .height(Length::Fill)
         .padding(16)
@@ -449,6 +497,24 @@ fn lyrics_column<'a>(
 }
 
 /// A short note centered in the lyrics pane (loading / not found / instrumental).
+/// [`centered_note`] with a leading icon — separate widgets because the glyph
+/// needs the bundled icon font and the label does not.
+fn centered_icon_note<'a>(glyph: &'static str, msg: &'a str) -> Element<'a, Message> {
+    container(
+        row![
+            icon::icon_sized(glyph, 16).color(AppColors::TEXT_MUTED),
+            text(msg).size(14).color(AppColors::TEXT_MUTED),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
 fn centered_note<'a>(msg: &'a str) -> Element<'a, Message> {
     container(text(msg).size(14).color(AppColors::TEXT_MUTED))
         .center_x(Length::Fill)

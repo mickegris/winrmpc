@@ -7,7 +7,9 @@ mod ui;
 mod art;
 mod config;
 mod logger;
+mod net;
 mod icon;
+mod icon_design;
 mod lyrics;
 mod store;
 mod snapcast;
@@ -42,16 +44,51 @@ fn main() -> iced::Result {
     iced::application("winrmpc", App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
-        .window(iced::window::Settings {
-            size: iced::Size::new(1200.0, 800.0),
-            // Below roughly this, Now Playing stops fitting: the art (300px)
-            // plus the song info plus the lyrics pane run out of width, and
-            // the recently-played strip runs out of height and starts
-            // colliding with the player bar. iced widgets don't clip their
-            // parent, so "too small" doesn't degrade gracefully — it overlaps.
-            min_size: Some(iced::Size::new(1000.0, 700.0)),
-            icon: icon::make_icon(),
-            ..Default::default()
-        })
+        // Register the bundled icon font. Without this the row-action glyphs
+        // resolve through *system* fonts — which is why they rendered as tofu
+        // boxes on every machine without `Segoe UI Symbol`, i.e. all of macOS
+        // and Linux. See `ui::widgets::icon`.
+        .font(ui::widgets::icon::FONT_BYTES)
+        .window(window_settings())
         .run_with(App::new)
+}
+
+fn window_settings() -> iced::window::Settings {
+    iced::window::Settings {
+        size: iced::Size::new(1200.0, 800.0),
+        // Below roughly this, Now Playing stops fitting: the art (300px)
+        // plus the song info plus the lyrics pane run out of width, and
+        // the recently-played strip runs out of height and starts
+        // colliding with the player bar. iced widgets don't clip their
+        // parent, so "too small" doesn't degrade gracefully — it overlaps.
+        min_size: Some(iced::Size::new(1000.0, 700.0)),
+        // Windows and X11 take the icon from here. Wayland and macOS ignore it
+        // entirely (winit's `set_window_icon` is a no-op on both) and read it
+        // from installed packaging instead — see `packaging/linux/` and the
+        // table in `src/icon.rs`.
+        icon: icon::make_icon(),
+        platform_specific: platform_specific(),
+        ..Default::default()
+    }
+}
+
+/// `PlatformSpecific` is a *different type per OS*, so this can't be written
+/// once with `..Default::default()` — hence the cfg split.
+///
+/// Setting `application_id` is what makes the Linux icon work at all under
+/// Wayland: the compositor has no per-window icon protocol, so it matches the
+/// surface's `app_id` against an installed `.desktop` file and uses that
+/// file's `Icon=` key. It was previously left empty, which also left X11's
+/// `WM_CLASS` empty and broke window-to-application matching in docks.
+#[cfg(target_os = "linux")]
+fn platform_specific() -> iced::window::settings::PlatformSpecific {
+    iced::window::settings::PlatformSpecific {
+        application_id: icon_design::APP_ID.to_string(),
+        ..Default::default()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_specific() -> iced::window::settings::PlatformSpecific {
+    Default::default()
 }

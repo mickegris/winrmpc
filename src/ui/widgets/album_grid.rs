@@ -7,6 +7,7 @@
 
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::icon;
 use iced::widget::{button, column, container, image, row, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -114,11 +115,22 @@ pub fn grid<'a>(tiles: Vec<Element<'a, Message>>) -> Element<'a, Message> {
 
 /// The Grid/List switch. Shown in every view that supports both.
 pub fn layout_toggle<'a>(grid_view: bool) -> Element<'a, Message> {
-    let label = if grid_view { "☰ List" } else { "▦ Grid" };
-    button(text(label).size(12))
-        .on_press(Message::ToggleAlbumGridView)
-        .padding([4, 12])
-        .into()
+    // Icon and label are separate widgets because only the icon can use the
+    // bundled icon font. The list glyph here is `icon::LIST`, distinct from the
+    // playlist-add action's `icon::ADD_PLAYLIST` — both used to be `☰`.
+    let (glyph, label) = if grid_view {
+        (icon::LIST, "List")
+    } else {
+        (icon::GRID, "Grid")
+    };
+    button(
+        row![icon::icon_sized(glyph, 14), text(label).size(12)]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::ToggleAlbumGridView)
+    .padding([4, 12])
+    .into()
 }
 
 /// Look up an album's cached art. Returns `None` when nothing has been

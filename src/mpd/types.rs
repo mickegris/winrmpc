@@ -171,6 +171,25 @@ impl Song {
         art_key_for(self.display_album_artist(), self.display_album())
     }
 
+    /// Cache key for this track's lyrics: `artist\x1ftitle\x1falbum`.
+    ///
+    /// Unlike [`Song::art_key`] this is **per track**, and it is deliberately
+    /// **not** disc-folded — two discs of a set are different songs with
+    /// different words.
+    ///
+    /// It exists because the same `format!` was written out by hand in three
+    /// places (the fetch, the view's lookup and the autoscroll's lookup). They
+    /// happened to agree, but nothing made them: any drift would have been
+    /// silent, showing up only as lyrics that load and then never scroll.
+    pub fn lyrics_key(&self) -> String {
+        format!(
+            "{}\x1f{}\x1f{}",
+            self.display_artist(),
+            self.display_title(),
+            self.display_album()
+        )
+    }
+
     /// The disc number to sort/group by: the `disc` tag if present and
     /// nonzero (handles both bare `"2"` and `"2/2"` forms), else the
     /// disc suffix embedded in the album name itself (`"X [Disc 2]"`),
@@ -873,6 +892,34 @@ mod tests {
         s.album_artist = Some("Pink Floyd".into());
         s.album = Some("The Wall".into());
         assert_eq!(s.art_key(), "Pink Floyd\u{1f}The Wall");
+    }
+
+    #[test]
+    fn lyrics_key_is_per_track_and_not_disc_folded() {
+        let mut s = song();
+        s.artist = Some("Pink Floyd".into());
+        s.title = Some("Comfortably Numb".into());
+        s.album = Some("The Wall [Disc 2]".into());
+        assert_eq!(
+            s.lyrics_key(),
+            "Pink Floyd\u{1f}Comfortably Numb\u{1f}The Wall [Disc 2]"
+        );
+        // Art folds discs together so one cover serves the set; lyrics must
+        // not, since the two discs hold different songs.
+        assert_eq!(s.art_key(), "Pink Floyd\u{1f}The Wall");
+    }
+
+    #[test]
+    fn lyrics_key_uses_the_track_artist_not_the_album_artist() {
+        // LRCLIB is queried per recording, and `fetch_lyrics` sends
+        // `display_artist()` — so the cache key has to agree, or a
+        // compilation's guest artists would all share one cached result.
+        let mut s = song();
+        s.album_artist = Some("Various Artists".into());
+        s.artist = Some("Nina Simone".into());
+        s.title = Some("Sinnerman".into());
+        s.album = Some("Compilation".into());
+        assert!(s.lyrics_key().starts_with("Nina Simone\u{1f}"));
     }
 
     #[test]

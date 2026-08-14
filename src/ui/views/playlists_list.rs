@@ -3,6 +3,7 @@
 use crate::mpd::types::PlaylistInfo;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::icon;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
@@ -93,7 +94,7 @@ pub fn view<'a>(
                         shadow: iced::Shadow::default(),
                     }),
                 Space::with_width(4),
-                button(text("×").size(14))
+                button(icon::icon_sized(icon::REMOVE, 14))
                     .on_press(Message::PlaylistDelete(pl.name.clone()))
                     .padding([3, 8])
                     .style(|_t: &iced::Theme, _s: button::Status| button::Style {

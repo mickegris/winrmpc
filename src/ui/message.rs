@@ -122,6 +122,11 @@ pub enum Message {
     CachesCleared,
     /// On-disk art size, for the readout next to the purge button.
     CacheSizeLoaded(u64),
+    /// Reveal a storage directory in the platform file manager (Settings →
+    /// Storage). Carries the *directory*, never the file — Explorer and
+    /// Finder both handle "open this folder" more predictably than "open this
+    /// .toml", which would launch a text editor instead.
+    OpenStorageFolder(String),
 
     // === Browser ===
     BrowsePath(String),
@@ -217,7 +222,12 @@ pub enum Message {
 
     // === Lyrics ===
     LyricsLoaded(String, Option<crate::lyrics::Lyrics>),
+    /// Show/hide the whole lyrics pane.
     ToggleLyrics,
+    /// Switch the synced-lyrics pane between **following the song** and
+    /// **free scrolling**. Without this the 500ms autoscroll snaps the pane
+    /// back before the user can read anywhere but the current line.
+    ToggleLyricsFollow,
 
     // === Settings / Servers ===
     HostChanged(String),
