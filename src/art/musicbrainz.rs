@@ -12,8 +12,17 @@ use tokio::sync::Mutex;
 
 const MB_BASE: &str = "https://musicbrainz.org/ws/2";
 const CAA_BASE: &str = "https://coverartarchive.org";
-const USER_AGENT: &str = "winrmpc/0.1.0 (https://github.com/user/winrmpc)";
 const MB_MIN_INTERVAL: Duration = Duration::from_millis(1100);
+
+/// Deadline for one album's *entire* remote art lookup.
+///
+/// The per-request timeout is 10s, but a single album can issue several
+/// requests in sequence — the `search_queries` ladder, then the release-group
+/// lookup, then the CAA image fetch — each preceded by a throttle wait. Stage
+/// 2 of the art queue runs one album at a time and is unbounded by design, so
+/// without a deadline one pathological album can hold up the whole background
+/// sweep for minutes.
+const ALBUM_ART_DEADLINE: Duration = Duration::from_secs(45);
 
 /// Serializes MusicBrainz calls to ~1 req/s **globally** across every task
 /// holding a clone of this handle — not just within one call chain. A local
@@ -128,30 +137,69 @@ struct WikiSearchResult {
 
 #[derive(Clone)]
 pub struct MusicBrainzClient {
-    http: Client,
+    /// `None` when the HTTP client could not be built — see [`crate::net`].
+    /// Every request goes through [`MusicBrainzClient::get`], so absence
+    /// degrades to "this lookup found nothing" rather than a panic.
+    http: Option<Client>,
     store: Store,
     throttle: MusicBrainzThrottle,
 }
 
 impl MusicBrainzClient {
+    /// The single point where every outbound request is issued.
+    ///
+    /// Collapsing the transport error into `None` matches what all the call
+    /// sites already did with `.ok()`; the value here is that "no HTTP client
+    /// at all" and "this request failed" take the same path, so there is
+    /// exactly one place that has to know the client is optional.
+    async fn get(&self, url: &str) -> Option<reqwest::Response> {
+        let http = self.http.as_ref()?;
+        match http.get(url).send().await {
+            Ok(resp) => Some(resp),
+            Err(e) => {
+                tracing::debug!(url, error = %e, "HTTP request failed");
+                None
+            }
+        }
+    }
+
     /// `store` backs the MusicBrainz-ID cache (`mb_id_get`/`mb_id_put`) so
     /// `search_artist`/`search_release_group` don't re-resolve the same
     /// entity's MBID on every art *and* bio fetch.
     pub fn new(store: Store) -> Self {
-        let http = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("Failed to create HTTP client");
         Self {
-            http,
+            http: crate::net::client("MusicBrainz/Wikipedia"),
             store,
             throttle: MusicBrainzThrottle::new(),
         }
     }
 
     /// Fetch album cover art: search MusicBrainz for the release group, then get art from CAA
-    pub async fn fetch_album_art(
+    ///
+    /// Bounded by [`ALBUM_ART_DEADLINE`] across the *whole* chain, not just per
+    /// request — see that constant for why.
+    pub async fn fetch_album_art(&self, artist: &str, album: &str) -> Option<Vec<u8>> {
+        match tokio::time::timeout(
+            ALBUM_ART_DEADLINE,
+            self.fetch_album_art_inner(artist, album),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!(
+                    artist,
+                    album,
+                    timeout_secs = ALBUM_ART_DEADLINE.as_secs(),
+                    "remote album-art lookup exceeded its deadline; giving up so \
+                     the background art queue keeps moving"
+                );
+                None
+            }
+        }
+    }
+
+    async fn fetch_album_art_inner(
         &self,
         artist: &str,
         album: &str,
@@ -189,7 +237,7 @@ impl MusicBrainzClient {
         let url = format!(
             "{MB_BASE}/release-group?artist={artist_id}&type=album&limit=5&fmt=json"
         );
-        let resp = self.http.get(&url).send().await.ok()?;
+        let resp = self.get(&url).await?;
         let result: MbReleaseGroupSearchResult = resp.json().await.ok()?;
         let groups = result.release_groups?;
 
@@ -371,7 +419,7 @@ impl MusicBrainzClient {
 
             self.throttle.wait().await;
 
-            let Some(resp) = self.http.get(&url).send().await.ok() else {
+            let Some(resp) = self.get(&url).await else {
                 continue;
             };
             let Ok(result) = resp.json::<MbReleaseGroupSearchResult>().await else {
@@ -408,7 +456,7 @@ impl MusicBrainzClient {
 
             self.throttle.wait().await;
 
-            let Some(resp) = self.http.get(&url).send().await.ok() else {
+            let Some(resp) = self.get(&url).await else {
                 continue;
             };
             let Ok(result) = resp.json::<MbReleaseSearchResult>().await else {
@@ -456,7 +504,7 @@ impl MusicBrainzClient {
 
         self.throttle.wait().await;
 
-        let resp = self.http.get(&url).send().await.ok()?;
+        let resp = self.get(&url).await?;
         let result: MbArtistSearchResult = resp.json().await.ok()?;
         let artists = result.artists?;
 
@@ -478,7 +526,7 @@ impl MusicBrainzClient {
     }
 
     async fn download_image(&self, url: &str) -> Option<Vec<u8>> {
-        let resp = self.http.get(url).send().await.ok()?;
+        let resp = self.get(url).await?;
         if !resp.status().is_success() {
             return None;
         }
@@ -707,7 +755,7 @@ impl MusicBrainzClient {
     async fn get_wikipedia_url(&self, entity_type: &str, id: &str) -> Option<String> {
         let url = format!("{MB_BASE}/{entity_type}/{id}?inc=url-rels&fmt=json");
         self.throttle.wait().await;
-        let resp = self.http.get(&url).send().await.ok()?;
+        let resp = self.get(&url).await?;
         if !resp.status().is_success() {
             return None;
         }
@@ -803,7 +851,7 @@ impl MusicBrainzClient {
             "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&format=json&srlimit=3",
             urlencoding::encode(query)
         );
-        let Ok(resp) = self.http.get(&url).send().await else {
+        let Some(resp) = self.get(&url).await else {
             return Vec::new();
         };
         let Ok(parsed) = resp.json::<WikiSearchResponse>().await else {
@@ -1021,7 +1069,7 @@ impl MusicBrainzClient {
             "https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
         );
 
-        let resp = self.http.get(&url).send().await.ok()?;
+        let resp = self.get(&url).await?;
         if !resp.status().is_success() {
             return None;
         }

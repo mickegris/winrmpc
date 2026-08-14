@@ -758,3 +758,60 @@ fn first_sentence(s: &str) -> String {
     let cut = s.find(". ").map(|i| i + 1).unwrap_or(s.len().min(150));
     s[..cut.min(s.len()).min(180)].replace('\n', " ")
 }
+
+/// Proves the TLS stack actually negotiates against every host this app talks
+/// to, on whatever OS the test is run on.
+///
+/// This is the acceptance check for the rustls switch
+/// (docs/plans/network-fetch-cross-platform.md, finding 1): the unit tests can
+/// only assert that a client *builds*, and building is not the part that
+/// breaks when a TLS backend or a root store is wrong. Nothing here needs MPD,
+/// so it is the one live test that runs on a machine with no music server —
+/// which also makes it the fastest way to tell "the network is broken" apart
+/// from "the lookup logic is broken".
+///
+/// Gated behind `WINRMPC_TEST_NETWORK=1` rather than the MusicBrainz flag: it
+/// issues one cheap request per host and does no searching, so it is not the
+/// kind of load that flag exists to hold back.
+///
+/// ```text
+/// WINRMPC_TEST_NETWORK=1 cargo test -- --ignored live_tls_reaches_every_lookup_host
+/// ```
+#[tokio::test]
+#[ignore]
+async fn live_tls_reaches_every_lookup_host() {
+    if std::env::var("WINRMPC_TEST_NETWORK").ok().as_deref() != Some("1") {
+        eprintln!("skipping: set WINRMPC_TEST_NETWORK=1 to run");
+        return;
+    }
+
+    let client = crate::net::client("live TLS check").expect("HTTP client should build");
+
+    // One representative endpoint per host in the fetch path. Cover Art
+    // Archive is included specifically because it 307s to archive.org, so a
+    // success here also proves redirect following survives the TLS change.
+    let targets = [
+        ("MusicBrainz", "https://musicbrainz.org/ws/2/artist?query=test&limit=1&fmt=json"),
+        ("Cover Art Archive", "https://coverartarchive.org/release-group/f5093c06-23e3-404f-aeaa-40f72885ee3a"),
+        ("Wikipedia", "https://en.wikipedia.org/api/rest_v1/page/summary/Music"),
+        ("LRCLIB", "https://lrclib.net/api/search?artist_name=test&track_name=test"),
+    ];
+
+    let mut failures = Vec::new();
+    for (name, url) in targets {
+        match client.get(url).send().await {
+            Ok(resp) => println!("  OK    {name:18} HTTP {}", resp.status()),
+            Err(e) => {
+                println!("  FAIL  {name:18} {e}");
+                failures.push(format!("{name}: {e}"));
+            }
+        }
+        // Be polite even in a connectivity check.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    }
+
+    assert!(
+        failures.is_empty(),
+        "TLS/transport failed for: {failures:?}"
+    );
+}

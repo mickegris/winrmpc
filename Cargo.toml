@@ -13,7 +13,25 @@ serde_json = "1"
 toml = "0.8"
 redb = "4"
 image = { version = "0.25", features = ["jpeg", "png", "webp", "gif"] }
-reqwest = { version = "0.12", features = ["json"] }
+# rustls, not the default native-tls: on Linux native-tls means OpenSSL, so
+# only the Linux build would need libssl headers to compile and a matching
+# libssl soname to run — a binary built on one distro could fail to start on
+# another. rustls is the same pure-Rust stack on all three platforms.
+#
+# `default-features = false` drops more than TLS, so `charset`, `http2` and
+# `macos-system-configuration` are re-added deliberately: without the last one
+# macOS silently stops honouring system proxy settings, which is exactly the
+# one-platform-only regression this whole batch of work is about.
+#
+# native-roots (not webpki-roots) so a corporate MITM proxy or a custom CA in
+# the OS trust store keeps working.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "charset",
+    "http2",
+    "macos-system-configuration",
+    "rustls-tls-native-roots",
+] }
 directories = "6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

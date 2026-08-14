@@ -7,6 +7,7 @@ mod ui;
 mod art;
 mod config;
 mod logger;
+mod net;
 mod icon;
 mod icon_design;
 mod lyrics;

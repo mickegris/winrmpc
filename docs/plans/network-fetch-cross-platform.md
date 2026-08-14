@@ -2,6 +2,14 @@
 
 Part of [cross-platform-and-ui-0.4.2](cross-platform-and-ui-0.4.2.md).
 
+> **Status (2026-08-14): implemented — all five steps, including the optional
+> item 4.** Unlike every other plan in this batch, this one **is** verified
+> against reality, on Linux: `openssl-sys` and `native-tls` are gone from the
+> dependency tree entirely, and a new live test negotiates TLS against all four
+> hosts and gets HTTP 200 from each. The full external-lookup path was re-run
+> end to end and every awkward tag still resolves correctly. Windows and macOS
+> are still unverified. See "What was actually built" at the bottom.
+
 ## Logical review — what is and isn't platform-dependent
 
 The fetch pipeline was read end to end looking for anything that could behave
@@ -157,6 +165,69 @@ around the whole `fetch_album_art` call) would bound it cheaply. Optional.
 5. **Run the live suite on each OS** (below). No new automated tests are
    proposed: the existing ones already cover the logic, and what changes here
    is the transport, which only a real request exercises.
+
+## What was actually built
+
+All five steps, plus the optional item 4.
+
+**1 — rustls.** `Cargo.toml` carries the full feature list from the plan, with
+the reasoning inline so nobody "simplifies" `macos-system-configuration` away.
+Confirmed: `cargo tree -i openssl-sys` and `cargo tree -i native-tls` both now
+report *no matching packages*, and `rustls 0.23` + `rustls-native-certs` are in
+their place. **`openssl-probe` still appears in `Cargo.lock` and that is fine**
+— it is a pure-Rust crate pulled in by `rustls-native-certs` that only locates
+certificate files on disk. Worth knowing, because grepping the lockfile for
+"openssl" otherwise looks like the fix failed.
+
+**2 + 3 — one shared `src/net.rs`.** The plan suggested hoisting the two
+User-Agent constants somewhere shared; hoisting the whole *client
+construction* turned out to be the better cut, because findings 2 and 3 are
+the same duplication seen from two angles. `net::USER_AGENT` is built from
+`CARGO_PKG_VERSION`, and `net::client(purpose)` returns `Option<Client>`,
+logging at ERROR and naming which lookups just became unavailable.
+
+Both clients now hold `http: Option<Client>` and route every request through a
+private `get()` helper. That was the detail worth getting right: the ten call
+sites already discarded transport errors with `.ok()`, so collapsing "no
+client at all" into the same `None` means exactly one place in each file has
+to know the client is optional — no `Option` plumbing at the call sites, no
+panic, no silent loss of the User-Agent.
+
+Worth recording that the old `lrclib.rs` fallback was **not** the safe option
+it looked like: `Client::default()` is `Client::new()`, which panics. If the
+real cause had been TLS initialisation, `unwrap_or_default()` would have
+panicked too — just later, and after discarding the configuration.
+
+**4 — the optional deadline, done.** `ALBUM_ART_DEADLINE` (45s) wraps the whole
+`fetch_album_art` chain via `tokio::time::timeout`, and logs a WARN naming the
+album when it fires. Cheap, and it removes the one way a single album could
+stall the unbounded stage-2 sweep.
+
+**5 — the live suite, plus one new test.** The plan proposed no new automated
+tests on the grounds that only a real request exercises the transport — which
+is true, and is exactly why the transport deserved a live test of its own.
+`live_tls_reaches_every_lookup_host` (gated on `WINRMPC_TEST_NETWORK=1`) hits
+one endpoint per host. It needs **no MPD server**, making it the only live
+test runnable anywhere, and the fastest way to separate "the network is
+broken" from "the lookup logic is broken". Cover Art Archive is in the list
+specifically because it 307s to archive.org, so a pass also proves redirect
+following survived the TLS change.
+
+Test count went 189 → 191 offline (the two `net.rs` unit tests).
+
+### Verified on Linux
+
+```
+live_tls_reaches_every_lookup_host
+  OK    MusicBrainz        HTTP 200 OK
+  OK    Cover Art Archive  HTTP 200 OK
+  OK    Wikipedia          HTTP 200 OK
+  OK    LRCLIB             HTTP 200 OK
+
+live_wikipedia_bios_for_awkward_tags — all 5 artists and all 5 albums resolved,
+including the "Greatest Hits" generic-title guard returning Bob Dylan's actual
+compilation rather than the concept article.
+```
 
 ## How to confirm on the real OS
 

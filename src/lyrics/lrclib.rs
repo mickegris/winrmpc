@@ -5,11 +5,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const LRCLIB_BASE: &str = "https://lrclib.net/api";
-const USER_AGENT: &str = concat!(
-    "winrmpc/",
-    env!("CARGO_PKG_VERSION"),
-    " (https://github.com/mickegris/winrmpc)"
-);
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -32,17 +27,31 @@ pub struct Lyrics {
 /// Async LRCLIB client. Clone-cheap because `reqwest::Client` is Arc-backed.
 #[derive(Clone)]
 pub struct LyricsClient {
-    http: Client,
+    /// `None` when the HTTP client could not be built — see [`crate::net`].
+    /// This used to be `unwrap_or_default()`, which quietly substituted a
+    /// client with neither the User-Agent nor the timeout this code asks for,
+    /// and would have panicked anyway if the real cause was the TLS backend
+    /// (`Client::default()` is `Client::new()`, which panics).
+    http: Option<Client>,
 }
 
 impl LyricsClient {
     pub fn new() -> Self {
-        let http = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
-        Self { http }
+        Self {
+            http: crate::net::client("LRCLIB lyrics"),
+        }
+    }
+
+    /// See `MusicBrainzClient::get` — same reasoning, same shape.
+    async fn get(&self, url: &str) -> Option<reqwest::Response> {
+        let http = self.http.as_ref()?;
+        match http.get(url).send().await {
+            Ok(resp) => Some(resp),
+            Err(e) => {
+                tracing::debug!(url, error = %e, "LRCLIB request failed");
+                None
+            }
+        }
     }
 
     /// Fetch lyrics for a track. Tries an exact match first (duration narrows
@@ -66,7 +75,7 @@ impl LyricsClient {
             exact_url.push_str(&format!("&duration={}", dur as u32));
         }
 
-        if let Ok(resp) = self.http.get(&exact_url).send().await {
+        if let Some(resp) = self.get(&exact_url).await {
             if resp.status().is_success() {
                 if let Ok(data) = resp.json::<LrclibResponse>().await {
                     let lyrics = parse_response(data);
@@ -84,7 +93,7 @@ impl LyricsClient {
             urlencoding::encode(artist),
             urlencoding::encode(title),
         );
-        if let Ok(resp) = self.http.get(&search_url).send().await {
+        if let Some(resp) = self.get(&search_url).await {
             if resp.status().is_success() {
                 if let Ok(results) = resp.json::<Vec<LrclibResponse>>().await {
                     if let Some(data) = results.into_iter().next() {
