@@ -97,11 +97,6 @@ pub fn view<'a>(
         // sit together, in the same slot every other track list uses.
         let actions = row![
             icon_btn_tip(
-                icon::PLAY,
-                "Play now",
-                Message::PlaylistPlayAt(playlist_name.to_string(), pos)
-            ),
-            icon_btn_tip(
                 icon::ADD_QUEUE,
                 "Add to end of queue",
                 Message::QueueAddOnly(song.file.clone())
@@ -137,19 +132,24 @@ pub fn view<'a>(
             ),
         ]
         .spacing(song_row::ACTION_SPACING)
-        .width(song_row::action_group_width(7));
+        .width(song_row::action_group_width(6));
 
         track_list = track_list.push(
             container(
                 row![
                     song_row::playing_marker(is_current),
-                    actions,
+                    icon_btn_tip(
+                        icon::PLAY,
+                        "Play now",
+                        Message::PlaylistPlayAt(playlist_name.to_string(), pos)
+                    ),
                     song_row::number((pos + 1).to_string(), 13),
                     text(song.display_title())
                         .size(13)
                         .width(Length::Fill)
                         .color(song_row::title_color(is_current)),
                     song_row::duration(song.format_duration(), 12),
+                    actions,
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),

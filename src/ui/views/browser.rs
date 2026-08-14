@@ -94,12 +94,17 @@ pub fn view<'a>(
                         // buttons therefore lead, where the number would be.
                         row![
                             song_row::playing_marker(is_current),
+                            icon_btn_tip(
+                                icon::PLAY,
+                                "Play now",
+                                Message::PlaySong(file_uri.clone())
+                            ),
+                            text(label)
+                                .size(13)
+                                .color(song_row::title_color(is_current))
+                                .width(Length::Fill),
+                            song_row::duration(duration, 11),
                             row![
-                                icon_btn_tip(
-                                    icon::PLAY,
-                                    "Play now",
-                                    Message::PlaySong(file_uri.clone())
-                                ),
                                 icon_btn_tip(
                                     icon::ADD_QUEUE,
                                     "Add to end of queue",
@@ -117,12 +122,7 @@ pub fn view<'a>(
                                 ),
                             ]
                             .spacing(song_row::ACTION_SPACING)
-                            .width(song_row::action_group_width(4)),
-                            text(label)
-                                .size(13)
-                                .color(song_row::title_color(is_current))
-                                .width(Length::Fill),
-                            song_row::duration(duration, 11),
+                            .width(song_row::action_group_width(3)),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),

@@ -319,19 +319,20 @@ Six views mark the playing track: Queue, Album detail, Playlist detail, Search, 
 **Every track list uses one column order** (`widgets/song_row.rs` owns the cells):
 
 ```
-[playing marker 14] [action group] [number 30, right] [title Fill] … [duration 55, right]
+[playing marker 14] [play] [number 30, right] [title Fill] … [duration 55, right] [function buttons]
 ```
 
-The **number sits directly left of the title** — the two are read together — with the buttons leading and the length last at the far right. `playlist_detail` used to split its seven actions across *both* sides of the title, and the five lists disagreed with each other about where anything went; they are now identical.
+**Play is separated from the rest of the actions**: it's the primary action on a row, so it leads, next to the number and title it acts on. Everything else is a secondary "function" and sits right of the length. The number stays directly left of the title — the two are read together. The five lists were each doing something different (and `playlist_detail` split its actions across both sides of the title *unintentionally*); they are now identical, and the split here is deliberate.
 - **`number` and `duration` are right-aligned fixed-width cells**, and the action group is fixed width too (`action_group_width(n)`). All three have to be: the title is the only `Fill`, so any variable-width cell before it moves the title's start on that row alone — the failure that showed up as the queue's first and last rows drifting against the rest.
 - **Browser file rows have no number** — a directory listing's order is the server's, not an album's — so the buttons lead, occupying the slot the number would have.
-- **The Queue's header reserves the marker and action slots** (`MARKER_WIDTH + 8 + ACTIONS_WIDTH`) before its `#` label, or its `FillPortion`s divide a different amount of space than the rows and every label drifts sideways.
+- **The Queue's header reserves both slots** — `MARKER_WIDTH + 8 + ACTION_BTN_WIDTH` before its `#` label, and `ACTIONS_WIDTH` after `Time` — or its `FillPortion`s divide a different amount of space than the rows and every label drifts sideways.
+- **The Queue has a leading play button too**, emitting `QueuePlay(pos)` — *not* `PlaySong(uri)`, which would enqueue a second copy of a track that is already in the queue. Its title remains clickable; the button just makes that affordance visible.
 
 **Row actions are a deliberate table, not per-view accident.** Every row action is an `icon_btn_tip` (or `icon_btn_danger` for destructive ones) carrying a fixed tooltip — the wording is part of the contract, so the same button never reads differently between views:
 
 | Action | Glyph | Tooltip | album | search | browser | playlist_detail | queue |
 |---|---|---|---|---|---|---|---|
-| `PlaySong` / `PlaylistPlayAt` | `PLAY` | Play now | ✓ | ✓ | ✓ | ✓ | — |
+| `PlaySong` / `PlaylistPlayAt` / `QueuePlay` | `PLAY` | Play now | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `QueueAddOnly` | `ADD_QUEUE` | Add to end of queue | ✓ | ✓ | ✓ | ✓ | — |
 | `QueueAddNext` | `PLAY_NEXT` | Play next | ✓ | ✓ | ✓ | ✓ | — |
 | `OpenAddToPlaylist` | `ADD_PLAYLIST` | Add to playlist… | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -340,9 +341,9 @@ The **number sits directly left of the title** — the two are read together —
 | `QueueRemove` | `REMOVE` | Remove from queue | — | — | — | — | ✓ |
 | `PlaylistRemoveSong` | `REMOVE` | Remove from playlist | — | — | — | ✓ | — |
 
-(Playlist detail therefore carries seven, the widest group; the rest carry four.)
+Play is drawn separately at the head of the row; the counts above are of the *trailing* group, so playlist detail carries six there, the queue four, and album/search/browser three.
 
-The two deliberate gaps: **the queue has no "add to end of queue"** (those rows already *are* the queue), and **only reorderable lists get move arrows** (you can't reorder an album). Browser file rows gained the full four — they previously had play/add only, for no stated reason. The ellipsis in "Add to playlist…" is load-bearing: it's the only row action that opens a picker rather than acting immediately.
+The one deliberate gap: **the queue has no "add to end of queue"** (those rows already *are* the queue). **Only reorderable lists get move arrows** (you can't reorder an album). Browser file rows gained the full four — they previously had play/add only, for no stated reason. The ellipsis in "Add to playlist…" is load-bearing: it's the only row action that opens a picker rather than acting immediately.
 
 Tooltips sit **above** the button (`tooltip::Position::Top`) because the right-most actions are near the window edge, where a side-placed tooltip clips.
 

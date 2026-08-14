@@ -7,8 +7,9 @@ use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
-/// Move up, move down, add-to-playlist, remove. All four are always rendered
-/// (disabled where they don't apply), so this width is constant.
+/// The *trailing* group: move up, move down, add-to-playlist, remove. Play
+/// leads the row separately. All four are always rendered (disabled where they
+/// don't apply), so this width is constant.
 const ACTIONS_WIDTH: u16 = song_row::action_group_width(4);
 
 pub fn view<'a>(
@@ -32,10 +33,9 @@ pub fn view<'a>(
 
     let header = container(
         row![
-            // Covers the marker, the row's 8px spacing and the action group,
-            // so the "#" label lands over the number column and the header's
-            // FillPortions divide exactly what the rows' do.
-            Space::with_width(song_row::MARKER_WIDTH + 8 + ACTIONS_WIDTH),
+            // Covers the marker, the row's 8px spacing and the play button,
+            // so the "#" label lands over the number column.
+            Space::with_width(song_row::MARKER_WIDTH + 8 + song_row::ACTION_BTN_WIDTH),
             text("#")
                 .size(11)
                 .width(song_row::NUMBER_WIDTH)
@@ -49,6 +49,9 @@ pub fn view<'a>(
                 .width(song_row::DURATION_WIDTH)
                 .align_x(iced::alignment::Horizontal::Right)
                 .color(AppColors::TEXT_MUTED),
+            // Holds the trailing action group's slot, or the header's
+            // FillPortions divide more space than the rows' do.
+            Space::with_width(ACTIONS_WIDTH),
         ]
         .spacing(8)
         .padding([4, 12]),
@@ -174,12 +177,17 @@ pub fn view<'a>(
             container(
                 row![
                     song_row::playing_marker(is_current),
-                    actions,
+                    // The queue's title is clickable too, but nothing said so
+                    // — this is the same visible play affordance every other
+                    // track list has. `QueuePlay(pos)` plays *this* queue
+                    // entry; `PlaySong(uri)` would enqueue a second copy.
+                    icon_btn_tip(icon::PLAY, "Play now", Message::QueuePlay(pos)),
                     song_row::number(format!("{}", pos + 1), 12),
                     title_btn,
                     artist_btn,
                     album_btn,
                     song_row::duration(song.format_duration(), 11),
+                    actions,
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
