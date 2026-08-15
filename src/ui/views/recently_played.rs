@@ -22,6 +22,7 @@ pub fn view<'a>(
     grid_view: bool,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     current_file: Option<&'a str>,
+    current_song: Option<&'a crate::mpd::types::Song>,
 ) -> Element<'a, Message> {
     let mode_label = if show_albums { "Albums" } else { "Tracks" };
     let toggle_btn = button(text(format!("View: {mode_label}")).size(12))
@@ -73,6 +74,7 @@ pub fn view<'a>(
                         g.album.clone(),
                         g.artist.clone(),
                         Some(caption),
+                        song_row::is_current_album(&g.artist, &g.album, current_song),
                     )
                 })
                 .collect();
@@ -92,7 +94,9 @@ pub fn view<'a>(
                             &g.artist,
                             &g.album
                         )),
-                        text(g.album.clone()).size(14).color(AppColors::TEXT_PRIMARY),
+                        text(g.album.clone()).size(14).color(song_row::title_color(
+                            song_row::is_current_album(&g.artist, &g.album, current_song),
+                        )),
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),

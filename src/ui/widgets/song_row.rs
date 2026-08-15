@@ -29,9 +29,11 @@
 //!   stopped and the Queue already behaved this way. The player bar is what
 //!   communicates play/pause/stop.
 
+use crate::mpd::types::{album_base_and_disc, Song};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use iced::widget::{container, text};
 use iced::{Color, Element, Length};
 
@@ -118,6 +120,44 @@ pub fn is_current_uri(row_file: &str, current_file: Option<&str>) -> bool {
 /// Compares queue positions, which is correct only for the queue itself.
 pub fn is_current_pos(row_pos: u32, current_pos: Option<u32>) -> bool {
     current_pos == Some(row_pos)
+}
+
+/// Does this album row/tile hold the currently playing track?
+///
+/// **Not `album == album`.** The comparison is against the *disc-collapsed*
+/// base name, because a playing `Disc 2` track has to light up the single
+/// collapsed row that represents the whole set — the row the user is looking
+/// at doesn't have "Disc 2" in its name. Built on the same
+/// `album_base_and_disc` the grouping uses, so the two agree by construction.
+///
+/// Returns `false` for the missing-tag placeholders and for anything with no
+/// album, which is what keeps a radio stream (whose `display_album()` is junk
+/// or empty) from marking every untagged album at once.
+pub fn is_current_album(
+    group_artist: &str,
+    group_base: &str,
+    current: Option<&Song>,
+) -> bool {
+    let Some(song) = current else {
+        return false;
+    };
+    if !link::is_real_name(group_base) {
+        return false;
+    }
+    let playing_album = song.display_album();
+    if !link::is_real_name(playing_album) {
+        return false;
+    }
+    let playing_base = album_base_and_disc(playing_album).0;
+    if !playing_base.eq_ignore_ascii_case(group_base) {
+        return false;
+    }
+    // Artist-scoped, for the same reason album keys are: two artists can have
+    // an identically titled album, and only one of them is playing. An empty
+    // group artist means the listing isn't artist-grouped (a pre-0.21 server),
+    // so the title match is all there is.
+    group_artist.is_empty()
+        || group_artist.eq_ignore_ascii_case(song.display_album_artist())
 }
 
 /// Background for a list row, accounting for zebra striping and playing state.
@@ -253,6 +293,55 @@ mod tests {
         // side of a glyph that is exactly `icon::SIZE` wide, which
         // `icon::tests::every_glyph_advances_exactly_one_em` keeps true.
         assert_eq!(ACTION_BTN_WIDTH, icon::SIZE + 16);
+    }
+
+    fn playing(artist: &str, album: &str) -> Song {
+        let mut s = Song::default();
+        s.album_artist = Some(artist.into());
+        s.album = Some(album.into());
+        s
+    }
+
+    /// The reason this predicate exists rather than `album == album`: the row
+    /// on screen is the collapsed set, the playing track is one disc of it.
+    #[test]
+    fn a_playing_disc_marks_the_collapsed_album_row() {
+        let song = playing("Slayer", "Decade Of Aggression [Disc 2]");
+        assert!(is_current_album("Slayer", "Decade Of Aggression", Some(&song)));
+    }
+
+    #[test]
+    fn album_match_is_artist_scoped() {
+        let song = playing("Bob Dylan", "Greatest Hits");
+        assert!(is_current_album("Bob Dylan", "Greatest Hits", Some(&song)));
+        assert!(
+            !is_current_album("Queen", "Greatest Hits", Some(&song)),
+            "another artist's identically titled album must not light up"
+        );
+    }
+
+    #[test]
+    fn album_match_folds_case_like_the_grouping_does() {
+        let song = playing("Slayer", "decade of aggression - disc 1");
+        assert!(is_current_album("Slayer", "Decade Of Aggression", Some(&song)));
+    }
+
+    /// A radio stream's `display_album()` is junk or the placeholder. Without
+    /// this guard it would mark every untagged album in the library at once.
+    #[test]
+    fn nothing_is_marked_for_streams_or_untagged_playback() {
+        let untagged = Song::default(); // display_album() == "Unknown Album"
+        assert!(!is_current_album("Various", "Unknown Album", Some(&untagged)));
+        assert!(!is_current_album("", "", Some(&untagged)));
+        assert!(!is_current_album("Slayer", "Reign In Blood", None));
+    }
+
+    #[test]
+    fn an_artist_less_listing_falls_back_to_the_title_alone() {
+        // Pre-0.21 servers return no AlbumArtist grouping, so the group's
+        // artist is empty and the title is all there is to match on.
+        let song = playing("Slayer", "Reign In Blood");
+        assert!(is_current_album("", "Reign In Blood", Some(&song)));
     }
 
     #[test]

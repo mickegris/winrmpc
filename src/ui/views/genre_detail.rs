@@ -1,6 +1,7 @@
 use crate::mpd::types::AlbumGroup;
 use crate::ui::message::Message;
 use crate::ui::widgets::link;
+use crate::ui::widgets::song_row;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
@@ -13,6 +14,7 @@ use iced::{Alignment, Element, Length};
 pub fn view<'a>(
     genre_name: &'a str,
     albums: &'a [AlbumGroup],
+    current_song: Option<&'a crate::mpd::types::Song>,
 ) -> Element<'a, Message> {
     let mut list = column![].spacing(0);
     for (i, album) in albums.iter().enumerate() {
@@ -22,7 +24,15 @@ pub fn view<'a>(
             AppColors::ROW_ODD
         };
 
-        let mut label = row![link::album_link(&album.base, Some(&album.artist), 14)]
+        let is_current =
+            song_row::is_current_album(&album.artist, &album.base, current_song);
+        let mut label = row![if is_current {
+            iced::Element::from(
+                text(album.base.clone()).size(14).color(AppColors::ACCENT),
+            )
+        } else {
+            link::album_link(&album.base, Some(&album.artist), 14)
+        }]
             .spacing(8)
             .align_y(Alignment::Center);
         if !album.artist.is_empty() {

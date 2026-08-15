@@ -15,12 +15,33 @@ const ACTIONS_WIDTH: u16 = song_row::action_group_width(4);
 pub fn view<'a>(
     queue: &'a [Song],
     current_pos: Option<u32>,
+    scroll_id: iced::widget::scrollable::Id,
 ) -> Element<'a, Message> {
     let toolbar = row![
         text(format!("{} tracks", queue.len()))
             .size(13)
             .color(AppColors::TEXT_MUTED),
         Space::with_width(Length::Fill),
+        // Shown only when there is a playing track in this queue to jump to.
+        // Deliberately a button rather than automatic scrolling — a list that
+        // yanks itself around while you read it is the mistake the lyrics
+        // pane already made.
+        if current_pos.is_some() && queue.len() > 1 {
+            Element::from(
+                button(
+                    row![
+                        icon::icon_sized(icon::PLAY, 13),
+                        text("Jump to current").size(12),
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center),
+                )
+                .on_press(Message::JumpToCurrent)
+                .padding([4, 12]),
+            )
+        } else {
+            Element::from(Space::with_width(0))
+        },
         button(text("Shuffle").size(12))
             .on_press(Message::QueueShuffle)
             .padding([4, 12]),
@@ -205,7 +226,7 @@ pub fn view<'a>(
         column![
             toolbar,
             header,
-            scrollable(items).height(Length::Fill),
+            scrollable(items).id(scroll_id).height(Length::Fill),
         ]
         .spacing(0),
     )

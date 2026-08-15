@@ -1,8 +1,9 @@
-use crate::mpd::types::AlbumGroup;
+use crate::mpd::types::{AlbumGroup, Song};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::album_grid;
 use crate::ui::widgets::link;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -12,6 +13,7 @@ pub fn view<'a>(
     title: &'a str,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     grid_view: bool,
+    current_song: Option<&'a Song>,
 ) -> Element<'a, Message> {
     let body: Element<'a, Message> = if grid_view {
         let tiles: Vec<Element<'a, Message>> = albums
@@ -23,6 +25,7 @@ pub fn view<'a>(
                     group.artist.clone(),
                     (group.variants.len() > 1)
                         .then(|| format!("{} discs", group.variants.len())),
+                    song_row::is_current_album(&group.artist, &group.base, current_song),
                 )
             })
             .collect();
@@ -50,10 +53,14 @@ pub fn view<'a>(
             // its own link. Same reasoning as `album_grid::tile` — the artist
             // must not be a small region of a bigger button that goes
             // somewhere else.
+            let is_current =
+                song_row::is_current_album(&group.artist, &group.base, current_song);
             let album_btn = button(
                 row![
                     thumb,
-                    text(group.base.as_str()).size(14).color(AppColors::TEXT_PRIMARY),
+                    text(group.base.as_str())
+                        .size(14)
+                        .color(song_row::title_color(is_current)),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),

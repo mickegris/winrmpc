@@ -9,6 +9,7 @@ use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
 use crate::ui::widgets::link;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, image, row, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -32,6 +33,7 @@ pub fn tile<'a>(
     album: String,
     artist: String,
     caption: Option<String>,
+    is_current: bool,
 ) -> Element<'a, Message> {
     let art_widget: Element<'a, Message> = match art {
         Some(handle) => image(handle.clone())
@@ -52,11 +54,32 @@ pub fn tile<'a>(
             .into(),
     };
 
+    // An accent frame around the cover, plus the accent title below it. The
+    // title colour alone is too subtle at grid density; a glyph overlaid on
+    // the cover would need `stack` and has to survive the cover being a
+    // placeholder block, so the border is the cheaper honest signal.
+    let art_widget: Element<'a, Message> = if is_current {
+        container(art_widget)
+            .style(|_t: &iced::Theme| container::Style {
+                border: iced::Border {
+                    radius: 4.0.into(),
+                    width: 2.0,
+                    color: AppColors::ACCENT,
+                },
+                ..Default::default()
+            })
+            .into()
+    } else {
+        art_widget
+    };
+
     let cover_and_title = button(
         column![
             art_widget,
             Space::with_height(6),
-            text(album.clone()).size(13).color(AppColors::TEXT_PRIMARY),
+            text(album.clone())
+                .size(13)
+                .color(song_row::title_color(is_current)),
         ]
         .align_x(Alignment::Center)
         .width(TILE_SIZE),

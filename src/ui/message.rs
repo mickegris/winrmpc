@@ -59,6 +59,11 @@ pub enum Message {
     QueueAddNext(String),
     QueueClear,
     QueueShuffle,
+    /// Scroll the queue to the playing track.
+    ///
+    /// A **button**, not automatic scrolling: the lyrics pane already showed
+    /// what unconditional autoscroll does to a pane someone is trying to read.
+    JumpToCurrent,
     QueueAddUri(String),
     QueueAddAndPlay(String),
     QueueAddOnly(String),

@@ -1,5 +1,6 @@
-use crate::mpd::types::{art_key_for, AlbumGroup};
+use crate::mpd::types::{art_key_for, AlbumGroup, Song};
 use crate::ui::widgets::link;
+use crate::ui::widgets::song_row;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, container, row, text, Column, Space};
@@ -11,6 +12,7 @@ pub fn view<'a>(
     art_handles: &'a std::collections::HashMap<String, iced::widget::image::Handle>,
     bio: Option<&'a str>,
     show_bio: bool,
+    current_song: Option<&'a Song>,
 ) -> Element<'a, Message> {
     // Fixed header
     let mut header = Column::new().spacing(4).padding(20);
@@ -148,7 +150,11 @@ pub fn view<'a>(
             Space::with_width(10),
             text(group.base.as_str())
                 .size(14)
-                .color(AppColors::TEXT_PRIMARY),
+                .color(song_row::title_color(song_row::is_current_album(
+                    artist_name,
+                    &group.base,
+                    current_song,
+                ))),
         ]
         .align_y(Alignment::Center);
 

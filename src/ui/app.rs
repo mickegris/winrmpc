@@ -198,6 +198,7 @@ pub struct App {
     /// a durable preference.
     lyrics_follow: bool,
     lyrics_scroll_id: scrollable::Id,
+    queue_scroll_id: scrollable::Id,
 
     // Errors
     last_error: Option<String>,
@@ -352,6 +353,7 @@ impl App {
             show_lyrics: true,
             lyrics_follow: true,
             lyrics_scroll_id: scrollable::Id::unique(),
+            queue_scroll_id: scrollable::Id::unique(),
 
             last_error: None,
         };
@@ -758,6 +760,24 @@ impl App {
                         client.clear().await.ok();
                     },
                     |_| Message::Tick,
+                )
+            }
+            Message::JumpToCurrent => {
+                // Same ratio trick the lyrics pane uses: iced 0.13 exposes no
+                // per-item scroll offset, but snapping to index/(len-1) is
+                // accurate here in a way it isn't there, because queue rows
+                // are a uniform height and lyric lines aren't.
+                let Some(pos) = self.status.song_pos else {
+                    return Task::none();
+                };
+                let len = self.queue.len();
+                if len < 2 {
+                    return Task::none();
+                }
+                let ratio = pos as f32 / (len - 1) as f32;
+                scrollable::snap_to(
+                    self.queue_scroll_id.clone(),
+                    scrollable::RelativeOffset { x: 0.0, y: ratio },
                 )
             }
             Message::QueueShuffle => {
@@ -2335,7 +2355,11 @@ impl App {
                 )
             }
             View::Queue => {
-                views::queue::view(&self.queue, self.status.song_pos)
+                views::queue::view(
+                    &self.queue,
+                    self.status.song_pos,
+                    self.queue_scroll_id.clone(),
+                )
             }
             View::Library => {
                 // Redirect to Artists if someone navigates here
@@ -2350,6 +2374,7 @@ impl App {
                     "Albums",
                     &self.art_handles,
                     self.config.album_grid_view,
+                    self.current_song.as_ref(),
                 )
             }
             View::Genres => {
@@ -2361,6 +2386,7 @@ impl App {
                     "Recently Added",
                     &self.art_handles,
                     self.config.album_grid_view,
+                    self.current_song.as_ref(),
                 )
             }
             View::RecentlyPlayed => views::recently_played::view(
@@ -2369,6 +2395,7 @@ impl App {
                 self.config.album_grid_view,
                 &self.art_handles,
                 self.current_file(),
+                self.current_song.as_ref(),
             ),
             View::ArtistDetail(name) => {
                 let albums = self
@@ -2383,6 +2410,7 @@ impl App {
                     &self.art_handles,
                     bio,
                     self.show_artist_bio,
+                    self.current_song.as_ref(),
                 )
             }
             View::AlbumDetail(name, artist) => {
@@ -2413,7 +2441,7 @@ impl App {
                     .get(name)
                     .map(|a| a.as_slice())
                     .unwrap_or(&[]);
-                views::genre_detail::view(name, albums)
+                views::genre_detail::view(name, albums, self.current_song.as_ref())
             }
             View::Browser => {
                 views::browser::view(
