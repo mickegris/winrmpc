@@ -2,6 +2,7 @@ use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use iced::widget::{button, column, container, pick_list, row, slider, text, Space};
 use iced::{Alignment, Element, Length};
 
@@ -45,14 +46,16 @@ pub fn view<'a>(
     let is_playing = status.state == PlayState::Play;
 
     let controls = row![
-        styled_control_btn("Prev", Message::Previous, false),
-        styled_control_btn(
-            if is_playing { "Pause" } else { "Play" },
-            if is_playing { Message::Pause } else { Message::Play },
-            true,
-        ),
-        styled_control_btn("Stop", Message::Stop, false),
-        styled_control_btn("Next", Message::Next, false),
+        styled_control_btn(icon::PREV, "Previous track", Message::Previous, false),
+        if is_playing {
+            styled_control_btn(icon::PAUSE, "Pause", Message::Pause, true)
+        } else {
+            styled_control_btn(icon::PLAY, "Play", Message::Play, true)
+        },
+        // "Stop" earns a tooltip that pause doesn't: in MPD it resets the
+        // playback position, which the glyph alone doesn't say.
+        styled_control_btn(icon::STOP, "Stop (resets position)", Message::Stop, false),
+        styled_control_btn(icon::NEXT, "Next track", Message::Next, false),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
@@ -72,7 +75,7 @@ pub fn view<'a>(
     .align_y(Alignment::Center);
 
     let volume_slider = row![
-        text("Vol").size(12).color(AppColors::TEXT_MUTED),
+        icon::icon_sized(icon::VOLUME, 15).color(AppColors::TEXT_MUTED),
         slider(
             0.0..=100.0,
             status.volume as f64,
@@ -87,17 +90,26 @@ pub fn view<'a>(
     .spacing(4)
     .align_y(Alignment::Center);
 
-    let repeat_text = if status.repeat { "Repeat On" } else { "Repeat Off" };
-    let random_text = if status.random { "Random On" } else { "Random Off" };
+    // No "On"/"Off" suffix: `mode_btn` already carries state in its accent
+    // background, so the words were saying twice what the colour says once.
+    // The `1x` forms stay, because oneshot is the one state a colour cannot
+    // express.
+    //
+    // Repeat shows `repeat_one` when single is also on — that pairing is what
+    // "repeat this track" actually means, and showing it costs nothing now
+    // that both glyphs are bundled.
+    let repeat_glyph = if status.single != SingleState::Off {
+        icon::REPEAT_ONE
+    } else {
+        icon::REPEAT
+    };
     let single_text = match status.single {
-        SingleState::On => "Single On",
         SingleState::Oneshot => "Single 1x",
-        SingleState::Off => "Single Off",
+        _ => "Single",
     };
     let consume_text = match status.consume {
-        ConsumeState::On => "Consume On",
         ConsumeState::Oneshot => "Consume 1x",
-        ConsumeState::Off => "Consume Off",
+        _ => "Consume",
     };
 
     // Crossfade and replay gain are server-wide playback settings exactly
@@ -142,13 +154,23 @@ pub fn view<'a>(
         Space::with_width(14),
         column![
             row![
-                mode_btn(repeat_text, status.repeat, Message::ToggleRepeat),
-                mode_btn(random_text, status.random, Message::ToggleRandom),
+                mode_btn(repeat_glyph, "Repeat", status.repeat, Message::ToggleRepeat),
+                mode_btn(icon::SHUFFLE, "Random", status.random, Message::ToggleRandom),
             ]
             .spacing(4),
             row![
-                mode_btn(single_text, status.single != SingleState::Off, Message::ToggleSingle),
-                mode_btn(consume_text, status.consume != ConsumeState::Off, Message::ToggleConsume),
+                mode_btn(
+                    icon::REPEAT_ONE,
+                    single_text,
+                    status.single != SingleState::Off,
+                    Message::ToggleSingle
+                ),
+                mode_btn(
+                    icon::REMOVE,
+                    consume_text,
+                    status.consume != ConsumeState::Off,
+                    Message::ToggleConsume
+                ),
             ]
             .spacing(4),
         ]
@@ -187,7 +209,16 @@ pub fn view<'a>(
     .into()
 }
 
-fn styled_control_btn(label: &str, msg: Message, primary: bool) -> Element<'_, Message> {
+/// A transport control: an icon-font glyph on the shared 52x28 button, with a
+/// tooltip. The glyphs (⏮ ▶/⏸ ⏹ ⏭) are the one genuinely universal icon
+/// vocabulary in a music player — nobody needs "Prev" spelled out — but the
+/// tooltip is what makes them honest for anyone who does.
+fn styled_control_btn<'a>(
+    glyph: &'static str,
+    tip: &'static str,
+    msg: Message,
+    primary: bool,
+) -> Element<'a, Message> {
     let bg = if primary {
         AppColors::ACCENT
     } else {
@@ -199,31 +230,41 @@ fn styled_control_btn(label: &str, msg: Message, primary: bool) -> Element<'_, M
         AppColors::TEXT_PRIMARY
     };
 
-    button(
-        container(
-            text(label.to_string())
-                .size(12)
-                .color(fg),
+    link::with_tip(
+        button(
+            container(icon::icon_sized(glyph, 17).color(fg))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
         )
-        .center_x(Length::Fill)
-        .center_y(Length::Fill),
-    )
-    .on_press(msg)
-    .width(52)
-    .height(28)
-    .style(move |_theme: &iced::Theme, _status| button::Style {
-        background: Some(bg.into()),
-        text_color: fg,
-        border: iced::Border {
-            radius: 4.0.into(),
+        .on_press(msg)
+        .width(52)
+        .height(28)
+        .style(move |_theme: &iced::Theme, _status| button::Style {
+            background: Some(bg.into()),
+            text_color: fg,
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    })
-    .into()
+        })
+        .into(),
+        tip,
+    )
 }
 
-fn mode_btn(label: &str, active: bool, msg: Message) -> Element<'_, Message> {
+/// A playback-mode toggle: glyph **plus** the word.
+///
+/// The words stay because *Single* and *Consume* are MPD concepts with no
+/// standard icon — "remove each track from the queue after playing it" is not
+/// something a glyph conveys to anyone who doesn't already know MPD. And they
+/// are tri-state (`Off`/`On`/`Oneshot`), which a colour alone can't show.
+fn mode_btn<'a>(
+    glyph: &'static str,
+    label: &'a str,
+    active: bool,
+    msg: Message,
+) -> Element<'a, Message> {
     let bg = if active {
         AppColors::ACCENT
     } else {
@@ -237,7 +278,12 @@ fn mode_btn(label: &str, active: bool, msg: Message) -> Element<'_, Message> {
 
     button(
         container(
-            text(label.to_string()).size(11).color(fg),
+            row![
+                icon::icon_sized(glyph, 13).color(fg),
+                text(label.to_string()).size(11).color(fg),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
         )
         .center_x(Length::Fill)
         .center_y(Length::Fill),

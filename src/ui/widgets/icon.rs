@@ -78,6 +78,27 @@ pub const CHECK: &str = "\u{e668}";
 /// system sans fonts is far less certain.
 pub const ARROW_FORWARD: &str = "\u{e5c8}";
 
+/// `skip_previous` — previous track.
+pub const PREV: &str = "\u{e045}";
+/// `pause` — pause playback. Pairs with [`PLAY`] on the same button.
+pub const PAUSE: &str = "\u{e034}";
+/// `stop` — stop playback. Distinct from pause: MPD's `stop` resets the
+/// position, which is why this button keeps a tooltip saying so.
+pub const STOP: &str = "\u{e047}";
+/// `skip_next` — next track.
+pub const NEXT: &str = "\u{e044}";
+/// `arrow_back` — the shared Back button (`link::back_button`).
+pub const BACK: &str = "\u{e5c4}";
+/// `volume_up` — the volume slider's label.
+pub const VOLUME: &str = "\u{e050}";
+/// `repeat` — repeat the queue.
+pub const REPEAT: &str = "\u{e040}";
+/// `repeat_one` — shown instead of [`REPEAT`] when *single* is also on, which
+/// is what "repeat this track" actually means.
+pub const REPEAT_ONE: &str = "\u{e041}";
+/// `shuffle` — random playback order.
+pub const SHUFFLE: &str = "\u{e043}";
+
 /// Every glyph above, for the tests that keep the committed font honest.
 pub const ALL: &[(&str, &str)] = &[
     ("PLAY", PLAY),
@@ -97,6 +118,15 @@ pub const ALL: &[(&str, &str)] = &[
     ("HISTORY", HISTORY),
     ("CHECK", CHECK),
     ("ARROW_FORWARD", ARROW_FORWARD),
+    ("PREV", PREV),
+    ("PAUSE", PAUSE),
+    ("STOP", STOP),
+    ("NEXT", NEXT),
+    ("BACK", BACK),
+    ("VOLUME", VOLUME),
+    ("REPEAT", REPEAT),
+    ("REPEAT_ONE", REPEAT_ONE),
+    ("SHUFFLE", SHUFFLE),
 ];
 
 /// An icon glyph as a `Text` widget at the default row-action size.

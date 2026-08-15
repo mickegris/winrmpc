@@ -1,4 +1,5 @@
 use crate::mpd::types::{art_key_for, AlbumGroup};
+use crate::ui::widgets::link;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, container, row, text, Column, Space};
@@ -15,9 +16,7 @@ pub fn view<'a>(
     let mut header = Column::new().spacing(4).padding(20);
 
     header = header.push(
-        button(text("<- Back").size(14).color(AppColors::ACCENT))
-            .on_press(Message::GoBack)
-            .padding([4, 8]),
+        link::back_button(),
     );
     header = header.push(Space::with_height(8));
 

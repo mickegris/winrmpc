@@ -3,6 +3,7 @@
 //! screen.
 
 use crate::mpd::types::Stats;
+use crate::ui::widgets::link;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, column, container, row, text, Space};
@@ -11,9 +12,7 @@ use std::time::Duration;
 
 pub fn view<'a>(stats: Option<&'a Stats>, updating: bool) -> Element<'a, Message> {
     let header = row![
-        button(text("<- Back").size(14).color(AppColors::ACCENT))
-            .on_press(Message::GoBack)
-            .padding([4, 8]),
+        link::back_button(),
         Space::with_width(12),
         text("Server Statistics").size(24).color(AppColors::TEXT_PRIMARY),
     ]

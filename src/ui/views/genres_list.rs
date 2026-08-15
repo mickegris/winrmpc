@@ -1,3 +1,4 @@
+use crate::ui::widgets::link;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
@@ -33,9 +34,7 @@ pub fn view<'a>(genres: &'a [String]) -> Element<'a, Message> {
     container(
         column![
             row![
-                button(text("<- Back").size(14).color(AppColors::ACCENT))
-                    .on_press(Message::GoBack)
-                    .padding([4, 8]),
+                link::back_button(),
                 Space::with_width(12),
                 text("Genres").size(24).color(AppColors::TEXT_PRIMARY),
                 Space::with_width(12),

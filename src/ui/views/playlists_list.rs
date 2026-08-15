@@ -1,6 +1,7 @@
 //! Stored-playlist browser: list of playlists, save-queue-as-playlist form, rename/delete.
 
 use crate::mpd::types::PlaylistInfo;
+use crate::ui::widgets::link;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
@@ -15,9 +16,7 @@ pub fn view<'a>(
     queue_empty: bool,
 ) -> Element<'a, Message> {
     let header = row![
-        button(text("<- Back").size(14).color(AppColors::ACCENT))
-            .on_press(Message::GoBack)
-            .padding([4, 8]),
+        link::back_button(),
         Space::with_width(12),
         text("Playlists").size(24).color(AppColors::TEXT_PRIMARY),
         Space::with_width(12),

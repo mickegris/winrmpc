@@ -50,9 +50,7 @@ pub fn view<'a>(
     container(
         column![
             row![
-                button(text("<- Back").size(14).color(AppColors::ACCENT))
-                    .on_press(Message::GoBack)
-                    .padding([4, 8]),
+                link::back_button(),
                 Space::with_width(12),
                 text(genre_name).size(24).color(AppColors::TEXT_PRIMARY),
                 Space::with_width(12),

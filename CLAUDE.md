@@ -337,6 +337,12 @@ Six views mark the playing track: Queue, Album detail, Playlist detail, Search, 
 - **The Queue's header reserves both slots** — `MARKER_WIDTH + 8 + ACTION_BTN_WIDTH` before its `#` label, and `ACTIONS_WIDTH` after `Time` — or its `FillPortion`s divide a different amount of space than the rows and every label drifts sideways.
 - **The Queue has a leading play button too**, emitting `QueuePlay(pos)` — *not* `PlaySong(uri)`, which would enqueue a second copy of a track that is already in the queue. Its title remains clickable; the button just makes that affordance visible.
 
+**The player bar's transport controls are icons with tooltips** (`PREV`/`PLAY`/`PAUSE`/`STOP`/`NEXT`). Stop keeps a tooltip the others don't need — in MPD it *resets the position*, which the glyph doesn't say. **Playback modes are icon + word**, and the words stay on purpose: *Single* and *Consume* are MPD concepts with no standard glyph, and they're tri-state (`Off`/`On`/`Oneshot`), which a colour can't express. The `On`/`Off` suffix was dropped because `mode_btn` already carries state in its accent background — the words were saying twice what the colour says once. Repeat shows `REPEAT_ONE` when *single* is also on, since that pairing is what "repeat this track" means.
+
+**`link::back_button()` is the only Back button.** It was hand-written ten times with its own style block each; one definition means the affordance can't drift between views.
+
+**Form buttons stay as words** — Save, Cancel, Delete, Connect, Play All. They're commitments, and a glyph is worse than a verb. The sidebar stays text too: half its entries (Outputs, Partitions, Snapcast, Log, Stats) have no conventional glyph.
+
 **Row actions are a deliberate table, not per-view accident.** Every row action is an `icon_btn_tip` (or `icon_btn_danger` for destructive ones) carrying a fixed tooltip — the wording is part of the contract, so the same button never reads differently between views:
 
 | Action | Glyph | Tooltip | album | search | browser | playlist_detail | queue |

@@ -64,6 +64,17 @@ OUTLINE = {
     "history": 0xE8B3,
     "check": 0xE668,
     "arrow_forward": 0xE5C8,
+    # Transport + playback modes (0.4.3): the player bar's controls were text
+    # labels reading Prev/Play/Stop/Next.
+    "skip_previous": 0xE045,
+    "pause": 0xE034,
+    "stop": 0xE047,
+    "skip_next": 0xE044,
+    "arrow_back": 0xE5C4,
+    "volume_up": 0xE050,
+    "repeat": 0xE040,
+    "repeat_one": 0xE041,
+    "shuffle": 0xE043,
 }
 FILLED = {"fiber_manual_record": 0xE061}
 

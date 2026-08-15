@@ -64,6 +64,34 @@ pub fn link_icon<'a>(
     .into()
 }
 
+/// The Back button, shared by every view that has one.
+///
+/// This was hand-written **ten times**, each with its own copy of the style
+/// block, so the back affordance could drift between views and twice nearly
+/// did. One definition means it cannot.
+pub fn back_button<'a>() -> Element<'a, Message> {
+    button(
+        row![
+            icon::icon_sized(icon::BACK, 14),
+            text("Back").size(14),
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::GoBack)
+    .padding([4, 8])
+    .style(|_t: &iced::Theme, status: button::Status| button::Style {
+        background: None,
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => AppColors::TEXT_PRIMARY,
+            _ => AppColors::ACCENT,
+        },
+        border: iced::Border::default(),
+        shadow: iced::Shadow::default(),
+    })
+    .into()
+}
+
 /// The tag values `display_artist()` / `display_album()` fall back to when a
 /// song carries no such tag. Navigating to them produces a junk view — MPD has
 /// no artist called "Unknown Artist" — so [`artist_link`] and [`album_link`]
@@ -266,7 +294,10 @@ pub fn icon_btn_tip_maybe<'a>(
 }
 
 /// Wrap any element in the shared tooltip styling.
-fn with_tip<'a>(inner: Element<'a, Message>, tip: &'static str) -> Element<'a, Message> {
+///
+/// Public because the player bar's transport controls need it too, and a
+/// second tooltip style would drift from this one.
+pub fn with_tip<'a>(inner: Element<'a, Message>, tip: &'static str) -> Element<'a, Message> {
     tooltip(
         inner,
         container(text(tip).size(12))
