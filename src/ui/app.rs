@@ -16,6 +16,67 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// One toast: a rounded card, error-coloured or not, dismissible by click.
+fn toast_view(toast: &Toast) -> Element<'_, Message> {
+    let (border, fg) = if toast.is_error {
+        (AppColors::ERROR, AppColors::ERROR)
+    } else {
+        (AppColors::BORDER, AppColors::TEXT_PRIMARY)
+    };
+    iced::widget::button(
+        container(iced::widget::text(toast.text.clone()).size(12).color(fg))
+            .padding([8, 14])
+            .max_width(420)
+            .style(move |_t: &iced::Theme| container::Style {
+                background: Some(AppColors::BG_TERTIARY.into()),
+                border: iced::Border {
+                    radius: 6.0.into(),
+                    width: 1.0,
+                    color: border,
+                },
+                ..Default::default()
+            }),
+    )
+    .on_press(Message::DismissToast)
+    .padding(0)
+    .style(|_t: &iced::Theme, _s| iced::widget::button::Style {
+        background: None,
+        text_color: AppColors::TEXT_PRIMARY,
+        border: iced::Border::default(),
+        shadow: iced::Shadow::default(),
+    })
+    .into()
+}
+
+/// How long a toast stays up before it expires on its own.
+const TOAST_INFO_SECS: u64 = 4;
+/// Errors linger longer than info — they are the ones worth reading.
+const TOAST_ERROR_SECS: u64 = 8;
+/// More than this on screen and they'd cover the content they're reporting on.
+const MAX_TOASTS: usize = 3;
+
+/// A transient message shown over the main content.
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub text: String,
+    /// Errors are styled and timed differently from progress notes — the field
+    /// this replaced was named `last_error` but also carried "Database update
+    /// started", so the two were indistinguishable.
+    pub is_error: bool,
+    shown_at: std::time::Instant,
+}
+
+impl Toast {
+    fn expired(&self) -> bool {
+        let ttl = if self.is_error {
+            TOAST_ERROR_SECS
+        } else {
+            TOAST_INFO_SECS
+        };
+        self.shown_at.elapsed().as_secs() >= ttl
+    }
+}
+
 pub struct App {
     // MPD
     client: MpdClient,
@@ -202,6 +263,14 @@ pub struct App {
 
     // Errors
     last_error: Option<String>,
+    /// Transient messages shown over the content, newest last.
+    ///
+    /// `last_error` is rendered *only* by `settings_view`, so before this
+    /// existed an error was invisible unless the user happened to be standing
+    /// on the Settings screen when it happened. A queue rather than a single
+    /// slot: two failures in quick succession (a bulk enqueue hitting several
+    /// bad URIs) must not have the second silently replace the first.
+    toasts: std::collections::VecDeque<Toast>,
 }
 
 impl App {
@@ -356,6 +425,7 @@ impl App {
             queue_scroll_id: scrollable::Id::unique(),
 
             last_error: None,
+            toasts: std::collections::VecDeque::new(),
         };
 
         (app, Task::perform(async {}, |_| Message::Connect))
@@ -420,7 +490,7 @@ impl App {
                     }
                     Err(e) => {
                         self.connected = false;
-                        self.last_error = Some(e);
+                        self.toast_error(e);
                     }
                 }
                 Task::none()
@@ -1327,8 +1397,8 @@ impl App {
                     }
                     Some(_) => Task::none(),
                     None => {
-                        self.last_error = Some(
-                            "Playlist names must not be empty or contain slashes.".to_string(),
+                        self.toast_error(
+                            "Playlist names must not be empty or contain slashes.",
                         );
                         Task::none()
                     }
@@ -1363,8 +1433,8 @@ impl App {
                         }
                         Some(_) => {}
                         None => {
-                            self.last_error = Some(
-                                "Playlist names must not be empty or contain slashes.".to_string(),
+                            self.toast_error(
+                                "Playlist names must not be empty or contain slashes.",
                             );
                         }
                     }
@@ -1435,8 +1505,8 @@ impl App {
                         }
                     }
                     None => {
-                        self.last_error = Some(
-                            "Playlist names must not be empty or contain slashes.".to_string(),
+                        self.toast_error(
+                            "Playlist names must not be empty or contain slashes.",
                         );
                         Task::none()
                     }
@@ -2277,7 +2347,7 @@ impl App {
                 )
             }
             Message::DatabaseUpdating(_job_id) => {
-                self.last_error = Some("Database update started".to_string());
+                self.toast_info("Database update started");
                 self.fetch_stats()
             }
 
@@ -2286,6 +2356,9 @@ impl App {
             // =================================================================
             Message::Tick => {
                 self.log_entries = crate::logger::get_entries();
+                // Expiry rides the 500ms poll that already exists — a
+                // dedicated timer for a 4-second toast would be waste.
+                self.toasts.retain(|t| !t.expired());
                 if self.connected {
                     let mut tasks = vec![self.refresh_status(), self.lyrics_autoscroll()];
                     if self.current_view == View::ServerStats {
@@ -2296,13 +2369,53 @@ impl App {
                     Task::none()
                 }
             }
+            Message::DismissToast => {
+                self.toasts.pop_front();
+                Task::none()
+            }
             Message::ErrorOccurred(e) => {
                 tracing::error!("{e}");
-                self.last_error = Some(e);
+                self.toast_error(e);
                 Task::none()
             }
             Message::Noop => Task::none(),
         }
+    }
+
+    /// Show a transient error over the content.
+    ///
+    /// Use this **instead of writing `last_error` directly** for anything the
+    /// user should notice. `last_error` still backs the Settings status line,
+    /// so both are set — but this is the half that is visible from wherever
+    /// they actually are.
+    fn toast_error(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.last_error = Some(text.clone());
+        self.push_toast(Toast {
+            text,
+            is_error: true,
+            shown_at: std::time::Instant::now(),
+        });
+    }
+
+    /// Show a transient progress/status note.
+    fn toast_info(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.last_error = Some(text.clone());
+        self.push_toast(Toast {
+            text,
+            is_error: false,
+            shown_at: std::time::Instant::now(),
+        });
+    }
+
+    fn push_toast(&mut self, toast: Toast) {
+        // Drop the oldest rather than refusing the newest: the most recent
+        // failure is the one the user is most likely to be looking for.
+        while self.toasts.len() >= MAX_TOASTS {
+            self.toasts.pop_front();
+        }
+        self.toasts.push_back(toast);
     }
 
     /// The playing track's URI, for row highlighting in library listings.
@@ -2533,6 +2646,35 @@ impl App {
             row![sidebar, main_content].height(Length::Fill),
             player_bar,
         ];
+
+        // Toasts float over the content rather than displacing it, so a
+        // message can't reflow the view underneath it while it's being read.
+        // Bottom-aligned above the player bar; `Shrink` on the overlay column
+        // is what keeps it from covering (and swallowing clicks meant for)
+        // the whole window.
+        let content: Element<'_, Message> = if self.toasts.is_empty() {
+            content.into()
+        } else {
+            let mut stack = iced::widget::stack![content];
+            let toasts = column(self.toasts.iter().map(toast_view).collect::<Vec<_>>())
+                .spacing(6)
+                .width(Length::Shrink);
+            stack = stack.push(
+                container(toasts)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .align_y(iced::alignment::Vertical::Bottom)
+                    .padding(iced::Padding {
+                        top: 0.0,
+                        right: 20.0,
+                        // Clear of the player bar.
+                        bottom: 110.0,
+                        left: 0.0,
+                    }),
+            );
+            stack.into()
+        };
 
         container(content)
             .width(Length::Fill)
@@ -3891,5 +4033,38 @@ fn settings_view(&self) -> Element<'_, Message> {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn toast(is_error: bool, age_secs: u64) -> Toast {
+        Toast {
+            text: "x".into(),
+            is_error,
+            shown_at: std::time::Instant::now()
+                - std::time::Duration::from_secs(age_secs),
+        }
+    }
+
+    /// The field this replaced was called `last_error` but also carried
+    /// "Database update started", so the two were indistinguishable. They now
+    /// differ in styling *and* in how long they stay up.
+    #[test]
+    fn errors_linger_longer_than_info() {
+        assert!(toast(false, TOAST_INFO_SECS).expired());
+        assert!(
+            !toast(true, TOAST_INFO_SECS).expired(),
+            "an error must outlive the info timeout — it is the one worth reading"
+        );
+        assert!(toast(true, TOAST_ERROR_SECS).expired());
+    }
+
+    #[test]
+    fn a_fresh_toast_has_not_expired() {
+        assert!(!toast(false, 0).expired());
+        assert!(!toast(true, 0).expired());
     }
 }

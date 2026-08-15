@@ -266,6 +266,8 @@ pub enum Message {
 
     // === Misc ===
     ErrorOccurred(String),
+    /// Dismiss the oldest toast (any toast click).
+    DismissToast,
     Tick,
     RefreshAll,
     Noop,
