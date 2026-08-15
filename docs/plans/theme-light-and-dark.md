@@ -72,11 +72,16 @@ Swapping `AppColors` alone gives a light app with **dark dropdowns, dark text
 inputs and dark sliders**, because those come from `App::theme()`. So
 `App::theme()` must return `Theme::Light` / `Theme::Dark` to match.
 
-Whether iced's stock Light palette sits well beside a hand-tuned light
-`AppColors` is a real question. If it clashes, `Theme::custom(name, Palette)`
-takes a 5-colour `Palette` (background, text, primary, success, danger) built
-from the app's own values — probably the right answer, and it keeps both halves
-derived from one source.
+**Checked: `Theme::custom(String, Palette)` exists**
+(`iced_core-0.13.2/src/theme.rs:88`), and `Palette`
+(`theme/palette.rs:11`) is exactly five colours — `background`, `text`,
+`primary`, `success`, `danger`. Every one of them has an obvious counterpart in
+`AppColors` (`BG_PRIMARY`, `TEXT_PRIMARY`, `ACCENT`, `SUCCESS`, `ERROR`).
+
+**So build both themes with `Theme::custom` from the app's own palette** rather
+than hoping iced's stock Light sits well beside a hand-tuned one. Both halves
+then derive from one source and cannot drift — the same property that makes the
+icon font and the app icon testable.
 
 ## Designing the light palette
 
@@ -129,8 +134,8 @@ it once at startup is a reasonable middle ground.
 
 1. Turn `AppColors` into a `Palette` struct plus two constants and the
    mode-indexed accessors (option A). Mechanical rename across 27 files.
-2. `App::theme()` returns the matching `iced::Theme`; check whether stock
-   Light/Dark suffice or a `Theme::custom` palette is needed.
+2. `App::theme()` returns `Theme::custom` built from the active palette, so
+   iced's own widgets and the app's hand-drawn ones share one source.
 3. Design the light palette, honouring the three specifics above.
 4. Make the `song_row` colour-relationship tests run against **both** palettes.
 5. Settings → Appearance: a Light/Dark toggle writing `theme.dark_mode`,

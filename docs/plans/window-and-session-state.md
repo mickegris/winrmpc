@@ -27,7 +27,7 @@ rather than a defect.
 | State | Persist? | Why |
 |---|---|---|
 | Window size | **yes** | the main irritation |
-| Window position | **yes, carefully** | see the monitor caveat |
+| Window position | **no** — see below | can strand the window offscreen |
 | Maximised | **yes** | a maximised app that reopens windowed is jarring |
 | Last view | **maybe** | see below |
 | Sidebar scroll, list scroll | no | restoring scroll into data that may have changed is worse than starting at the top |
@@ -36,20 +36,35 @@ rather than a defect.
 
 Restoring a position blindly is how apps end up **invisible**: saved on a
 second monitor that is no longer attached, or on a display whose resolution
-shrank. The restore must validate the position against the *current* displays
-and fall back to centred if it doesn't fit.
+shrank. The restore would have to validate the position against the *current*
+displays and fall back to centred if it doesn't fit.
 
-iced 0.13's `window::Settings` has a `position: Position` field
-(`Position::Specific(Point)` / `Centered` / `Default`). **Whether iced 0.13
-exposes the current monitor list, and whether it reports window
-moves/resizes back as events, both need checking against the vendored source
-before this is committed to** — `window::Event::Moved`/`Resized` and
-`window::get_size`/`get_position` are the things to look for. If move events
-aren't available, the fallback is to read the size on exit, which needs a
-close-request hook.
+**Checked against the vendored source. The reporting half is fully available;
+the validation half is not.**
 
-**This is the one open question in the plan, and it decides whether the plan is
-ten lines or fifty.**
+Present in `iced_runtime-0.13.2/src/window.rs`:
+
+| API | line | use |
+|---|---|---|
+| `events() -> Subscription<(Id, Event)>` | 180 | `Moved` / `Resized` / `CloseRequested` |
+| `resize_events() -> Subscription<(Id, Size)>` | 213 | size changes directly |
+| `close_requests() -> Subscription<Id>` | 224 | save on exit |
+| `get_size(Id) -> Task<Size>` | 273 | query |
+| `get_maximized(Id) -> Task<bool>` | 280 | query |
+| `get_position(Id) -> Task<Option<Point>>` | 304 | query |
+
+Plus `Position::Specific(Point)` in `window::Settings` for initial placement.
+
+**But there is no monitor enumeration anywhere in iced 0.13.** So a saved
+position cannot be validated against the displays that exist at restore time,
+and the failure mode is unrecoverable *from inside the app*: the window opens
+on a monitor that is no longer attached, is invisible, and the only fix is
+hand-editing `config.toml`.
+
+**Scope call: restore size and maximised state, not position.** Size is the
+actual irritation; position is the part that can strand the window. This is
+recorded as a deliberate limitation rather than an oversight, and it can be
+revisited if iced gains a monitor API.
 
 ### Last view
 
@@ -77,11 +92,11 @@ and much simpler than restructuring startup.
 
 ## Plan
 
-1. Check the vendored iced for window move/resize events and monitor
-   enumeration. **The rest of the plan is contingent on this.**
+1. ~~Check the vendored iced.~~ Done — see above. Reporting is available;
+   monitor enumeration is not, which is what cuts position from scope.
 2. `[window]` table in `AppConfig`, all fields defaulted.
-3. `main()` reads the config for the initial size/position, validating a saved
-   position against the available displays and falling back to centred.
+3. `main()` reads the config for the initial size. **Position is not restored**
+   (see above); the window stays `Position::default()`.
 4. Persist on change (debounced — a drag emits a resize event per frame, and
    writing the TOML on each would be pathological) or on exit.
 5. Keep `min_size` as it is; a restored size smaller than the minimum should be
@@ -91,8 +106,8 @@ and much simpler than restructuring startup.
 
 - Resize, quit, relaunch — same size.
 - Move to a second monitor, quit, **unplug the monitor**, relaunch — the window
-  is visible on the remaining display. This is the failure this plan exists to
-  avoid, and it is the only test that matters.
+  is visible. (Trivially true now that position isn't restored; still worth
+  checking once, because it is the failure this scope call exists to avoid.)
 - Maximise, quit, relaunch — still maximised.
 - Drag-resize continuously and confirm the config file isn't being rewritten
   dozens of times a second.

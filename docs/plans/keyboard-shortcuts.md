@@ -39,19 +39,27 @@ tick. That much is straightforward.
 
 What it does **not** offer is "is a text input focused right now". Options:
 
-- **Track focus in `App` state.** Every `text_input` already has an
-  `on_input` handler; a view could set `App::text_input_focused` on focus/blur.
-  iced 0.13's `text_input` has `.on_focus`/`.on_blur`… **this needs checking
-  against the vendored source before committing to it** — if those don't exist
-  in 0.13, this approach doesn't work.
+- ~~**Track focus in `App` state** via `text_input`'s focus/blur callbacks.~~
+  **Checked: they do not exist.** `iced_widget-0.13.4/src/text_input.rs` has
+  `focus(id) -> Task` (an *operation* to focus something) and an internal
+  `State::is_focused()`, but no `on_focus`/`on_blur` builder. There is
+  `iced_core-0.13.2/.../operation/focusable.rs:176 find_focused()`, but it is an
+  Operation resolved through a `Task` — asynchronous, so it cannot gate a
+  keypress that is being handled right now. **This approach is dead.**
 - **Gate on the current view.** Crude but honest: suppress single-letter
   shortcuts on views that contain text inputs (Search, Settings, Radio, CD),
   keep modifier-based ones everywhere. Requires no focus tracking.
 - **Use modifiers for everything.** `Ctrl`-based shortcuts never collide with
   typing. Costs the ergonomics of a bare `Space`.
 
-**Recommend a hybrid**: bare keys for transport, gated on "the current view has
-no text input"; `Ctrl`-modified for everything global. Then `Space` works on
+**Recommend a hybrid** — and after the check above it is the *only* workable
+option: bare keys for transport, gated on "the current view has no text input";
+`Ctrl`-modified for everything global.
+
+The views holding a `text_input` are, verified by grep: **Search, Settings,
+Radio, CD, Partitions, Playlists and Add-to-Playlist**. Everything else —
+Now Playing, Queue, Albums, Artists, Genres, Browser, Album/Artist/Genre
+detail, Recently Added/Played, Outputs, Snapcast, Log, Stats — takes bare keys. Then `Space` works on
 Now Playing, Queue, Albums and the rest — which is where you are when you want
 it — and typing in Search is never interrupted.
 
@@ -76,18 +84,13 @@ implementing, with a list open.
 
 ## Plan
 
-### A. Verify what iced 0.13 supports
+### A. ~~Verify what iced 0.13 supports~~ — done
 
-Before writing anything, read the vendored `iced_widget-0.13.4/src/text_input.rs`
-and `iced-0.13.1/src/keyboard.rs` for:
-
-- whether `text_input` exposes focus/blur callbacks,
-- whether `text_input::focus(Id)` exists as an operation (it is needed for `Ctrl+F`),
-- what `on_key_press` receives for modifiers.
-
-**This plan's binding table is contingent on that.** Everything else in
-0.4.2 was sourced from the vendored crates with file:line references; this
-should be too, and hasn't been yet.
+- **Focus/blur callbacks: absent.** View-gating is the only option (above).
+- **`text_input::focus(Id) -> Task`: present** (`text_input.rs:1282`), so
+  `Ctrl+F` can focus the search box. `select_all` (`:1312`) is there too, which
+  is the nicer behaviour when focusing a box that already has a query in it.
+- Bindings below are now a verified design rather than a proposal.
 
 ### B. A `Shortcut` layer, not scattered matches
 
