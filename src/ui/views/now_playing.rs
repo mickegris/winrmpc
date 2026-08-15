@@ -2,6 +2,7 @@ use crate::mpd::types::*;
 use crate::ui::message::{Message, View};
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use crate::ui::widgets::link::{link, link_accent, link_icon};
 use iced::widget::{button, column, container, image, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
@@ -127,27 +128,30 @@ pub fn view<'a>(
                     );
                     info_items.push(Space::with_height(5).into());
                     info_items.push(
-                        button(
-                            row![
-                                icon::icon_sized(icon::PLAY, 13).color(AppColors::ACCENT),
-                                text(next.display_title())
-                                    .size(14)
-                                    .color(AppColors::TEXT_PRIMARY),
-                                text("  —  ").size(13).color(AppColors::TEXT_MUTED),
-                                text(next.display_artist())
-                                    .size(13)
-                                    .color(AppColors::TEXT_SECONDARY),
-                            ]
-                            .align_y(Alignment::Center),
-                        )
-                        .on_press(Message::QueuePlay(pos))
-                        .padding(0)
-                        .style(|_t: &iced::Theme, _s: button::Status| button::Style {
-                            background: None,
-                            text_color: AppColors::TEXT_PRIMARY,
-                            border: iced::Border::default(),
-                            shadow: iced::Shadow::default(),
-                        })
+                        // The title plays the track; the artist is its own
+                        // link rather than a region inside the play button.
+                        row![
+                            button(
+                                row![
+                                    icon::icon_sized(icon::PLAY, 13).color(AppColors::ACCENT),
+                                    text(next.display_title())
+                                        .size(14)
+                                        .color(AppColors::TEXT_PRIMARY),
+                                ]
+                                .align_y(Alignment::Center),
+                            )
+                            .on_press(Message::QueuePlay(pos))
+                            .padding(0)
+                            .style(|_t: &iced::Theme, _s: button::Status| button::Style {
+                                background: None,
+                                text_color: AppColors::TEXT_PRIMARY,
+                                border: iced::Border::default(),
+                                shadow: iced::Shadow::default(),
+                            }),
+                            text("  —  ").size(13).color(AppColors::TEXT_MUTED),
+                            link::artist_link(next.display_artist(), 13),
+                        ]
+                        .align_y(Alignment::Center)
                         .into(),
                     );
                 }

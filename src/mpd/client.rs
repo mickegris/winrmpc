@@ -375,6 +375,35 @@ impl MpdClient {
         }
     }
 
+    /// `list Album {filter_tag} "{val}" group AlbumArtist` — the filtered
+    /// counterpart of [`Self::list_albums_by_artist`].
+    ///
+    /// Exists so a Genre listing can be artist-scoped like every other album
+    /// listing. Without the artist, `AlbumSelected` falls back to a plain
+    /// `find("Album", base)`, which shows only part of a multi-disc album and
+    /// degrades the bio lookup — see CLAUDE.md's "Album identity".
+    ///
+    /// Same pre-0.21 fallback as the unfiltered version: an ACK means the
+    /// server has no `group`, so degrade to a flat artist-less list rather
+    /// than showing nothing.
+    pub async fn list_albums_by_artist_filtered(
+        &self,
+        filter_tag: &str,
+        filter_val: &str,
+    ) -> MpdResult<Vec<(String, String)>> {
+        let cmd = format!(
+            "list Album {filter_tag} \"{}\" group AlbumArtist",
+            Self::escape(filter_val)
+        );
+        match self.cmd(&cmd).await {
+            Ok(pairs) => Ok(commands::parse_grouped_values(&pairs, "AlbumArtist", "Album")),
+            Err(_) => {
+                let albums = self.list_tag_filtered("Album", filter_tag, filter_val).await?;
+                Ok(albums.into_iter().map(|a| (String::new(), a)).collect())
+            }
+        }
+    }
+
     /// `find Album "X" AlbumArtist "Y"` — artist-scoped album lookup, used
     /// once album identity is artist-aware so same-named albums by
     /// different artists don't mix tracks.

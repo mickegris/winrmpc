@@ -6,6 +6,7 @@ use crate::mpd::types::{art_key_for, recently_played_albums, relative_time, Rece
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::album_grid;
+use crate::ui::widgets::link;
 use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, image, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
@@ -74,7 +75,6 @@ pub fn view<'a>(
                         g.album.clone(),
                         g.artist.clone(),
                         Some(caption),
-                        Message::AlbumSelected(g.album.clone(), Some(g.artist.clone())),
                     )
                 })
                 .collect();
@@ -87,14 +87,30 @@ pub fn view<'a>(
                 let bg = if i % 2 == 0 { AppColors::ROW_EVEN } else { AppColors::ROW_ODD };
                 // Same cover as this view's grid mode, just small — matching
                 // Albums and Recently Added, whose list modes already do this.
+                let album_btn = button(
+                    row![
+                        album_grid::list_thumb(album_grid::art_for(
+                            art_handles,
+                            &g.artist,
+                            &g.album
+                        )),
+                        text(g.album.clone()).size(14).color(AppColors::TEXT_PRIMARY),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .on_press(link::album_message(&g.album, Some(&g.artist)))
+                .padding(0)
+                .style(|_t: &iced::Theme, _s: button::Status| button::Style {
+                    background: None,
+                    text_color: AppColors::TEXT_PRIMARY,
+                    border: iced::Border::default(),
+                    ..Default::default()
+                });
+
                 let label = row![
-                    album_grid::list_thumb(album_grid::art_for(
-                        art_handles,
-                        &g.artist,
-                        &g.album
-                    )),
-                    text(g.album.clone()).size(14).color(AppColors::TEXT_PRIMARY),
-                    text(g.artist.clone()).size(12).color(AppColors::TEXT_MUTED),
+                    album_btn,
+                    link::artist_link(&g.artist, 12),
                     Space::with_width(Length::Fill),
                     text(relative_time(now - g.last_played))
                         .size(11)
@@ -103,14 +119,11 @@ pub fn view<'a>(
                 .spacing(8)
                 .align_y(Alignment::Center);
                 list = list.push(
-                    button(label)
-                        .on_press(Message::AlbumSelected(g.album.clone(), Some(g.artist.clone())))
+                    container(label)
                         .padding([7, 12])
                         .width(Length::Fill)
-                        .style(move |_t: &iced::Theme, _s| button::Style {
+                        .style(move |_t: &iced::Theme| container::Style {
                             background: Some(bg.into()),
-                            text_color: AppColors::TEXT_PRIMARY,
-                            border: iced::Border::default(),
                             ..Default::default()
                         }),
                 );
@@ -125,32 +138,30 @@ pub fn view<'a>(
             let bg = song_row::row_bg(i, is_current);
             list = list.push(
                 container(
-                    button(
-                        row![
-                            song_row::playing_marker(is_current),
+                    row![
+                        song_row::playing_marker(is_current),
+                        button(
                             text(e.title.as_str())
                                 .size(13)
-                                .width(Length::FillPortion(3))
                                 .color(song_row::title_color(is_current)),
-                            text(e.artist.as_str())
-                                .size(12)
-                                .width(Length::FillPortion(2))
-                                .color(AppColors::TEXT_SECONDARY),
-                            text(relative_time(now - e.played_at))
-                                .size(11)
-                                .color(AppColors::TEXT_MUTED),
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                    )
-                    .on_press(Message::PlaySong(e.file.clone()))
-                    .padding(0)
-                    .style(|_t: &iced::Theme, _s: button::Status| button::Style {
-                        background: None,
-                        text_color: AppColors::TEXT_PRIMARY,
-                        border: iced::Border::default(),
-                        shadow: iced::Shadow::default(),
-                    }),
+                        )
+                        .on_press(Message::PlaySong(e.file.clone()))
+                        .padding(0)
+                        .width(Length::FillPortion(3))
+                        .style(|_t: &iced::Theme, _s: button::Status| button::Style {
+                            background: None,
+                            text_color: AppColors::TEXT_PRIMARY,
+                            border: iced::Border::default(),
+                            shadow: iced::Shadow::default(),
+                        }),
+                        container(link::artist_link(&e.artist, 12))
+                            .width(Length::FillPortion(2)),
+                        text(relative_time(now - e.played_at))
+                            .size(11)
+                            .color(AppColors::TEXT_MUTED),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                 )
                 .padding([6, 12])
                 .width(Length::Fill)

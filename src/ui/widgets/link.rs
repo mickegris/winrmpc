@@ -64,6 +64,85 @@ pub fn link_icon<'a>(
     .into()
 }
 
+/// The tag values `display_artist()` / `display_album()` fall back to when a
+/// song carries no such tag. Navigating to them produces a junk view — MPD has
+/// no artist called "Unknown Artist" — so [`artist_link`] and [`album_link`]
+/// render them as inert text instead of links.
+pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
+pub const UNKNOWN_ALBUM: &str = "Unknown Album";
+
+/// Is this a real name, or the placeholder for a missing tag?
+pub fn is_real_name(name: &str) -> bool {
+    !name.is_empty() && name != UNKNOWN_ARTIST && name != UNKNOWN_ALBUM
+}
+
+/// The shared look for a name link: muted at rest, accent on hover.
+///
+/// Deliberately **not underlined** — at size 11-12 in a dense track list,
+/// underlining every artist turns the list into a thicket.
+fn name_link_style(_t: &iced::Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
+            _ => AppColors::TEXT_SECONDARY,
+        },
+        border: iced::Border::default(),
+        shadow: iced::Shadow::default(),
+    }
+}
+
+/// An artist name that navigates to that artist.
+///
+/// Use this **everywhere an artist name is rendered**, so no call site has to
+/// remember to build `Message::ArtistSelected` or to check for the
+/// missing-tag placeholder. Falls back to inert text when the name isn't real.
+pub fn artist_link<'a>(name: &str, size: u16) -> Element<'a, Message> {
+    if !is_real_name(name) {
+        return text(name.to_string())
+            .size(size)
+            .color(AppColors::TEXT_MUTED)
+            .into();
+    }
+    button(text(name.to_string()).size(size))
+        .on_press(Message::ArtistSelected(name.to_string()))
+        .padding(0)
+        .style(name_link_style)
+        .into()
+}
+
+/// An album name that navigates to that album.
+///
+/// `artist` should be the **album artist** where it is known. Passing `None`
+/// reaches `AlbumSelected`'s artist-less path, which skips multi-disc
+/// expansion and degrades the bio lookup — see CLAUDE.md's "Album identity".
+/// Prefer supplying it.
+pub fn album_link<'a>(album: &str, artist: Option<&str>, size: u16) -> Element<'a, Message> {
+    if !is_real_name(album) {
+        return text(album.to_string())
+            .size(size)
+            .color(AppColors::TEXT_MUTED)
+            .into();
+    }
+    button(text(album.to_string()).size(size))
+        .on_press(album_message(album, artist))
+        .padding(0)
+        .style(name_link_style)
+        .into()
+}
+
+/// The `AlbumSelected` message for an album, with the artist normalised.
+///
+/// Split out of [`album_link`] so a *container* that navigates to an album —
+/// the cover tile, a list row — builds the identical message rather than
+/// assembling its own and forgetting to drop the missing-tag placeholder.
+pub fn album_message(album: &str, artist: Option<&str>) -> Message {
+    Message::AlbumSelected(
+        album.to_string(),
+        artist.filter(|a| is_real_name(a)).map(str::to_string),
+    )
+}
+
 /// The shared look for a compact glyph button: no background at rest, hover
 /// reveals `BG_HOVER` with accent text.
 fn icon_btn_style(_t: &iced::Theme, status: button::Status) -> button::Style {
@@ -232,4 +311,48 @@ pub fn link_accent<'a>(
             }
         })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_tag_placeholders_are_not_real_names() {
+        // These are what `display_artist()`/`display_album()` return for an
+        // untagged file. Linking them navigates to an artist MPD has never
+        // heard of, which renders an empty page.
+        assert!(!is_real_name(UNKNOWN_ARTIST));
+        assert!(!is_real_name(UNKNOWN_ALBUM));
+        assert!(!is_real_name(""));
+        assert!(is_real_name("Tiamat"));
+        assert!(is_real_name("AC/DC"));
+    }
+
+    #[test]
+    fn album_message_carries_the_artist_when_it_is_real() {
+        match album_message("Wildhoney", Some("Tiamat")) {
+            Message::AlbumSelected(album, artist) => {
+                assert_eq!(album, "Wildhoney");
+                assert_eq!(artist.as_deref(), Some("Tiamat"));
+            }
+            other => panic!("expected AlbumSelected, got {other:?}"),
+        }
+    }
+
+    /// The artist-less path skips multi-disc expansion and degrades the bio
+    /// lookup, so it must only be reached when there is genuinely no artist —
+    /// never because the placeholder was passed through as if it were one.
+    #[test]
+    fn album_message_drops_a_placeholder_artist() {
+        for artist in [Some(UNKNOWN_ARTIST), Some(""), None] {
+            match album_message("Greatest Hits", artist) {
+                Message::AlbumSelected(_, resolved) => assert_eq!(
+                    resolved, None,
+                    "placeholder artist {artist:?} should not be sent as an artist"
+                ),
+                other => panic!("expected AlbumSelected, got {other:?}"),
+            }
+        }
+    }
 }

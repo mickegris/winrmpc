@@ -1,11 +1,18 @@
+use crate::mpd::types::AlbumGroup;
 use crate::ui::message::Message;
+use crate::ui::widgets::link;
 use crate::ui::theme::AppColors;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
+/// Albums are `AlbumGroup`s rather than bare names so this view can navigate
+/// **artist-scoped**, like every other album listing. It used to send
+/// `AlbumSelected(name, None)`, and that artist-less path skips multi-disc
+/// expansion — so opening a multi-disc album from a genre showed only the
+/// tracks whose literal `Album` tag matched the collapsed base name.
 pub fn view<'a>(
     genre_name: &'a str,
-    albums: &'a [String],
+    albums: &'a [AlbumGroup],
 ) -> Element<'a, Message> {
     let mut list = column![].spacing(0);
     for (i, album) in albums.iter().enumerate() {
@@ -15,21 +22,28 @@ pub fn view<'a>(
             AppColors::ROW_ODD
         };
 
+        let mut label = row![link::album_link(&album.base, Some(&album.artist), 14)]
+            .spacing(8)
+            .align_y(Alignment::Center);
+        if !album.artist.is_empty() {
+            label = label.push(link::artist_link(&album.artist, 12));
+        }
+        if album.variants.len() > 1 {
+            label = label.push(
+                text(format!("{} discs", album.variants.len()))
+                    .size(11)
+                    .color(AppColors::ACCENT),
+            );
+        }
+
         list = list.push(
-            button(
-                text(album.as_str())
-                    .size(14)
-                    .color(AppColors::TEXT_PRIMARY),
-            )
-            .on_press(Message::AlbumSelected(album.clone(), None))
-            .padding([7, 12])
-            .width(Length::Fill)
-            .style(move |_theme: &iced::Theme, _status| button::Style {
-                background: Some(bg.into()),
-                text_color: AppColors::TEXT_PRIMARY,
-                border: iced::Border::default(),
-                ..Default::default()
-            }),
+            container(label)
+                .padding([7, 12])
+                .width(Length::Fill)
+                .style(move |_theme: &iced::Theme| container::Style {
+                    background: Some(bg.into()),
+                    ..Default::default()
+                }),
         );
     }
 

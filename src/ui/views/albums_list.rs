@@ -2,6 +2,7 @@ use crate::mpd::types::AlbumGroup;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::album_grid;
+use crate::ui::widgets::link;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -22,7 +23,6 @@ pub fn view<'a>(
                     group.artist.clone(),
                     (group.variants.len() > 1)
                         .then(|| format!("{} discs", group.variants.len())),
-                    Message::AlbumSelected(group.base.clone(), artist_opt(group)),
                 )
             })
             .collect();
@@ -46,17 +46,31 @@ pub fn view<'a>(
                 &group.base,
             ));
 
-            let mut label = row![
-                thumb,
-                text(group.base.as_str()).size(14).color(AppColors::TEXT_PRIMARY),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center);
+            // Thumb + album title are one button; the artist beside them is
+            // its own link. Same reasoning as `album_grid::tile` — the artist
+            // must not be a small region of a bigger button that goes
+            // somewhere else.
+            let album_btn = button(
+                row![
+                    thumb,
+                    text(group.base.as_str()).size(14).color(AppColors::TEXT_PRIMARY),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .on_press(link::album_message(&group.base, artist_opt(group).as_deref()))
+            .padding(0)
+            .style(|_theme: &iced::Theme, _status| button::Style {
+                background: None,
+                text_color: AppColors::TEXT_PRIMARY,
+                border: iced::Border::default(),
+                ..Default::default()
+            });
+
+            let mut label = row![album_btn].spacing(8).align_y(Alignment::Center);
 
             if !group.artist.is_empty() {
-                label = label.push(
-                    text(group.artist.as_str()).size(12).color(AppColors::TEXT_MUTED),
-                );
+                label = label.push(link::artist_link(&group.artist, 12));
             }
             if group.variants.len() > 1 {
                 label = label.push(
@@ -67,14 +81,11 @@ pub fn view<'a>(
             }
 
             list = list.push(
-                button(label)
-                    .on_press(Message::AlbumSelected(group.base.clone(), artist_opt(group)))
+                container(label)
                     .padding([7, 12])
                     .width(Length::Fill)
-                    .style(move |_theme: &iced::Theme, _status| button::Style {
+                    .style(move |_theme: &iced::Theme| container::Style {
                         background: Some(bg.into()),
-                        text_color: AppColors::TEXT_PRIMARY,
-                        border: iced::Border::default(),
                         ..Default::default()
                     }),
             );

@@ -2,6 +2,7 @@ use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use crate::ui::widgets::link::icon_btn_tip;
 use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
@@ -84,7 +85,11 @@ pub fn view<'a>(
             DirectoryEntry::File(s) => {
                 // File rows carry the same four actions as the album, search and
                 // playlist track lists — see the row-action table in CLAUDE.md.
-                let label = format!("{} – {}", s.display_artist(), s.display_title());
+                // Artist and title are separate cells, not one fused
+                // string — a `format!("{artist} – {title}")` can't have half
+                // of it be a link.
+                let artist = s.display_artist();
+                let title = s.display_title();
                 let duration = s.format_duration();
                 let file_uri = s.file.clone();
                 items = items.push(
@@ -99,10 +104,12 @@ pub fn view<'a>(
                                 "Play now",
                                 Message::PlaySong(file_uri.clone())
                             ),
-                            text(label)
+                            text(title)
                                 .size(13)
                                 .color(song_row::title_color(is_current))
                                 .width(Length::Fill),
+                            container(link::artist_link(artist, 12))
+                                .width(Length::FillPortion(1)),
                             song_row::duration(duration, 11),
                             row![
                                 icon_btn_tip(

@@ -8,6 +8,7 @@
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use iced::widget::{button, column, container, image, row, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -18,14 +19,19 @@ pub const TILE_SIZE: u16 = 120;
 /// scrolls comfortably, big enough to recognise a cover.
 pub const LIST_THUMB: u16 = 36;
 
-/// One cover tile: art (or a placeholder block), title, and a muted
-/// subtitle. `caption` is an optional third line — "2 discs", "3d ago".
+/// One cover tile: art (or a placeholder block), the album title, and the
+/// artist beneath it. `caption` is an optional fourth line — "2 discs", "3d ago".
+///
+/// **The cover and the album title are one button; the artist is a separate
+/// link.** Nesting the artist link *inside* an album-wide button would leave
+/// one small region of a large clickable area doing something different, with
+/// no way to tell by looking — so they are siblings instead. The cover plus
+/// title keeps a big, forgiving target for the common action.
 pub fn tile<'a>(
     art: Option<&'a iced::widget::image::Handle>,
-    title: String,
-    subtitle: String,
+    album: String,
+    artist: String,
     caption: Option<String>,
-    on_press: Message,
 ) -> Element<'a, Message> {
     let art_widget: Element<'a, Message> = match art {
         Some(handle) => image(handle.clone())
@@ -46,29 +52,33 @@ pub fn tile<'a>(
             .into(),
     };
 
-    let mut col = column![
-        art_widget,
-        Space::with_height(6),
-        text(title).size(13).color(AppColors::TEXT_PRIMARY),
-        text(subtitle).size(11).color(AppColors::TEXT_SECONDARY),
-    ]
-    .align_x(Alignment::Center)
-    .width(TILE_SIZE);
+    let cover_and_title = button(
+        column![
+            art_widget,
+            Space::with_height(6),
+            text(album.clone()).size(13).color(AppColors::TEXT_PRIMARY),
+        ]
+        .align_x(Alignment::Center)
+        .width(TILE_SIZE),
+    )
+    .on_press(link::album_message(&album, Some(&artist)))
+    .padding(0)
+    .style(|_t: &iced::Theme, _s| button::Style {
+        background: None,
+        text_color: AppColors::TEXT_PRIMARY,
+        border: iced::Border::default(),
+        ..Default::default()
+    });
+
+    let mut col = column![cover_and_title, link::artist_link(&artist, 11)]
+        .align_x(Alignment::Center)
+        .width(TILE_SIZE);
 
     if let Some(c) = caption {
         col = col.push(text(c).size(10).color(AppColors::TEXT_MUTED));
     }
 
-    button(col)
-        .on_press(on_press)
-        .padding(4)
-        .style(|_t: &iced::Theme, _s| button::Style {
-            background: None,
-            text_color: AppColors::TEXT_PRIMARY,
-            border: iced::Border::default(),
-            ..Default::default()
-        })
-        .into()
+    container(col).padding(4).into()
 }
 
 /// The list-mode counterpart to a tile's cover: the same art at `LIST_THUMB`,

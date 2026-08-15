@@ -38,7 +38,7 @@ pub struct App {
     albums: Vec<AlbumGroup>,
     genres: Vec<String>,
     artist_albums: HashMap<String, Vec<AlbumGroup>>,
-    genre_albums: HashMap<String, Vec<String>>,
+    genre_albums: HashMap<String, Vec<AlbumGroup>>,
     album_songs: HashMap<String, Vec<Song>>,
     selected_artist: Option<String>,
     selected_album: Option<String>,
@@ -1017,12 +1017,14 @@ impl App {
                 let client = self.client.clone();
                 Task::perform(
                     async move {
-                        let mut albums = client
-                            .list_tag_filtered("Album", "Genre", &name)
+                        // Artist-scoped and disc-collapsed, like every other
+                        // album listing — so an album opened from a genre gets
+                        // the same view as one opened from Albums.
+                        let pairs = client
+                            .list_albums_by_artist_filtered("Genre", &name)
                             .await
                             .unwrap_or_default();
-                        albums.sort();
-                        (name, albums)
+                        (name, group_albums_by_artist(&pairs))
                     },
                     |(name, albums)| Message::GenreAlbumsLoaded(name, albums),
                 )

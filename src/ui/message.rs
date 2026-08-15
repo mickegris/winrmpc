@@ -85,7 +85,7 @@ pub enum Message {
     /// detail), which fall back to a plain tag-exact `find`.
     AlbumSelected(String, Option<String>),
     GenreSelected(String),
-    GenreAlbumsLoaded(String, Vec<String>),
+    GenreAlbumsLoaded(String, Vec<crate::mpd::types::AlbumGroup>),
     ArtistAlbumsLoaded(String, Vec<AlbumGroup>),
     AlbumSongsLoaded(String, Vec<Song>),
 

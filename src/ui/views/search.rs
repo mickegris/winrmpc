@@ -2,6 +2,7 @@ use crate::mpd::types::Song;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use crate::ui::widgets::link::icon_btn_tip;
 use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
@@ -118,9 +119,7 @@ pub fn view<'a>(
                             .size(12)
                             .color(song_row::title_color(is_current))
                             .width(Length::Fill),
-                        text(song.display_artist())
-                            .size(11)
-                            .color(AppColors::TEXT_SECONDARY)
+                        container(link::artist_link(song.display_artist(), 11))
                             .width(Length::FillPortion(2)),
                         song_row::duration(song.format_duration(), 11),
                         actions,
