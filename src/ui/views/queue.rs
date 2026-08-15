@@ -20,7 +20,7 @@ pub fn view<'a>(
     let toolbar = row![
         text(format!("{} tracks", queue.len()))
             .size(13)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
         Space::with_width(Length::Fill),
         // Shown only when there is a playing track in this queue to jump to.
         // Deliberately a button rather than automatic scrolling — a list that
@@ -61,15 +61,15 @@ pub fn view<'a>(
                 .size(11)
                 .width(song_row::NUMBER_WIDTH)
                 .align_x(iced::alignment::Horizontal::Right)
-                .color(AppColors::TEXT_MUTED),
-            text("Title").size(11).width(Length::FillPortion(3)).color(AppColors::TEXT_MUTED),
-            text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
-            text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::TEXT_MUTED),
+                .color(AppColors::text_muted()),
+            text("Title").size(11).width(Length::FillPortion(3)).color(AppColors::text_muted()),
+            text("Artist").size(11).width(Length::FillPortion(2)).color(AppColors::text_muted()),
+            text("Album").size(11).width(Length::FillPortion(2)).color(AppColors::text_muted()),
             text("Time")
                 .size(11)
                 .width(song_row::DURATION_WIDTH)
                 .align_x(iced::alignment::Horizontal::Right)
-                .color(AppColors::TEXT_MUTED),
+                .color(AppColors::text_muted()),
             // Holds the trailing action group's slot, or the header's
             // FillPortions divide more space than the rows' do.
             Space::with_width(ACTIONS_WIDTH),
@@ -80,7 +80,7 @@ pub fn view<'a>(
     .style(|_theme: &iced::Theme| container::Style {
         border: iced::Border {
             width: 1.0,
-            color: AppColors::BORDER,
+            color: AppColors::border(),
             ..Default::default()
         },
         ..Default::default()
@@ -93,7 +93,7 @@ pub fn view<'a>(
             container(
                 text("Queue is empty. Add songs from Artists, Albums, Browse, or Search.")
                     .size(14)
-                    .color(AppColors::TEXT_MUTED),
+                    .color(AppColors::text_muted()),
             )
             .padding(20),
         );
@@ -117,7 +117,7 @@ pub fn view<'a>(
         .width(Length::FillPortion(3))
         .style(|_t: &iced::Theme, _s: button::Status| button::Style {
             background: None,
-            text_color: AppColors::TEXT_PRIMARY,
+            text_color: AppColors::text_primary(),
             border: iced::Border::default(),
             shadow: iced::Shadow::default(),
         });
@@ -131,8 +131,8 @@ pub fn view<'a>(
         .style(|_t: &iced::Theme, s: button::Status| button::Style {
             background: None,
             text_color: match s {
-                button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
-                _ => AppColors::TEXT_SECONDARY,
+                button::Status::Hovered | button::Status::Pressed => AppColors::accent(),
+                _ => AppColors::text_secondary(),
             },
             border: iced::Border::default(),
             shadow: iced::Shadow::default(),
@@ -150,8 +150,8 @@ pub fn view<'a>(
         .style(|_t: &iced::Theme, s: button::Status| button::Style {
             background: None,
             text_color: match s {
-                button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
-                _ => AppColors::TEXT_SECONDARY,
+                button::Status::Hovered | button::Status::Pressed => AppColors::accent(),
+                _ => AppColors::text_secondary(),
             },
             border: iced::Border::default(),
             shadow: iced::Shadow::default(),

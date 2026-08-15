@@ -13,9 +13,9 @@ pub fn view<'a>(
     for p in partitions {
         let is_current = p.name == current_partition;
         let name_color = if is_current {
-            AppColors::ACCENT
+            AppColors::accent()
         } else {
-            AppColors::TEXT_PRIMARY
+            AppColors::text_primary()
         };
 
         let indicator = if is_current { "> " } else { "  " };
@@ -24,7 +24,7 @@ pub fn view<'a>(
             text(indicator.to_string())
                 .size(14)
                 .width(20)
-                .color(AppColors::ACCENT),
+                .color(AppColors::accent()),
             text(&p.name)
                 .size(16)
                 .color(name_color)
@@ -40,7 +40,7 @@ pub fn view<'a>(
                     .padding([4, 10]),
             );
             r = r.push(
-                button(text("Delete").size(13).color(AppColors::ERROR))
+                button(text("Delete").size(13).color(AppColors::error()))
                     .on_press(Message::DeletePartition(p.name.clone()))
                     .padding([4, 10]),
             );
@@ -63,17 +63,17 @@ pub fn view<'a>(
 
     container(
         column![
-            text("Partitions").size(24).color(AppColors::TEXT_PRIMARY),
+            text("Partitions").size(24).color(AppColors::text_primary()),
             Space::with_height(8),
             text("Manage MPD partitions. Each partition has its own queue, player, and outputs.")
                 .size(13)
-                .color(AppColors::TEXT_SECONDARY),
+                .color(AppColors::text_secondary()),
             Space::with_height(16),
             partition_list,
             Space::with_height(20),
             text("Create New Partition")
                 .size(16)
-                .color(AppColors::TEXT_PRIMARY),
+                .color(AppColors::text_primary()),
             Space::with_height(8),
             new_partition_row,
         ]

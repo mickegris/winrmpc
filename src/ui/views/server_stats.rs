@@ -14,14 +14,14 @@ pub fn view<'a>(stats: Option<&'a Stats>, updating: bool) -> Element<'a, Message
     let header = row![
         link::back_button(),
         Space::with_width(12),
-        text("Server Statistics").size(24).color(AppColors::TEXT_PRIMARY),
+        text("Server Statistics").size(24).color(AppColors::text_primary()),
     ]
     .align_y(Alignment::Center)
     .padding([12, 12]);
 
     let body: Element<'a, Message> = match stats {
         None => container(
-            text("Loading...").size(14).color(AppColors::TEXT_MUTED),
+            text("Loading...").size(14).color(AppColors::text_muted()),
         )
         .padding(20)
         .into(),
@@ -38,7 +38,7 @@ pub fn view<'a>(stats: Option<&'a Stats>, updating: bool) -> Element<'a, Message
             col = col.push(
                 text("Rescan your MPD music directory for new or changed files.")
                     .size(12)
-                    .color(AppColors::TEXT_SECONDARY),
+                    .color(AppColors::text_secondary()),
             );
             col = col.push(Space::with_height(4));
             let update_label = if updating { "Updating..." } else { "Update Database" };
@@ -59,8 +59,8 @@ pub fn view<'a>(stats: Option<&'a Stats>, updating: bool) -> Element<'a, Message
 
 fn stat_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
     row![
-        text(label).size(13).color(AppColors::TEXT_MUTED).width(220),
-        text(value).size(14).color(AppColors::TEXT_PRIMARY),
+        text(label).size(13).color(AppColors::text_muted()).width(220),
+        text(value).size(14).color(AppColors::text_primary()),
     ]
     .align_y(Alignment::Center)
     .into()

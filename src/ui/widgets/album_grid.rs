@@ -44,7 +44,7 @@ pub fn tile<'a>(
             .width(TILE_SIZE)
             .height(TILE_SIZE)
             .style(|_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_SECONDARY.into()),
+                background: Some(AppColors::bg_secondary().into()),
                 border: iced::Border {
                     radius: 4.0.into(),
                     ..Default::default()
@@ -64,7 +64,7 @@ pub fn tile<'a>(
                 border: iced::Border {
                     radius: 4.0.into(),
                     width: 2.0,
-                    color: AppColors::ACCENT,
+                    color: AppColors::accent(),
                 },
                 ..Default::default()
             })
@@ -88,7 +88,7 @@ pub fn tile<'a>(
     .padding(0)
     .style(|_t: &iced::Theme, _s| button::Style {
         background: None,
-        text_color: AppColors::TEXT_PRIMARY,
+        text_color: AppColors::text_primary(),
         border: iced::Border::default(),
         ..Default::default()
     });
@@ -98,7 +98,7 @@ pub fn tile<'a>(
         .width(TILE_SIZE);
 
     if let Some(c) = caption {
-        col = col.push(text(c).size(10).color(AppColors::TEXT_MUTED));
+        col = col.push(text(c).size(10).color(AppColors::text_muted()));
     }
 
     container(col).padding(4).into()
@@ -120,7 +120,7 @@ pub fn list_thumb<'a>(
             .width(LIST_THUMB)
             .height(LIST_THUMB)
             .style(|_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_SECONDARY.into()),
+                background: Some(AppColors::bg_secondary().into()),
                 border: iced::Border {
                     radius: 3.0.into(),
                     ..Default::default()

@@ -19,11 +19,11 @@ pub fn view<'a>(
     };
 
     let header = row![
-        button(text("Cancel").size(14).color(AppColors::ACCENT))
+        button(text("Cancel").size(14).color(AppColors::accent()))
             .on_press(Message::CloseAddToPlaylist)
             .padding([4, 8]),
         Space::with_width(12),
-        text(title).size(20).color(AppColors::TEXT_PRIMARY),
+        text(title).size(20).color(AppColors::text_primary()),
     ]
     .align_y(Alignment::Center)
     .padding([12, 12]);
@@ -44,25 +44,25 @@ pub fn view<'a>(
     let mut list = column![].spacing(4);
     if playlists.is_empty() {
         list = list.push(
-            text("No playlists yet").size(13).color(AppColors::TEXT_MUTED),
+            text("No playlists yet").size(13).color(AppColors::text_muted()),
         );
     } else {
         for pl in playlists {
             list = list.push(
-                button(text(pl.name.clone()).size(14).color(AppColors::TEXT_PRIMARY))
+                button(text(pl.name.clone()).size(14).color(AppColors::text_primary()))
                     .on_press(Message::AddToPlaylistConfirm(pl.name.clone()))
                     .padding([8, 12])
                     .width(Length::Fill)
                     .style(|_t: &iced::Theme, status: button::Status| {
                         let bg = match status {
                             button::Status::Hovered | button::Status::Pressed => {
-                                Some(AppColors::BG_HOVER.into())
+                                Some(AppColors::bg_hover().into())
                             }
-                            _ => Some(AppColors::BG_SECONDARY.into()),
+                            _ => Some(AppColors::bg_secondary().into()),
                         };
                         button::Style {
                             background: bg,
-                            text_color: AppColors::TEXT_PRIMARY,
+                            text_color: AppColors::text_primary(),
                             border: iced::Border {
                                 radius: 4.0.into(),
                                 ..Default::default()
@@ -86,7 +86,7 @@ pub fn view<'a>(
             container(
                 text("Existing playlists")
                     .size(12)
-                    .color(AppColors::TEXT_MUTED)
+                    .color(AppColors::text_muted())
                     .width(Length::Fill)
             )
             .padding([0, 12]),

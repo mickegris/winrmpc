@@ -19,16 +19,16 @@ pub fn view<'a>(
     let mut list = column![].spacing(0);
     for (i, album) in albums.iter().enumerate() {
         let bg = if i % 2 == 0 {
-            AppColors::ROW_EVEN
+            AppColors::row_even()
         } else {
-            AppColors::ROW_ODD
+            AppColors::row_odd()
         };
 
         let is_current =
             song_row::is_current_album(&album.artist, &album.base, current_song);
         let mut label = row![if is_current {
             iced::Element::from(
-                text(album.base.clone()).size(14).color(AppColors::ACCENT),
+                text(album.base.clone()).size(14).color(AppColors::accent()),
             )
         } else {
             link::album_link(&album.base, Some(&album.artist), 14)
@@ -42,7 +42,7 @@ pub fn view<'a>(
             label = label.push(
                 text(format!("{} discs", album.variants.len()))
                     .size(11)
-                    .color(AppColors::ACCENT),
+                    .color(AppColors::accent()),
             );
         }
 
@@ -62,11 +62,11 @@ pub fn view<'a>(
             row![
                 link::back_button(),
                 Space::with_width(12),
-                text(genre_name).size(24).color(AppColors::TEXT_PRIMARY),
+                text(genre_name).size(24).color(AppColors::text_primary()),
                 Space::with_width(12),
                 text(format!("{} albums", albums.len()))
                     .size(14)
-                    .color(AppColors::TEXT_MUTED),
+                    .color(AppColors::text_muted()),
             ]
             .align_y(Alignment::Center)
             .padding([12, 12]),

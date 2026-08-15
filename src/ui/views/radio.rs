@@ -13,11 +13,11 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let title = text("Radio Stations")
         .size(24)
-        .color(AppColors::TEXT_PRIMARY);
+        .color(AppColors::text_primary());
 
     let subtitle = text("Click a station to clear the queue and start streaming.")
         .size(12)
-        .color(AppColors::TEXT_SECONDARY);
+        .color(AppColors::text_secondary());
 
     // Station list
     let mut station_rows = column![].spacing(4);
@@ -25,12 +25,12 @@ pub fn view<'a>(
     for station in stations {
         let name_label = text(&station.name)
             .size(14)
-            .color(AppColors::TEXT_PRIMARY)
+            .color(AppColors::text_primary())
             .width(Length::FillPortion(2));
 
         let url_label = text(&station.url)
             .size(12)
-            .color(AppColors::TEXT_SECONDARY)
+            .color(AppColors::text_secondary())
             .width(Length::FillPortion(3));
 
         let play_btn = button(text("Play").size(12))
@@ -57,7 +57,7 @@ pub fn view<'a>(
             .padding([8, 12])
             .width(Length::Fill)
             .style(|_theme: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_SECONDARY.into()),
+                background: Some(AppColors::bg_secondary().into()),
                 border: iced::Border {
                     radius: 4.0.into(),
                     ..Default::default()
@@ -71,7 +71,7 @@ pub fn view<'a>(
     // Add custom station form
     let add_section_title = text("Add Custom Station")
         .size(16)
-        .color(AppColors::TEXT_PRIMARY);
+        .color(AppColors::text_primary());
 
     let name_input = text_input("Station name", add_name)
         .on_input(Message::RadioAddCustomName)

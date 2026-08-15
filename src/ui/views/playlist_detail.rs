@@ -36,7 +36,7 @@ pub fn view<'a>(
             .width(200)
             .height(200)
             .style(|_theme: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_PRIMARY.into()),
+                background: Some(AppColors::bg_primary().into()),
                 border: iced::Border {
                     radius: 4.0.into(),
                     ..Default::default()
@@ -48,12 +48,12 @@ pub fn view<'a>(
 
     header = header.push(art);
     header = header.push(Space::with_height(12));
-    header = header.push(text(playlist_name).size(22).color(AppColors::TEXT_PRIMARY));
+    header = header.push(text(playlist_name).size(22).color(AppColors::text_primary()));
     header = header.push(Space::with_height(4));
     header = header.push(
         text(format!("{} tracks  |  {} min", songs.len(), total_mins))
             .size(13)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
     );
     header = header.push(Space::with_height(8));
 
@@ -74,7 +74,7 @@ pub fn view<'a>(
 
     if songs.is_empty() {
         track_list = track_list.push(
-            container(text("Empty playlist").size(14).color(AppColors::TEXT_MUTED))
+            container(text("Empty playlist").size(14).color(AppColors::text_muted()))
                 .padding([10, 20]),
         );
     }

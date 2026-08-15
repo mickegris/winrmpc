@@ -18,11 +18,11 @@ pub fn view<'a>(
     let header = row![
         link::back_button(),
         Space::with_width(12),
-        text("Playlists").size(24).color(AppColors::TEXT_PRIMARY),
+        text("Playlists").size(24).color(AppColors::text_primary()),
         Space::with_width(12),
         text(format!("{} playlists", playlists.len()))
             .size(14)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
     ]
     .align_y(Alignment::Center)
     .padding([12, 12]);
@@ -37,7 +37,7 @@ pub fn view<'a>(
                      on a song or album.",
                 )
                 .size(13)
-                .color(AppColors::TEXT_MUTED),
+                .color(AppColors::text_muted()),
             )
             .padding([10, 12]),
         );
@@ -68,13 +68,13 @@ pub fn view<'a>(
             .into()
         } else {
             row![
-                button(text(pl.name.clone()).size(14).color(AppColors::TEXT_PRIMARY))
+                button(text(pl.name.clone()).size(14).color(AppColors::text_primary()))
                     .on_press(Message::PlaylistSelected(pl.name.clone()))
                     .padding(0)
                     .width(Length::Fill)
                     .style(|_t: &iced::Theme, _s: button::Status| button::Style {
                         background: None,
-                        text_color: AppColors::TEXT_PRIMARY,
+                        text_color: AppColors::text_primary(),
                         border: iced::Border::default(),
                         ..Default::default()
                     }),
@@ -85,9 +85,9 @@ pub fn view<'a>(
                         background: None,
                         text_color: match s {
                             button::Status::Hovered | button::Status::Pressed => {
-                                AppColors::TEXT_PRIMARY
+                                AppColors::text_primary()
                             }
-                            _ => AppColors::TEXT_MUTED,
+                            _ => AppColors::text_muted(),
                         },
                         border: iced::Border::default(),
                         shadow: iced::Shadow::default(),
@@ -98,7 +98,7 @@ pub fn view<'a>(
                     .padding([3, 8])
                     .style(|_t: &iced::Theme, _s: button::Status| button::Style {
                         background: None,
-                        text_color: AppColors::ERROR,
+                        text_color: AppColors::error(),
                         border: iced::Border::default(),
                         ..Default::default()
                     }),
@@ -112,7 +112,7 @@ pub fn view<'a>(
                 .padding([8, 12])
                 .width(Length::Fill)
                 .style(|_t: &iced::Theme| container::Style {
-                    background: Some(AppColors::BG_SECONDARY.into()),
+                    background: Some(AppColors::bg_secondary().into()),
                     border: iced::Border {
                         radius: 4.0.into(),
                         ..Default::default()

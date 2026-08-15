@@ -47,7 +47,7 @@ pub fn view<'a>(
                     .width(300)
                     .height(300)
                     .style(|_theme: &iced::Theme| container::Style {
-                        background: Some(AppColors::BG_PRIMARY.into()),
+                        background: Some(AppColors::bg_primary().into()),
                         border: iced::Border {
                             radius: 4.0.into(),
                             ..Default::default()
@@ -64,7 +64,7 @@ pub fn view<'a>(
             let mut info_items: Vec<Element<'a, Message>> = vec![
                 text(song.display_title())
                     .size(28)
-                    .color(AppColors::TEXT_PRIMARY)
+                    .color(AppColors::text_primary())
                     .into(),
                 Space::with_height(8).into(),
                 // Clickable artist
@@ -105,7 +105,7 @@ pub fn view<'a>(
                 info_items.push(
                     text(tech_line)
                         .size(13)
-                        .color(AppColors::TEXT_MUTED)
+                        .color(AppColors::text_muted())
                         .into(),
                 );
                 info_items.push(Space::with_height(3).into());
@@ -114,7 +114,7 @@ pub fn view<'a>(
                 info_items.push(
                     text(meta_line)
                         .size(13)
-                        .color(AppColors::TEXT_MUTED)
+                        .color(AppColors::text_muted())
                         .into(),
                 );
             }
@@ -124,7 +124,7 @@ pub fn view<'a>(
                 if let Some(pos) = next.pos {
                     info_items.push(Space::with_height(24).into());
                     info_items.push(
-                        text("Up Next").size(12).color(AppColors::TEXT_MUTED).into(),
+                        text("Up Next").size(12).color(AppColors::text_muted()).into(),
                     );
                     info_items.push(Space::with_height(5).into());
                     info_items.push(
@@ -133,10 +133,10 @@ pub fn view<'a>(
                         row![
                             button(
                                 row![
-                                    icon::icon_sized(icon::PLAY, 13).color(AppColors::ACCENT),
+                                    icon::icon_sized(icon::PLAY, 13).color(AppColors::accent()),
                                     text(next.display_title())
                                         .size(14)
-                                        .color(AppColors::TEXT_PRIMARY),
+                                        .color(AppColors::text_primary()),
                                 ]
                                 .align_y(Alignment::Center),
                             )
@@ -144,11 +144,11 @@ pub fn view<'a>(
                             .padding(0)
                             .style(|_t: &iced::Theme, _s: button::Status| button::Style {
                                 background: None,
-                                text_color: AppColors::TEXT_PRIMARY,
+                                text_color: AppColors::text_primary(),
                                 border: iced::Border::default(),
                                 shadow: iced::Shadow::default(),
                             }),
-                            text("  —  ").size(13).color(AppColors::TEXT_MUTED),
+                            text("  —  ").size(13).color(AppColors::text_muted()),
                             link::artist_link(next.display_artist(), 13),
                         ]
                         .align_y(Alignment::Center)
@@ -182,7 +182,7 @@ pub fn view<'a>(
                 column![
                     text("Recently Played")
                         .size(14)
-                        .color(AppColors::TEXT_SECONDARY),
+                        .color(AppColors::text_secondary()),
                     Space::with_height(10),
                     // Scrolled sideways, not wrapped and not squeezed. Five
                     // 120px thumbs need ~700px, which the left column
@@ -254,11 +254,11 @@ pub fn view<'a>(
                 column![
                     text("Nothing playing")
                         .size(24)
-                        .color(AppColors::TEXT_MUTED),
+                        .color(AppColors::text_muted()),
                     Space::with_height(8),
                     text("Add songs to the queue and press play")
                         .size(16)
-                        .color(AppColors::TEXT_MUTED),
+                        .color(AppColors::text_muted()),
                 ]
                 .align_x(Alignment::Center),
             )
@@ -294,7 +294,7 @@ fn recent_thumb<'a>(
             .width(120)
             .height(120)
             .style(|_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_SECONDARY.into()),
+                background: Some(AppColors::bg_secondary().into()),
                 border: iced::Border {
                     radius: 4.0.into(),
                     ..Default::default()
@@ -311,7 +311,7 @@ fn recent_thumb<'a>(
         column![
             thumb_art,
             Space::with_height(6),
-            text(label).size(13).color(AppColors::TEXT_SECONDARY),
+            text(label).size(13).color(AppColors::text_secondary()),
         ]
         .align_x(Alignment::Center)
         .width(120),
@@ -321,13 +321,13 @@ fn recent_thumb<'a>(
     .style(|_t: &iced::Theme, status: button::Status| {
         let bg = match status {
             button::Status::Hovered | button::Status::Pressed => {
-                Some(AppColors::BG_HOVER.into())
+                Some(AppColors::bg_hover().into())
             }
             _ => None,
         };
         button::Style {
             background: bg,
-            text_color: AppColors::TEXT_SECONDARY,
+            text_color: AppColors::text_secondary(),
             border: iced::Border {
                 radius: 4.0.into(),
                 ..Default::default()
@@ -368,7 +368,7 @@ fn follow_toggle<'a>(follow: bool) -> Element<'a, Message> {
         .on_press(Message::ToggleLyricsFollow)
         .padding([3, 10]),
         Space::with_width(8),
-        text(hint).size(10).color(AppColors::TEXT_MUTED),
+        text(hint).size(10).color(AppColors::text_muted()),
     ]
     .align_y(Alignment::Center)
     .into()
@@ -383,9 +383,9 @@ fn lyrics_toggle<'a>(show: bool) -> Element<'a, Message> {
         .style(|_t: &iced::Theme, status: button::Status| {
             let (bg, fg) = match status {
                 button::Status::Hovered | button::Status::Pressed => {
-                    (Some(AppColors::BG_HOVER.into()), AppColors::ACCENT)
+                    (Some(AppColors::bg_hover().into()), AppColors::accent())
                 }
-                _ => (Some(AppColors::BG_SECONDARY.into()), AppColors::TEXT_SECONDARY),
+                _ => (Some(AppColors::bg_secondary().into()), AppColors::text_secondary()),
             };
             button::Style {
                 background: bg,
@@ -442,9 +442,9 @@ fn lyrics_column<'a>(
                     }
                     let is_active = Some(i) == active;
                     let (color, size) = if is_active {
-                        (AppColors::ACCENT, 17)
+                        (AppColors::accent(), 17)
                     } else {
-                        (AppColors::TEXT_MUTED, 15)
+                        (AppColors::text_muted(), 15)
                     };
                     col = col.push(text(&line.text).size(size).color(color));
                 }
@@ -462,7 +462,7 @@ fn lyrics_column<'a>(
                 // *same* path as the synced one and inherits its scroll
                 // offset. Synced lyrics are autoscrolled near the bottom, so
                 // a plain-lyrics track landing on that offset renders blank.
-                scrollable(text(plain).size(15).color(AppColors::TEXT_SECONDARY))
+                scrollable(text(plain).size(15).color(AppColors::text_secondary()))
                     .id(scroll_id)
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -489,10 +489,10 @@ fn lyrics_column<'a>(
         .height(Length::Fill)
         .padding(16)
         .style(|_t: &iced::Theme| container::Style {
-            background: Some(AppColors::BG_SECONDARY.into()),
+            background: Some(AppColors::bg_secondary().into()),
             border: iced::Border {
                 radius: 6.0.into(),
-                color: AppColors::BORDER,
+                color: AppColors::border(),
                 width: 1.0,
             },
             ..Default::default()
@@ -506,8 +506,8 @@ fn lyrics_column<'a>(
 fn centered_icon_note<'a>(glyph: &'static str, msg: &'a str) -> Element<'a, Message> {
     container(
         row![
-            icon::icon_sized(glyph, 16).color(AppColors::TEXT_MUTED),
-            text(msg).size(14).color(AppColors::TEXT_MUTED),
+            icon::icon_sized(glyph, 16).color(AppColors::text_muted()),
+            text(msg).size(14).color(AppColors::text_muted()),
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -520,7 +520,7 @@ fn centered_icon_note<'a>(glyph: &'static str, msg: &'a str) -> Element<'a, Mess
 }
 
 fn centered_note<'a>(msg: &'a str) -> Element<'a, Message> {
-    container(text(msg).size(14).color(AppColors::TEXT_MUTED))
+    container(text(msg).size(14).color(AppColors::text_muted()))
         .center_x(Length::Fill)
         .center_y(Length::Fill)
         .width(Length::Fill)

@@ -18,20 +18,20 @@ pub fn view<'a>(
         Some(song) => column![
             text(song.display_title())
                 .size(14)
-                .color(AppColors::TEXT_PRIMARY),
+                .color(AppColors::text_primary()),
             text(format!(
                 "{} - {}",
                 song.display_artist(),
                 song.display_album()
             ))
             .size(12)
-            .color(AppColors::TEXT_SECONDARY),
+            .color(AppColors::text_secondary()),
         ]
         .width(250)
         .into(),
         None => text("No song playing")
             .size(14)
-            .color(AppColors::TEXT_MUTED)
+            .color(AppColors::text_muted())
             .width(250)
             .into(),
     };
@@ -63,19 +63,19 @@ pub fn view<'a>(
     let progress = row![
         text(format_time(elapsed))
             .size(12)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
         slider(0.0..=duration, elapsed, Message::SeekTo)
             .width(Length::Fill)
             .step(0.5),
         text(format_time(duration))
             .size(12)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
 
     let volume_slider = row![
-        icon::icon_sized(icon::VOLUME, 15).color(AppColors::TEXT_MUTED),
+        icon::icon_sized(icon::VOLUME, 15).color(AppColors::text_muted()),
         slider(
             0.0..=100.0,
             status.volume as f64,
@@ -85,7 +85,7 @@ pub fn view<'a>(
         .step(1.0),
         text(format!("{}%", status.volume))
             .size(12)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
@@ -118,12 +118,12 @@ pub fn view<'a>(
     // the mode buttons, crossfade above replay gain.
     let crossfade_secs = status.crossfade.unwrap_or(0);
     let crossfade_control = row![
-        text("Crossfade").size(12).color(AppColors::TEXT_SECONDARY),
+        text("Crossfade").size(12).color(AppColors::text_secondary()),
         Space::with_width(Length::Fill),
         small_icon_btn(icon::MINUS, Message::SetCrossfade(crossfade_secs.saturating_sub(1))),
         text(format!("{crossfade_secs}s"))
             .size(13)
-            .color(AppColors::TEXT_PRIMARY),
+            .color(AppColors::text_primary()),
         small_icon_btn(icon::ADD_QUEUE, Message::SetCrossfade(crossfade_secs + 1)),
     ]
     .spacing(4)
@@ -132,7 +132,7 @@ pub fn view<'a>(
     // Labelled: a bare dropdown reading "off"/"track"/"album"/"auto" gives
     // no clue what it controls.
     let replay_gain_control = row![
-        text("Replay Gain").size(12).color(AppColors::TEXT_SECONDARY),
+        text("Replay Gain").size(12).color(AppColors::text_secondary()),
         Space::with_width(Length::Fill),
         pick_list(
             REPLAY_GAIN_MODES.to_vec(),
@@ -198,10 +198,10 @@ pub fn view<'a>(
     )
     .width(Length::Fill)
     .style(|_theme: &iced::Theme| container::Style {
-        background: Some(AppColors::BG_SECONDARY.into()),
+        background: Some(AppColors::bg_secondary().into()),
         border: iced::Border {
             width: 1.0,
-            color: AppColors::BORDER,
+            color: AppColors::border(),
             ..Default::default()
         },
         ..Default::default()
@@ -220,14 +220,14 @@ fn styled_control_btn<'a>(
     primary: bool,
 ) -> Element<'a, Message> {
     let bg = if primary {
-        AppColors::ACCENT
+        AppColors::accent()
     } else {
-        AppColors::BG_TERTIARY
+        AppColors::bg_tertiary()
     };
     let fg = if primary {
-        AppColors::BG_PRIMARY
+        AppColors::bg_primary()
     } else {
-        AppColors::TEXT_PRIMARY
+        AppColors::text_primary()
     };
 
     link::with_tip(
@@ -266,14 +266,14 @@ fn mode_btn<'a>(
     msg: Message,
 ) -> Element<'a, Message> {
     let bg = if active {
-        AppColors::ACCENT
+        AppColors::accent()
     } else {
-        AppColors::BG_TERTIARY
+        AppColors::bg_tertiary()
     };
     let fg = if active {
-        AppColors::BG_PRIMARY
+        AppColors::bg_primary()
     } else {
-        AppColors::TEXT_MUTED
+        AppColors::text_muted()
     };
 
     button(
@@ -316,12 +316,12 @@ fn format_time(secs: f64) -> String {
 /// pair has to go through the icon font together: `−` (U+2212) is not in every
 /// system font, and a matched pair drawn from two different fonts looks it.
 fn small_icon_btn<'a>(glyph: &'static str, msg: Message) -> Element<'a, Message> {
-    button(icon::icon_sized(glyph, 13).color(AppColors::TEXT_PRIMARY))
+    button(icon::icon_sized(glyph, 13).color(AppColors::text_primary()))
         .padding([2, 8])
         .on_press(msg)
         .style(|_t: &iced::Theme, _s| button::Style {
-            background: Some(AppColors::BG_SECONDARY.into()),
-            text_color: AppColors::TEXT_SECONDARY,
+            background: Some(AppColors::bg_secondary().into()),
+            text_color: AppColors::text_secondary(),
             border: iced::Border {
                 radius: 3.0.into(),
                 ..Default::default()
@@ -332,12 +332,12 @@ fn small_icon_btn<'a>(glyph: &'static str, msg: Message) -> Element<'a, Message>
 }
 
 fn small_btn(label: &str, msg: Message) -> Element<'_, Message> {
-    button(text(label).size(13).color(AppColors::TEXT_PRIMARY))
+    button(text(label).size(13).color(AppColors::text_primary()))
         .padding([2, 8])
         .on_press(msg)
         .style(|_t: &iced::Theme, _s| button::Style {
-            background: Some(AppColors::BG_SECONDARY.into()),
-            text_color: AppColors::TEXT_SECONDARY,
+            background: Some(AppColors::bg_secondary().into()),
+            text_color: AppColors::text_secondary(),
             border: iced::Border {
                 radius: 3.0.into(),
                 ..Default::default()

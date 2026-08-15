@@ -36,7 +36,7 @@ pub fn view<'a>(
     let header = row![
         link::back_button(),
         Space::with_width(12),
-        text("Recently Played").size(24).color(AppColors::TEXT_PRIMARY),
+        text("Recently Played").size(24).color(AppColors::text_primary()),
         Space::with_width(Length::Fill),
         toggle_btn,
         Space::with_width(8),
@@ -56,7 +56,7 @@ pub fn view<'a>(
         container(
             text("Nothing played yet.")
                 .size(14)
-                .color(AppColors::TEXT_MUTED),
+                .color(AppColors::text_muted()),
         )
         .padding(20)
         .into()
@@ -84,7 +84,7 @@ pub fn view<'a>(
         } else {
             let mut list = column![].spacing(0);
             for (i, g) in groups.into_iter().enumerate() {
-                let bg = if i % 2 == 0 { AppColors::ROW_EVEN } else { AppColors::ROW_ODD };
+                let bg = if i % 2 == 0 { AppColors::row_even() } else { AppColors::row_odd() };
                 // Same cover as this view's grid mode, just small — matching
                 // Albums and Recently Added, whose list modes already do this.
                 let album_btn = button(
@@ -105,7 +105,7 @@ pub fn view<'a>(
                 .padding(0)
                 .style(|_t: &iced::Theme, _s: button::Status| button::Style {
                     background: None,
-                    text_color: AppColors::TEXT_PRIMARY,
+                    text_color: AppColors::text_primary(),
                     border: iced::Border::default(),
                     ..Default::default()
                 });
@@ -116,7 +116,7 @@ pub fn view<'a>(
                     Space::with_width(Length::Fill),
                     text(relative_time(now - g.last_played))
                         .size(11)
-                        .color(AppColors::TEXT_MUTED),
+                        .color(AppColors::text_muted()),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center);
@@ -152,7 +152,7 @@ pub fn view<'a>(
                         .width(Length::FillPortion(3))
                         .style(|_t: &iced::Theme, _s: button::Status| button::Style {
                             background: None,
-                            text_color: AppColors::TEXT_PRIMARY,
+                            text_color: AppColors::text_primary(),
                             border: iced::Border::default(),
                             shadow: iced::Shadow::default(),
                         }),
@@ -160,7 +160,7 @@ pub fn view<'a>(
                             .width(Length::FillPortion(2)),
                         text(relative_time(now - e.played_at))
                             .size(11)
-                            .color(AppColors::TEXT_MUTED),
+                            .color(AppColors::text_muted()),
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),

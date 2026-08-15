@@ -268,6 +268,9 @@ pub enum Message {
     ErrorOccurred(String),
     /// Dismiss the oldest toast (any toast click).
     DismissToast,
+    /// Switch between the light and dark palettes. Applies immediately —
+    /// a theme toggle that needs a restart is worse than none.
+    SetDarkMode(bool),
     Tick,
     RefreshAll,
     Noop,

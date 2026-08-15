@@ -340,7 +340,6 @@ port = 6600
 
 [theme]
 dark_mode = true
-accent_color = "#4fc3f7"
 ```
 
 Older single-server config files are still read and are migrated to the

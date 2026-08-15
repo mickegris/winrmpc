@@ -18,8 +18,8 @@ pub fn link<'a>(
         .padding(0)
         .style(|_t: &iced::Theme, status: button::Status| {
             let text_color = match status {
-                button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
-                _ => AppColors::TEXT_SECONDARY,
+                button::Status::Hovered | button::Status::Pressed => AppColors::accent(),
+                _ => AppColors::text_secondary(),
             };
             button::Style {
                 background: None,
@@ -51,8 +51,8 @@ pub fn link_icon<'a>(
     .padding(0)
     .style(|_t: &iced::Theme, status: button::Status| {
         let text_color = match status {
-            button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
-            _ => AppColors::TEXT_SECONDARY,
+            button::Status::Hovered | button::Status::Pressed => AppColors::accent(),
+            _ => AppColors::text_secondary(),
         };
         button::Style {
             background: None,
@@ -83,8 +83,8 @@ pub fn back_button<'a>() -> Element<'a, Message> {
     .style(|_t: &iced::Theme, status: button::Status| button::Style {
         background: None,
         text_color: match status {
-            button::Status::Hovered | button::Status::Pressed => AppColors::TEXT_PRIMARY,
-            _ => AppColors::ACCENT,
+            button::Status::Hovered | button::Status::Pressed => AppColors::text_primary(),
+            _ => AppColors::accent(),
         },
         border: iced::Border::default(),
         shadow: iced::Shadow::default(),
@@ -112,8 +112,8 @@ fn name_link_style(_t: &iced::Theme, status: button::Status) -> button::Style {
     button::Style {
         background: None,
         text_color: match status {
-            button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
-            _ => AppColors::TEXT_SECONDARY,
+            button::Status::Hovered | button::Status::Pressed => AppColors::accent(),
+            _ => AppColors::text_secondary(),
         },
         border: iced::Border::default(),
         shadow: iced::Shadow::default(),
@@ -129,7 +129,7 @@ pub fn artist_link<'a>(name: &str, size: u16) -> Element<'a, Message> {
     if !is_real_name(name) {
         return text(name.to_string())
             .size(size)
-            .color(AppColors::TEXT_MUTED)
+            .color(AppColors::text_muted())
             .into();
     }
     button(text(name.to_string()).size(size))
@@ -149,7 +149,7 @@ pub fn album_link<'a>(album: &str, artist: Option<&str>, size: u16) -> Element<'
     if !is_real_name(album) {
         return text(album.to_string())
             .size(size)
-            .color(AppColors::TEXT_MUTED)
+            .color(AppColors::text_muted())
             .into();
     }
     button(text(album.to_string()).size(size))
@@ -176,12 +176,12 @@ pub fn album_message(album: &str, artist: Option<&str>) -> Message {
 fn icon_btn_style(_t: &iced::Theme, status: button::Status) -> button::Style {
     let (bg, text_color) = match status {
         button::Status::Hovered | button::Status::Pressed => {
-            (Some(AppColors::BG_HOVER.into()), AppColors::ACCENT)
+            (Some(AppColors::bg_hover().into()), AppColors::accent())
         }
         // Disabled has to be visually distinct or the button lies: it looks
         // pressable and isn't. This arm used to fall into the catch-all.
-        button::Status::Disabled => (None, AppColors::TEXT_DISABLED),
-        _ => (None, AppColors::TEXT_MUTED),
+        button::Status::Disabled => (None, AppColors::text_disabled()),
+        _ => (None, AppColors::text_muted()),
     };
     button::Style {
         background: bg,
@@ -232,10 +232,10 @@ pub fn icon_btn_danger_maybe<'a>(
             .style(|_t: &iced::Theme, status: button::Status| {
                 let (bg, text_color) = match status {
                     button::Status::Hovered | button::Status::Pressed => {
-                        (Some(AppColors::BG_HOVER.into()), AppColors::ERROR)
+                        (Some(AppColors::bg_hover().into()), AppColors::error())
                     }
-                    button::Status::Disabled => (None, AppColors::TEXT_DISABLED),
-                    _ => (None, AppColors::ERROR),
+                    button::Status::Disabled => (None, AppColors::text_disabled()),
+                    _ => (None, AppColors::error()),
                 };
                 button::Style {
                     background: bg,
@@ -303,12 +303,12 @@ pub fn with_tip<'a>(inner: Element<'a, Message>, tip: &'static str) -> Element<'
         container(text(tip).size(12))
             .padding([4, 8])
             .style(|_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_TERTIARY.into()),
-                text_color: Some(AppColors::TEXT_PRIMARY),
+                background: Some(AppColors::bg_tertiary().into()),
+                text_color: Some(AppColors::text_primary()),
                 border: iced::Border {
                     radius: 4.0.into(),
                     width: 1.0,
-                    color: AppColors::BORDER,
+                    color: AppColors::border(),
                 },
                 ..Default::default()
             }),
@@ -331,8 +331,8 @@ pub fn link_accent<'a>(
         .padding(0)
         .style(|_t: &iced::Theme, status: button::Status| {
             let text_color = match status {
-                button::Status::Hovered | button::Status::Pressed => AppColors::TEXT_PRIMARY,
-                _ => AppColors::ACCENT,
+                button::Status::Hovered | button::Status::Pressed => AppColors::text_primary(),
+                _ => AppColors::accent(),
             };
             button::Style {
                 background: None,

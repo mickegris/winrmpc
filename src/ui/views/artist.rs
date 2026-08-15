@@ -34,7 +34,7 @@ pub fn view<'a>(
                 .width(120)
                 .height(120)
                 .style(|_theme: &iced::Theme| container::Style {
-                    background: Some(AppColors::BG_PRIMARY.into()),
+                    background: Some(AppColors::bg_primary().into()),
                     border: iced::Border {
                         radius: 4.0.into(),
                         ..Default::default()
@@ -49,12 +49,12 @@ pub fn view<'a>(
             artist_art,
             Space::with_width(16),
             Column::new()
-                .push(text(artist_name).size(26).color(AppColors::TEXT_PRIMARY))
+                .push(text(artist_name).size(26).color(AppColors::text_primary()))
                 .push(Space::with_height(4))
                 .push(
                     text(format!("{} albums", albums.len()))
                         .size(14)
-                        .color(AppColors::TEXT_MUTED)
+                        .color(AppColors::text_muted())
                 ),
         ]
         .align_y(Alignment::Center),
@@ -66,12 +66,12 @@ pub fn view<'a>(
         Some(bio_text) => {
             let toggle_label = if show_bio { "Hide info" } else { "Show info" };
             header = header.push(
-                button(text(toggle_label).size(12).color(AppColors::ACCENT))
+                button(text(toggle_label).size(12).color(AppColors::accent()))
                     .on_press(Message::ToggleArtistBio)
                     .padding([4, 8])
                     .style(|_theme: &iced::Theme, _status| button::Style {
                         background: None,
-                        text_color: AppColors::ACCENT,
+                        text_color: AppColors::accent(),
                         border: iced::Border::default(),
                         ..Default::default()
                     }),
@@ -80,15 +80,15 @@ pub fn view<'a>(
                 header = header.push(Space::with_height(4));
                 header = header.push(
                     container(
-                        text(bio_text).size(12).color(AppColors::TEXT_SECONDARY),
+                        text(bio_text).size(12).color(AppColors::text_secondary()),
                     )
                     .padding(12)
                     .width(Length::Fill)
                     .style(|_theme: &iced::Theme| container::Style {
-                        background: Some(AppColors::BG_SECONDARY.into()),
+                        background: Some(AppColors::bg_secondary().into()),
                         border: iced::Border {
                             radius: 4.0.into(),
-                            color: AppColors::BORDER,
+                            color: AppColors::border(),
                             width: 1.0,
                         },
                         ..Default::default()
@@ -107,7 +107,7 @@ pub fn view<'a>(
     if albums.is_empty() {
         album_list = album_list.push(
             container(
-                text("Loading albums...").size(14).color(AppColors::TEXT_MUTED),
+                text("Loading albums...").size(14).color(AppColors::text_muted()),
             )
             .padding([10, 20]),
         );
@@ -115,9 +115,9 @@ pub fn view<'a>(
 
     for (i, group) in albums.iter().enumerate() {
         let bg = if i % 2 == 0 {
-            AppColors::ROW_EVEN
+            AppColors::row_even()
         } else {
-            AppColors::ROW_ODD
+            AppColors::row_odd()
         };
 
         // group.base is already disc-stripped; art_key_for is a no-op
@@ -135,7 +135,7 @@ pub fn view<'a>(
                     .width(40)
                     .height(40)
                     .style(|_theme: &iced::Theme| container::Style {
-                        background: Some(AppColors::BG_PRIMARY.into()),
+                        background: Some(AppColors::bg_primary().into()),
                         border: iced::Border {
                             radius: 3.0.into(),
                             ..Default::default()
@@ -163,7 +163,7 @@ pub fn view<'a>(
             label = label.push(
                 text(format!("{} discs", group.variants.len()))
                     .size(11)
-                    .color(AppColors::ACCENT),
+                    .color(AppColors::accent()),
             );
         }
 
@@ -177,7 +177,7 @@ pub fn view<'a>(
                 .width(Length::Fill)
                 .style(move |_theme: &iced::Theme, _status| button::Style {
                     background: Some(bg.into()),
-                    text_color: AppColors::TEXT_PRIMARY,
+                    text_color: AppColors::text_primary(),
                     border: iced::Border::default(),
                     ..Default::default()
                 }),

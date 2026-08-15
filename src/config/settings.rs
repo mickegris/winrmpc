@@ -90,22 +90,24 @@ pub struct AppConfig {
     pub default_server: Option<String>,
 }
 
+/// `accent_color` used to live here as a hex string. It was never read, and a
+/// custom accent that stays legible on *both* a near-black and a near-white
+/// background is a real design constraint for a feature nobody asked for — so
+/// it was removed rather than implemented. Dropping a field is
+/// backward-compatible: existing `config.toml`s carrying it still parse, and
+/// the value is simply ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
     pub dark_mode: bool,
-    pub accent_color: String,
 }
 
 /// Written out by hand rather than derived: the derived `Default` would be
-/// `false` / `""`, not the dark theme + accent the app actually ships with.
-/// `AppConfig::default()` defers to this so there's one source of truth.
+/// `false`, and the app has shipped dark since 0.4.0. Every install that
+/// predates the light palette must keep looking the way it did.
 impl Default for ThemeConfig {
     fn default() -> Self {
-        Self {
-            dark_mode: true,
-            accent_color: "#4fc3f7".into(),
-        }
+        Self { dark_mode: true }
     }
 }
 
@@ -483,17 +485,19 @@ port = 6600
         let d = AppConfig::default();
         assert_eq!(config.art_cache_size_mb, d.art_cache_size_mb);
         assert_eq!(config.theme.dark_mode, d.theme.dark_mode);
-        assert_eq!(config.theme.accent_color, d.theme.accent_color);
         assert_eq!(config.mpd_host, d.mpd_host);
         assert_eq!(config.mpd_port, d.mpd_port);
         assert!(!config.radio_stations.is_empty(), "built-ins must be restored");
     }
 
-    /// A partial `[theme]` table must fill the rest from `ThemeConfig`'s own
-    /// Default, not from a derived all-zero one.
+    /// A `[theme]` table carrying the removed `accent_color` must still
+    /// parse — dropping a field has to stay backward-compatible, or every
+    /// config written before 0.4.3 becomes unreadable and (per `load_from`'s
+    /// rules) the app runs on defaults without saving.
     #[test]
-    fn partial_theme_table_keeps_the_shipped_accent() {
-        let src = r#"
+    fn a_theme_table_with_the_removed_accent_field_still_parses() {
+        // r##: the value contains `"#`, which would close an `r#"` literal.
+        let src = r##"
 [[servers]]
 name = "Only"
 host = "10.0.0.1"
@@ -501,10 +505,26 @@ port = 6600
 
 [theme]
 dark_mode = false
-"#;
+accent_color = "#ff0000"
+"##;
         let config: AppConfig = toml::from_str(src).expect("partial theme must parse");
         assert!(!config.theme.dark_mode);
-        assert_eq!(config.theme.accent_color, ThemeConfig::default().accent_color);
+    }
+
+    /// A `[theme]` table with *no* fields falls back to `ThemeConfig`'s own
+    /// Default (dark), not a derived all-false one.
+    #[test]
+    fn an_empty_theme_table_keeps_the_shipped_default() {
+        let src = r#"
+[[servers]]
+name = "Only"
+host = "10.0.0.1"
+port = 6600
+
+[theme]
+"#;
+        let config: AppConfig = toml::from_str(src).expect("empty theme must parse");
+        assert!(config.theme.dark_mode, "the app has shipped dark since 0.4.0");
     }
 
     fn scratch_path(tag: &str) -> PathBuf {

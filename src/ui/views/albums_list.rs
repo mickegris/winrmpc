@@ -36,9 +36,9 @@ pub fn view<'a>(
         let mut list = column![].spacing(0);
         for (i, group) in albums.iter().enumerate() {
             let bg = if i % 2 == 0 {
-                AppColors::ROW_EVEN
+                AppColors::row_even()
             } else {
-                AppColors::ROW_ODD
+                AppColors::row_odd()
             };
 
             // Same cover as the grid, just small — so switching layouts
@@ -69,7 +69,7 @@ pub fn view<'a>(
             .padding(0)
             .style(|_theme: &iced::Theme, _status| button::Style {
                 background: None,
-                text_color: AppColors::TEXT_PRIMARY,
+                text_color: AppColors::text_primary(),
                 border: iced::Border::default(),
                 ..Default::default()
             });
@@ -83,7 +83,7 @@ pub fn view<'a>(
                 label = label.push(
                     text(format!("{} discs", group.variants.len()))
                         .size(11)
-                        .color(AppColors::ACCENT),
+                        .color(AppColors::accent()),
                 );
             }
 
@@ -105,11 +105,11 @@ pub fn view<'a>(
             row![
                 link::back_button(),
                 Space::with_width(12),
-                text(title).size(24).color(AppColors::TEXT_PRIMARY),
+                text(title).size(24).color(AppColors::text_primary()),
                 Space::with_width(12),
                 text(format!("{} albums", albums.len()))
                     .size(14)
-                    .color(AppColors::TEXT_MUTED),
+                    .color(AppColors::text_muted()),
                 Space::with_width(Length::Fill),
                 album_grid::layout_toggle(grid_view),
             ]

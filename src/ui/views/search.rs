@@ -58,11 +58,11 @@ pub fn view<'a>(
                 row![
                     text(album.clone())
                         .size(13)
-                        .color(AppColors::ACCENT),
+                        .color(AppColors::accent()),
                     Space::with_width(8),
                     text(format!("by {artist}"))
                         .size(11)
-                        .color(AppColors::TEXT_MUTED),
+                        .color(AppColors::text_muted()),
                 ]
                 .align_y(Alignment::Center),
             )
@@ -70,8 +70,8 @@ pub fn view<'a>(
             .padding([8, 12])
             .width(Length::Fill)
             .style(|_theme: &iced::Theme, _status| button::Style {
-                background: Some(AppColors::BG_TERTIARY.into()),
-                text_color: AppColors::TEXT_PRIMARY,
+                background: Some(AppColors::bg_tertiary().into()),
+                text_color: AppColors::text_primary(),
                 border: iced::Border::default(),
                 ..Default::default()
             }),
@@ -147,11 +147,11 @@ pub fn view<'a>(
         column![
             container(
                 column![
-                    text("Search").size(24).color(AppColors::TEXT_PRIMARY),
+                    text("Search").size(24).color(AppColors::text_primary()),
                     Space::with_height(12),
                     search_bar,
                     Space::with_height(8),
-                    text(status_text).size(13).color(AppColors::TEXT_MUTED),
+                    text(status_text).size(13).color(AppColors::text_muted()),
                 ]
             )
             .padding(12),

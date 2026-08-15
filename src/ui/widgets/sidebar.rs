@@ -18,11 +18,11 @@ pub fn view<'a>(
     let status_text = if connected {
         text(format!("Connected\n{mpd_addr}"))
             .size(10)
-            .color(AppColors::SUCCESS)
+            .color(AppColors::success())
     } else {
         text("Not connected")
             .size(10)
-            .color(AppColors::ERROR)
+            .color(AppColors::error())
     };
 
     // Server picker — only shown when there are multiple servers.
@@ -39,7 +39,7 @@ pub fn view<'a>(
 
     let version_text = text(concat!("v", env!("CARGO_PKG_VERSION")))
         .size(9)
-        .color(AppColors::TEXT_MUTED);
+        .color(AppColors::text_muted());
 
     let nav = column![
             Space::with_height(12),
@@ -97,7 +97,7 @@ pub fn view<'a>(
     .width(SIDEBAR_WIDTH)
     .height(Length::Fill)
     .style(|_theme: &iced::Theme| container::Style {
-        background: Some(AppColors::BG_SECONDARY.into()),
+        background: Some(AppColors::bg_secondary().into()),
         ..Default::default()
     })
     .into()
@@ -111,14 +111,14 @@ fn nav_button<'a>(
     let is_active = current_view == &target;
 
     let bg = if is_active {
-        AppColors::BG_TERTIARY
+        AppColors::bg_tertiary()
     } else {
-        AppColors::BG_SECONDARY
+        AppColors::bg_secondary()
     };
     let fg = if is_active {
-        AppColors::ACCENT
+        AppColors::accent()
     } else {
-        AppColors::TEXT_SECONDARY
+        AppColors::text_secondary()
     };
 
     button(

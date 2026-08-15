@@ -27,7 +27,7 @@ pub fn view<'a>(
         let mut path_so_far = String::new();
         for (i, part) in parts.iter().enumerate() {
             if i > 0 {
-                r = r.push(text(" / ").size(14).color(AppColors::TEXT_MUTED));
+                r = r.push(text(" / ").size(14).color(AppColors::text_muted()));
                 if i == 1 {
                     path_so_far = part.to_string();
                 } else {
@@ -40,12 +40,12 @@ pub fn view<'a>(
                 path_so_far.clone()
             };
             r = r.push(
-                button(text(*part).size(14).color(AppColors::ACCENT))
+                button(text(*part).size(14).color(AppColors::accent()))
                     .on_press(Message::BrowsePath(target))
                     .padding([2, 4])
                     .style(|_theme: &iced::Theme, _status| button::Style {
                         background: None,
-                        text_color: AppColors::ACCENT,
+                        text_color: AppColors::accent(),
                         border: iced::Border::default(),
                         ..Default::default()
                     }),
@@ -154,14 +154,14 @@ pub fn view<'a>(
                     DirectoryEntry::File(_) => unreachable!(),
                 };
                 let prefix_color = match entry {
-                    DirectoryEntry::Directory(_) => AppColors::ACCENT,
-                    _ => AppColors::SUCCESS,
+                    DirectoryEntry::Directory(_) => AppColors::accent(),
+                    _ => AppColors::success(),
                 };
                 items = items.push(
                     button(
                         row![
                             text(prefix).size(11).width(40).color(prefix_color),
-                            text(label).size(13).color(AppColors::TEXT_PRIMARY),
+                            text(label).size(13).color(AppColors::text_primary()),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),
@@ -171,7 +171,7 @@ pub fn view<'a>(
                     .width(Length::Fill)
                     .style(move |_theme: &iced::Theme, _status| button::Style {
                         background: Some(bg.into()),
-                        text_color: AppColors::TEXT_PRIMARY,
+                        text_color: AppColors::text_primary(),
                         border: iced::Border::default(),
                         ..Default::default()
                     }),
@@ -184,7 +184,7 @@ pub fn view<'a>(
         column![
             container(
                 column![
-                    text("Browse").size(24).color(AppColors::TEXT_PRIMARY),
+                    text("Browse").size(24).color(AppColors::text_primary()),
                     Space::with_height(8),
                     breadcrumb,
                     Space::with_height(8),

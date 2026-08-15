@@ -6,6 +6,7 @@ use crate::mpd::MpdClient;
 use crate::store::Store;
 use crate::mpd::types::{push_recent, *};
 use crate::ui::message::{ArtOutcome, Message, View};
+use crate::ui::theme::colors;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
 use crate::ui::views;
@@ -19,16 +20,16 @@ use std::time::Duration;
 /// One toast: a rounded card, error-coloured or not, dismissible by click.
 fn toast_view(toast: &Toast) -> Element<'_, Message> {
     let (border, fg) = if toast.is_error {
-        (AppColors::ERROR, AppColors::ERROR)
+        (AppColors::error(), AppColors::error())
     } else {
-        (AppColors::BORDER, AppColors::TEXT_PRIMARY)
+        (AppColors::border(), AppColors::text_primary())
     };
     iced::widget::button(
         container(iced::widget::text(toast.text.clone()).size(12).color(fg))
             .padding([8, 14])
             .max_width(420)
             .style(move |_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_TERTIARY.into()),
+                background: Some(AppColors::bg_tertiary().into()),
                 border: iced::Border {
                     radius: 6.0.into(),
                     width: 1.0,
@@ -41,7 +42,7 @@ fn toast_view(toast: &Toast) -> Element<'_, Message> {
     .padding(0)
     .style(|_t: &iced::Theme, _s| iced::widget::button::Style {
         background: None,
-        text_color: AppColors::TEXT_PRIMARY,
+        text_color: AppColors::text_primary(),
         border: iced::Border::default(),
         shadow: iced::Shadow::default(),
     })
@@ -284,6 +285,11 @@ impl App {
             .or_else(|| config.servers.first().map(|s| s.name.clone()))
             .unwrap_or_else(|| "Default".into());
         let client = MpdClient::new(&config.server_addr(&active_server));
+        // Before anything is drawn: the palette is a process global, so it has
+        // to reflect the saved preference before the first frame rather than
+        // after the first toggle.
+        colors::set_dark_mode(config.theme.dark_mode);
+
         // Log both resolved paths at startup so they land in the in-app Log
         // view. This is the zero-UI answer to "where does this thing keep its
         // settings" — on macOS the directory is `~/Library/Application
@@ -431,8 +437,38 @@ impl App {
         (app, Task::perform(async {}, |_| Message::Connect))
     }
 
+    /// The theme iced's **own** widgets style themselves from — `pick_list`,
+    /// `slider`, `text_input`, `scrollable`, default buttons, the menu popup.
+    ///
+    /// Swapping only `AppColors` would give a light app with dark dropdowns
+    /// and dark text inputs, because those don't go through `AppColors` at
+    /// all. Both halves are built from the same `Palette` so they can't drift.
+    ///
+    /// Cached: this is called on every redraw, and `Theme::custom` allocates a
+    /// `String` and an `Arc` and derives a full extended palette each time.
     pub fn theme(&self) -> Theme {
-        Theme::Dark
+        use std::sync::OnceLock;
+        static DARK_THEME: OnceLock<Theme> = OnceLock::new();
+        static LIGHT_THEME: OnceLock<Theme> = OnceLock::new();
+
+        fn build(name: &str, p: &colors::Palette) -> Theme {
+            Theme::custom(
+                name.to_string(),
+                iced::theme::Palette {
+                    background: p.bg_primary,
+                    text: p.text_primary,
+                    primary: p.accent,
+                    success: p.success,
+                    danger: p.error,
+                },
+            )
+        }
+
+        if colors::is_dark_mode() {
+            DARK_THEME.get_or_init(|| build("winrmpc dark", &colors::DARK)).clone()
+        } else {
+            LIGHT_THEME.get_or_init(|| build("winrmpc light", &colors::LIGHT)).clone()
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -2369,6 +2405,12 @@ impl App {
                     Task::none()
                 }
             }
+            Message::SetDarkMode(dark) => {
+                self.config.theme.dark_mode = dark;
+                colors::set_dark_mode(dark);
+                self.config.save_and_log("appearance");
+                Task::none()
+            }
             Message::DismissToast => {
                 self.toasts.pop_front();
                 Task::none()
@@ -2680,7 +2722,7 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_PRIMARY.into()),
+                background: Some(AppColors::bg_primary().into()),
                 ..Default::default()
             })
             .into()
@@ -3563,15 +3605,15 @@ fn settings_view(&self) -> Element<'_, Message> {
         let error_text: Element<'_, Message> = match &self.last_error {
             Some(e) => text(format!("Status: {e}"))
                 .size(13)
-                .color(AppColors::WARNING)
+                .color(AppColors::warning())
                 .into(),
             None => Space::with_height(0).into(),
         };
 
         let conn_badge = if self.connected {
-            text("Connected").size(13).color(AppColors::SUCCESS)
+            text("Connected").size(13).color(AppColors::success())
         } else {
-            text("Disconnected").size(13).color(AppColors::ERROR)
+            text("Disconnected").size(13).color(AppColors::error())
         };
 
         // Server list rows
@@ -3584,9 +3626,9 @@ fn settings_view(&self) -> Element<'_, Message> {
             let is_renaming = self.settings_renaming.as_deref() == Some(server.name.as_str());
 
             let row_bg = if is_active {
-                AppColors::BG_TERTIARY
+                AppColors::bg_tertiary()
             } else {
-                AppColors::BG_SECONDARY
+                AppColors::bg_secondary()
             };
 
             let row_content: Element<'_, Message> = if is_renaming {
@@ -3612,15 +3654,15 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .into()
             } else {
                 let name_text: Element<'_, Message> = if is_active {
-                    text(&server.name).size(13).color(AppColors::ACCENT).into()
+                    text(&server.name).size(13).color(AppColors::accent()).into()
                 } else {
-                    text(&server.name).size(13).color(AppColors::TEXT_PRIMARY).into()
+                    text(&server.name).size(13).color(AppColors::text_primary()).into()
                 };
 
-                let addr_text = text(server.addr()).size(11).color(AppColors::TEXT_MUTED);
+                let addr_text = text(server.addr()).size(11).color(AppColors::text_muted());
 
                 let connect_btn: Element<'_, Message> = if is_active {
-                    icon::icon_sized(icon::DOT, 13).color(AppColors::SUCCESS).into()
+                    icon::icon_sized(icon::DOT, 13).color(AppColors::success()).into()
                 } else {
                     button(text("Connect").size(11))
                         .on_press(Message::SwitchServer(server.name.clone()))
@@ -3629,12 +3671,12 @@ fn settings_view(&self) -> Element<'_, Message> {
                 };
 
                 let default_btn: Element<'_, Message> = if is_default {
-                    container(text("Default").size(10).color(AppColors::ACCENT))
+                    container(text("Default").size(10).color(AppColors::accent()))
                         .padding([3, 8])
                         .style(|_t: &iced::Theme| container::Style {
                             background: None,
                             border: iced::Border {
-                                color: AppColors::ACCENT,
+                                color: AppColors::accent(),
                                 width: 1.0,
                                 radius: 3.0.into(),
                             },
@@ -3649,12 +3691,12 @@ fn settings_view(&self) -> Element<'_, Message> {
                             background: None,
                             text_color: match s {
                                 button::Status::Hovered | button::Status::Pressed => {
-                                    AppColors::TEXT_PRIMARY
+                                    AppColors::text_primary()
                                 }
-                                _ => AppColors::TEXT_MUTED,
+                                _ => AppColors::text_muted(),
                             },
                             border: iced::Border {
-                                color: AppColors::TEXT_MUTED,
+                                color: AppColors::text_muted(),
                                 width: 1.0,
                                 radius: 3.0.into(),
                             },
@@ -3671,9 +3713,9 @@ fn settings_view(&self) -> Element<'_, Message> {
                             background: None,
                             text_color: match s {
                                 button::Status::Hovered | button::Status::Pressed => {
-                                    AppColors::TEXT_PRIMARY
+                                    AppColors::text_primary()
                                 }
-                                _ => AppColors::TEXT_MUTED,
+                                _ => AppColors::text_muted(),
                             },
                             border: iced::Border::default(),
                             shadow: iced::Shadow::default(),
@@ -3691,7 +3733,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                         .padding([3, 8])
                         .style(|_t: &iced::Theme, _s: button::Status| button::Style {
                             background: None,
-                            text_color: AppColors::TEXT_MUTED,
+                            text_color: AppColors::text_muted(),
                             border: iced::Border::default(),
                             shadow: iced::Shadow::default(),
                         })
@@ -3725,7 +3767,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                                  width: u16,
                                  on_input: fn(String) -> Message| {
                         column![
-                            text(label).size(10).color(AppColors::TEXT_MUTED),
+                            text(label).size(10).color(AppColors::text_muted()),
                             text_input(placeholder, value)
                                 .on_input(on_input)
                                 .on_submit(Message::ConfirmEditServer)
@@ -3795,11 +3837,11 @@ fn settings_view(&self) -> Element<'_, Message> {
 
         // Add-server form
         let add_form = column![
-            text("Add server").size(14).color(AppColors::TEXT_SECONDARY),
+            text("Add server").size(14).color(AppColors::text_secondary()),
             Space::with_height(6),
             row![
                 column![
-                    text("Name").size(11).color(AppColors::TEXT_MUTED),
+                    text("Name").size(11).color(AppColors::text_muted()),
                     text_input("My Server", &self.settings_server_name)
                         .on_input(Message::ServerNameChanged)
                         .padding(6)
@@ -3809,7 +3851,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .width(Length::FillPortion(2)),
                 Space::with_width(6),
                 column![
-                    text("Host").size(11).color(AppColors::TEXT_MUTED),
+                    text("Host").size(11).color(AppColors::text_muted()),
                     text_input("127.0.0.1", &self.settings_host)
                         .on_input(Message::HostChanged)
                         .padding(6)
@@ -3819,7 +3861,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .width(Length::FillPortion(3)),
                 Space::with_width(6),
                 column![
-                    text("Port").size(11).color(AppColors::TEXT_MUTED),
+                    text("Port").size(11).color(AppColors::text_muted()),
                     text_input("6600", &self.settings_port)
                         .on_input(Message::PortChanged)
                         .padding(6)
@@ -3829,7 +3871,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .width(70),
                 Space::with_width(6),
                 column![
-                    text("Password").size(11).color(AppColors::TEXT_MUTED),
+                    text("Password").size(11).color(AppColors::text_muted()),
                     text_input("", &self.settings_password)
                         .on_input(Message::PasswordChanged)
                         .padding(6)
@@ -3862,7 +3904,7 @@ fn settings_view(&self) -> Element<'_, Message> {
         };
 
         let size_limit_row = row![
-            text("Limit").size(11).color(AppColors::TEXT_MUTED),
+            text("Limit").size(11).color(AppColors::text_muted()),
             Space::with_width(8),
             text_input("500", &self.settings_cache_size)
                 .on_input(Message::ArtCacheSizeChanged)
@@ -3871,7 +3913,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .size(12)
                 .width(70),
             Space::with_width(4),
-            text("MB").size(11).color(AppColors::TEXT_MUTED),
+            text("MB").size(11).color(AppColors::text_muted()),
             Space::with_width(8),
             button(text("Save").size(11))
                 .on_press(Message::SaveArtCacheSize)
@@ -3883,9 +3925,9 @@ fn settings_view(&self) -> Element<'_, Message> {
             row![
                 text("Clear all cached art, lyrics and biographies?")
                     .size(12)
-                    .color(AppColors::TEXT_SECONDARY),
+                    .color(AppColors::text_secondary()),
                 Space::with_width(10),
-                button(text("Clear").size(12).color(AppColors::ERROR))
+                button(text("Clear").size(12).color(AppColors::error()))
                     .on_press(Message::ClearCaches)
                     .padding([4, 12]),
                 Space::with_width(6),
@@ -3897,7 +3939,7 @@ fn settings_view(&self) -> Element<'_, Message> {
             .into()
         } else {
             row![
-                text(size_label).size(12).color(AppColors::TEXT_MUTED),
+                text(size_label).size(12).color(AppColors::text_muted()),
                 Space::with_width(Length::Fill),
                 button(text("Clear cache").size(12))
                     .on_press(Message::ClearCaches)
@@ -3908,7 +3950,7 @@ fn settings_view(&self) -> Element<'_, Message> {
         };
 
         let cache_section = column![
-            text("Cache").size(16).color(AppColors::TEXT_PRIMARY),
+            text("Cache").size(16).color(AppColors::text_primary()),
             Space::with_height(4),
             text(
                 "Album art, lyrics and Wikipedia biographies are cached on disk. \
@@ -3917,7 +3959,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                  MusicBrainz takes a while. Play history is not affected."
             )
             .size(11)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
             Space::with_height(8),
             size_limit_row,
             Space::with_height(8),
@@ -3942,20 +3984,20 @@ fn settings_view(&self) -> Element<'_, Message> {
             let path_line: Element<'_, Message> = match &path {
                 Some(p) => text(p.clone())
                     .size(11)
-                    .color(AppColors::TEXT_SECONDARY)
+                    .color(AppColors::text_secondary())
                     .into(),
                 None => text("unavailable — this will not be saved this session")
                     .size(11)
-                    .color(AppColors::ERROR)
+                    .color(AppColors::error())
                     .into(),
             };
             let mut left = column![
-                text(label).size(12).color(AppColors::TEXT_PRIMARY),
+                text(label).size(12).color(AppColors::text_primary()),
                 path_line,
             ]
             .spacing(1);
             if let Some(note) = note {
-                left = left.push(text(note).size(10).color(AppColors::WARNING));
+                left = left.push(text(note).size(10).color(AppColors::warning()));
             }
 
             let mut r = row![left.width(Length::Fill)].align_y(iced::Alignment::Center);
@@ -3969,10 +4011,46 @@ fn settings_view(&self) -> Element<'_, Message> {
             r.into()
         };
 
+        // --- Appearance section ---
+        let dark = self.config.theme.dark_mode;
+        let mode_btn = |label: &'static str, is_dark: bool| {
+            let selected = dark == is_dark;
+            button(text(label).size(12))
+                .on_press(Message::SetDarkMode(is_dark))
+                .padding([4, 14])
+                .style(move |_t: &iced::Theme, _s: button::Status| button::Style {
+                    background: Some(if selected {
+                        AppColors::accent().into()
+                    } else {
+                        AppColors::bg_tertiary().into()
+                    }),
+                    text_color: if selected {
+                        AppColors::bg_primary()
+                    } else {
+                        AppColors::text_muted()
+                    },
+                    border: iced::Border {
+                        radius: 3.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+        };
+        let appearance_section = column![
+            text("Appearance").size(16).color(AppColors::text_primary()),
+            Space::with_height(4),
+            text("Applies immediately and is remembered.")
+                .size(11)
+                .color(AppColors::text_muted()),
+            Space::with_height(8),
+            row![mode_btn("Dark", true), mode_btn("Light", false)].spacing(6),
+        ]
+        .spacing(2);
+
         let config_path = AppConfig::config_path();
         let cache_dir = AppConfig::cache_dir();
         let storage_section = column![
-            text("Storage").size(16).color(AppColors::TEXT_PRIMARY),
+            text("Storage").size(16).color(AppColors::text_primary()),
             Space::with_height(4),
             text(
                 "Where winrmpc keeps your settings and its cache. Both paths \
@@ -3980,7 +4058,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                  WINRMPC_CACHE_DIR environment variables."
             )
             .size(11)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
             Space::with_height(8),
             storage_row(
                 "Settings",
@@ -4008,20 +4086,22 @@ fn settings_view(&self) -> Element<'_, Message> {
 
         let content = column![
             row![
-                text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
+                text("Settings").size(24).color(AppColors::text_primary()),
                 Space::with_width(Length::Fill),
                 conn_badge,
             ]
             .align_y(iced::Alignment::Center),
             error_text,
             Space::with_height(20),
-            text("Servers").size(16).color(AppColors::TEXT_PRIMARY),
+            text("Servers").size(16).color(AppColors::text_primary()),
             Space::with_height(8),
             server_list,
             Space::with_height(12),
             add_form,
             Space::with_height(24),
             cache_section,
+            Space::with_height(24),
+            appearance_section,
             Space::with_height(24),
             storage_section,
         ]

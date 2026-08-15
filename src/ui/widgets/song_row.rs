@@ -85,7 +85,7 @@ pub fn number<'a>(label: impl text::IntoFragment<'a>, size: u16) -> Element<'a, 
         .size(size)
         .width(Length::Fixed(NUMBER_WIDTH as f32))
         .align_x(iced::alignment::Horizontal::Right)
-        .color(AppColors::TEXT_MUTED)
+        .color(AppColors::text_muted())
         .into()
 }
 
@@ -103,7 +103,7 @@ pub fn duration<'a>(label: impl text::IntoFragment<'a>, size: u16) -> Element<'a
         .size(size)
         .width(Length::Fixed(DURATION_WIDTH as f32))
         .align_x(iced::alignment::Horizontal::Right)
-        .color(AppColors::TEXT_MUTED)
+        .color(AppColors::text_muted())
         .into()
 }
 
@@ -163,20 +163,20 @@ pub fn is_current_album(
 /// Background for a list row, accounting for zebra striping and playing state.
 pub fn row_bg(index: usize, is_current: bool) -> Color {
     if is_current {
-        AppColors::ROW_PLAYING
+        AppColors::row_playing()
     } else if index % 2 == 0 {
-        AppColors::ROW_EVEN
+        AppColors::row_even()
     } else {
-        AppColors::ROW_ODD
+        AppColors::row_odd()
     }
 }
 
 /// Title colour for a list row.
 pub fn title_color(is_current: bool) -> Color {
     if is_current {
-        AppColors::ACCENT
+        AppColors::accent()
     } else {
-        AppColors::TEXT_PRIMARY
+        AppColors::text_primary()
     }
 }
 
@@ -185,7 +185,7 @@ pub fn title_color(is_current: bool) -> Color {
 pub fn playing_marker<'a>(is_current: bool) -> Element<'a, Message> {
     let inner: Element<'a, Message> = if is_current {
         icon::icon_sized(icon::PLAY, 11)
-            .color(AppColors::ACCENT)
+            .color(AppColors::accent())
             .into()
     } else {
         iced::widget::Space::with_width(0).into()
@@ -255,20 +255,32 @@ mod tests {
         assert!(!is_current_uri("cdda:///2", Some("cdda:///3")));
     }
 
-    #[test]
-    fn playing_row_overrides_zebra_striping_in_both_parities() {
-        assert_eq!(row_bg(0, true), AppColors::ROW_PLAYING);
-        assert_eq!(row_bg(1, true), AppColors::ROW_PLAYING);
-        assert_eq!(row_bg(0, false), AppColors::ROW_EVEN);
-        assert_eq!(row_bg(1, false), AppColors::ROW_ODD);
+    /// Colour assertions take the mode lock — see `theme::colors`.
+    fn colour_guard() -> std::sync::MutexGuard<'static, ()> {
+        crate::ui::theme::colors::TEST_MODE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
+    fn playing_row_overrides_zebra_striping_in_both_parities() {
+        let _guard = colour_guard();
+        assert_eq!(row_bg(0, true), AppColors::row_playing());
+        assert_eq!(row_bg(1, true), AppColors::row_playing());
+        assert_eq!(row_bg(0, false), AppColors::row_even());
+        assert_eq!(row_bg(1, false), AppColors::row_odd());
+    }
+
+    /// Superseded for palette coverage by
+    /// `theme::colors::tests::the_playing_row_is_distinguishable_in_both_palettes`,
+    /// which checks light *and* dark. Kept because it asserts the property
+    /// through the accessors the views actually call.
+    #[test]
     fn the_playing_row_colour_is_distinct_from_both_stripes() {
-        // A highlight equal to either stripe is invisible on half the rows.
-        assert_ne!(AppColors::ROW_PLAYING, AppColors::ROW_EVEN);
-        assert_ne!(AppColors::ROW_PLAYING, AppColors::ROW_ODD);
-        assert_ne!(AppColors::ROW_PLAYING, AppColors::BG_HOVER);
+        let _guard = colour_guard();
+        assert_ne!(AppColors::row_playing(), AppColors::row_even());
+        assert_ne!(AppColors::row_playing(), AppColors::row_odd());
+        assert_ne!(AppColors::row_playing(), AppColors::bg_hover());
     }
 
     #[test]
@@ -346,7 +358,8 @@ mod tests {
 
     #[test]
     fn title_colour_changes_with_playing_state() {
-        assert_eq!(title_color(true), AppColors::ACCENT);
-        assert_eq!(title_color(false), AppColors::TEXT_PRIMARY);
+        let _guard = colour_guard();
+        assert_eq!(title_color(true), AppColors::accent());
+        assert_eq!(title_color(false), AppColors::text_primary());
     }
 }
