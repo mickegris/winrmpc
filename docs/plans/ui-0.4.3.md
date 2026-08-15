@@ -13,8 +13,12 @@ player that can't be paused from the keyboard.
 |---|---|---|
 | 1 | [Icons for the buttons that are still text](icon-buttons-and-transport-controls.md) | requested |
 | 2 | [Every artist and album name should be a link](clickable-artist-album-links.md) | requested |
-| 3 | [Keyboard shortcuts](keyboard-shortcuts.md) | proposed |
-| 4 | [Album-level highlighting, and finding the playing track](album-highlighting-and-scroll-to-playing.md) | proposed — finishes 0.4.2 deferrals |
+| 3 | [Light mode / dark mode](theme-light-and-dark.md) | requested |
+| 4 | [macOS `.app` bundle](macos-app-bundle.md) | requested — finishes 0.4.2 deferrals |
+| 5 | [Keyboard shortcuts](keyboard-shortcuts.md) | proposed |
+| 6 | [Album-level highlighting, and finding the playing track](album-highlighting-and-scroll-to-playing.md) | proposed — finishes 0.4.2 deferrals |
+| 7 | [Errors the user never sees](error-and-status-feedback.md) | proposed |
+| 8 | [Window size, position, and where you left off](window-and-session-state.md) | proposed |
 
 ## What each is really about
 
@@ -33,25 +37,62 @@ That needs a layout decision, not a find-and-replace. The audit also turned up a
 genuine bug — opening a multi-disc album from **Genre detail** shows only some of
 its tracks, because that call site passes `artist: None`.
 
-**3 — Keyboard shortcuts.** `grep -rn "keyboard\|on_key\|Key::" src/` returns
+**3 — Light/dark.** Resolves config that has been dead since 0.4.0:
+`theme.dark_mode` and `theme.accent_color` are persisted and **nothing reads
+them**. The difficulty isn't the palette, it's that `AppColors` is 16 `const`
+colours used **319 times across 27 files**, mostly in `.color(...)` calls with
+no theme in scope. Also recommends deleting `accent_color` rather than
+implementing it.
+
+**4 — macOS bundle.** Steps D/E of
+[app-icon-cross-platform](app-icon-cross-platform.md). macOS still has no dock
+icon and ships no binary. One question the original plan left open is now
+answered: it said the `icns` crate would only be worth it "if a CI job
+cross-builds" — CI now runs on real macOS, so `iconutil` is available and no
+extra crate is needed. The plan is blunt about Gatekeeper: an unsigned `.app`
+reports itself as *damaged*, and signing needs a paid Apple account.
+
+**5 — Keyboard shortcuts.** `grep -rn "keyboard\|on_key\|Key::" src/` returns
 nothing: there is no key handling in the app at all. The hard part isn't adding
 a subscription, it's making sure `Space` pauses playback everywhere *except*
 while someone is typing in one of the app's dozen text inputs.
 
-**4 — Album highlighting + jump-to-current.** Steps D and E of
+**6 — Album highlighting + jump-to-current.** Steps D and E of
 [current-song-highlighting](current-song-highlighting.md), deferred out of 0.4.2
 on purpose. D's risk has since dropped, because 0.4.2's layout work already
 routed every list through `widgets/song_row.rs`.
 
+**7 — Error surfacing.** `last_error` is written from seven places and rendered
+from **one** — inside `settings_view()`. An error is therefore only visible if
+you happen to be on the Settings screen when it happens. Everything else fails
+silently, with the Log view as the only trace.
+
+**8 — Window state.** Every launch is 1200×800 wherever the WM puts it; resize
+and position never survive a restart. The smallest plan here, and the one with
+the sharpest failure mode to avoid — restoring a position onto a monitor that
+is no longer attached.
+
 ## Ordering
 
-**2 → 1 → 4 → 3.**
+**2 → 1 → 6 → 7 → 3 → 8 → 5 → 4.**
 
-Plan 2 is the one with a real bug in it and the one the user asked about first.
-Plan 1 is mostly mechanical once the font is extended. Plan 4 builds on
-`song_row`, which plan 2 will also have been editing. Plan 3 is last because it
-is the only one whose approach is still contingent on reading the vendored iced
-source — its binding table is a proposal, not a verified design.
+- **2 first** — it contains a real bug (multi-disc albums opened from Genres
+  show only some of their tracks), not just a missing affordance.
+- **1 then 6** — both are mechanical once their foundation exists, and both
+  touch `song_row`/`album_grid`, which plan 2 will already have opened.
+- **7** is self-contained and makes every later plan easier to debug.
+- **3 (light/dark) deliberately late.** It renames colour access in 27 files;
+  doing it before 1, 2, 6 and 7 means rebasing all of them across that rename.
+  Do it once the view churn has settled.
+- **8 and 5** are both contingent on reading the vendored iced source (window
+  events; keyboard focus). Either could move earlier once that's checked.
+- **4 (macOS) last, and separable.** It touches no view code at all — it is
+  packaging plus a CI job, and could equally be done first by someone with a
+  Mac to test on. It is the only plan here that **cannot be verified from this
+  machine**.
+
+Nothing here has to ship as one release. Plans 1, 2, 6, 7 are a coherent 0.4.3;
+3, 4, 5, 8 could each land on their own.
 
 ## Considered and not planned
 
@@ -65,21 +106,14 @@ in this round:
   virtualisation — roughly 3200 widgets laid out every frame on an 800-album
   library. This is a **performance** plan, not a UI one, and it should be
   written the moment anyone reports the Albums view feeling slow. Nobody has.
-- **The dead `theme` config.** `AppConfig::theme` (`dark_mode`, `accent_color`)
-  is persisted, has no UI, and nothing reads it — `App::theme()` returns
-  `Theme::Dark` unconditionally. It is either a light-mode feature or a
-  deletion, and shipping a toggle that does nothing would be worse than either.
-  Needs a decision from the user before it can be planned.
 - **Search sections and batch select.** Deferred from
   [library-album-identity-and-multidisc](library-album-identity-and-multidisc.md)
   Part D and still open.
 - **Media-key / MPRIS support.** Genuinely wanted for a background music player
   on Linux, and much larger than in-app shortcuts — a per-platform OS
   integration. Its own plan, later.
-- **macOS `.app` bundle.** Steps D/E of
-  [app-icon-cross-platform](app-icon-cross-platform.md); macOS still has no dock
-  icon. Packaging rather than UI, but it is the most visible remaining gap from
-  0.4.2.
+- **Drag-and-drop queue reordering.** The move-up/move-down arrows work; drag
+  would be nicer and is a much bigger piece of iced work. Not now.
 
 ## Verification stance
 
