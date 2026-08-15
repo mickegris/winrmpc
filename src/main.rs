@@ -54,8 +54,19 @@ fn main() -> iced::Result {
 }
 
 fn window_settings() -> iced::window::Settings {
+    // `window_settings()` runs in `main`, before `App::new` constructs the app
+    // and loads the config — so the config is read here too. Reading a small
+    // TOML twice at startup is cheaper than restructuring startup around it.
+    //
+    // Position is deliberately not restored; see `WindowConfig`.
+    let window = config::AppConfig::load().window;
+    let (width, height) = window.restored_size();
+
     iced::window::Settings {
-        size: iced::Size::new(1200.0, 800.0),
+        size: iced::Size::new(width, height),
+        // `window::Settings` has no `maximized` field in iced 0.13, so the
+        // maximised state is applied *after* the window opens — see
+        // `App::new`'s startup task.
         // Below roughly this, Now Playing stops fitting: the art (300px)
         // plus the song info plus the lyrics pane run out of width, and
         // the recently-played strip runs out of height and starts
@@ -67,6 +78,10 @@ fn window_settings() -> iced::window::Settings {
         // from installed packaging instead — see `packaging/linux/` and the
         // table in `src/icon.rs`.
         icon: icon::make_icon(),
+        // Close is handled by the app so it can persist window geometry
+        // first — see `Message::WindowCloseRequested`. Every path through
+        // that handler ends in `window::close`.
+        exit_on_close_request: false,
         platform_specific: platform_specific(),
         ..Default::default()
     }

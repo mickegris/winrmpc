@@ -84,6 +84,10 @@ pub struct AppConfig {
     pub album_grid_view: bool,
 
     // Multi-server
+    /// Window geometry, restored at launch. See [`WindowConfig`].
+    #[serde(default)]
+    pub window: WindowConfig,
+
     #[serde(default)]
     pub servers: Vec<MpdServer>,
     #[serde(default)]
@@ -108,6 +112,51 @@ pub struct ThemeConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self { dark_mode: true }
+    }
+}
+
+/// Window geometry remembered between launches.
+///
+/// **Position is deliberately absent.** iced 0.13 exposes no way to enumerate
+/// the monitors that exist at restore time, so a saved position cannot be
+/// validated — and the failure is unrecoverable from inside the app: the
+/// window reopens on a display that is no longer attached, is invisible, and
+/// the only fix is hand-editing this file. Size is the actual irritation;
+/// position is the part that can strand you.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct WindowConfig {
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            width: 1200.0,
+            height: 800.0,
+            maximized: false,
+        }
+    }
+}
+
+impl WindowConfig {
+    /// The minimum the window may be restored to.
+    ///
+    /// Matches `main.rs`'s `min_size`. A saved size below it is **clamped, not
+    /// honoured** — iced would let a smaller value through, and below roughly
+    /// this Now Playing stops fitting (iced widgets don't clip their parent,
+    /// so too-small overlaps rather than degrading).
+    pub const MIN_W: f32 = 1000.0;
+    pub const MIN_H: f32 = 700.0;
+
+    /// The size to actually open at: the saved one, clamped, and sanity-checked
+    /// against nonsense (a zero or NaN from a hand-edited file).
+    pub fn restored_size(&self) -> (f32, f32) {
+        let w = if self.width.is_finite() { self.width } else { 1200.0 };
+        let h = if self.height.is_finite() { self.height } else { 800.0 };
+        (w.max(Self::MIN_W), h.max(Self::MIN_H))
     }
 }
 
@@ -179,6 +228,7 @@ impl Default for AppConfig {
             cd_device: None,
             recent_albums: Vec::new(),
             album_grid_view: false,
+            window: WindowConfig::default(),
             servers: vec![server],
             default_server: Some("Default".into()),
         }
@@ -525,6 +575,47 @@ port = 6600
 "#;
         let config: AppConfig = toml::from_str(src).expect("empty theme must parse");
         assert!(config.theme.dark_mode, "the app has shipped dark since 0.4.0");
+    }
+
+    #[test]
+    fn a_restored_size_below_the_minimum_is_clamped() {
+        // iced would honour a smaller size; below roughly this, Now Playing
+        // stops fitting and — since iced widgets don't clip their parent —
+        // overlaps rather than degrading.
+        let tiny = WindowConfig { width: 200.0, height: 100.0, maximized: false };
+        assert_eq!(
+            tiny.restored_size(),
+            (WindowConfig::MIN_W, WindowConfig::MIN_H)
+        );
+    }
+
+    #[test]
+    fn a_saved_size_is_restored_as_is_when_it_is_big_enough() {
+        let saved = WindowConfig { width: 1600.0, height: 980.0, maximized: false };
+        assert_eq!(saved.restored_size(), (1600.0, 980.0));
+    }
+
+    #[test]
+    fn nonsense_geometry_from_a_hand_edited_file_falls_back() {
+        let bad = WindowConfig { width: f32::NAN, height: 0.0, maximized: false };
+        let (w, h) = bad.restored_size();
+        assert!(w.is_finite() && h.is_finite());
+        assert!(w >= WindowConfig::MIN_W && h >= WindowConfig::MIN_H);
+    }
+
+    /// The window table is `#[serde(default)]` like everything else, so a
+    /// config written before 0.4.3 keeps parsing and opens at the old size.
+    #[test]
+    fn a_config_without_a_window_table_uses_the_shipped_size() {
+        let src = r#"
+[[servers]]
+name = "Only"
+host = "10.0.0.1"
+port = 6600
+"#;
+        let config: AppConfig = toml::from_str(src).expect("must parse");
+        assert_eq!(config.window, WindowConfig::default());
+        assert_eq!(config.window.restored_size(), (1200.0, 800.0));
     }
 
     fn scratch_path(tag: &str) -> PathBuf {

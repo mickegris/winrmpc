@@ -272,6 +272,12 @@ pub struct App {
     /// slot: two failures in quick succession (a bulk enqueue hitting several
     /// bad URIs) must not have the second silently replace the first.
     toasts: std::collections::VecDeque<Toast>,
+    /// Latest window size seen from `window::resize_events`.
+    ///
+    /// Kept in memory and written **once, on close** rather than on every
+    /// event: a drag emits a resize per frame, and rewriting the TOML dozens
+    /// of times a second would be pathological.
+    window_size: (f32, f32),
 }
 
 impl App {
@@ -432,9 +438,27 @@ impl App {
 
             last_error: None,
             toasts: std::collections::VecDeque::new(),
+            window_size: config.window.restored_size(),
         };
 
-        (app, Task::perform(async {}, |_| Message::Connect))
+        // `window::Settings` has no `maximized` field in 0.13, so it can only
+        // be applied once the window exists.
+        let restore_maximized: Task<Message> = if config.window.maximized {
+            iced::window::get_latest().then(|id| match id {
+                Some(id) => iced::window::maximize(id, true),
+                None => Task::none(),
+            })
+        } else {
+            Task::none()
+        };
+
+        (
+            app,
+            Task::batch([
+                restore_maximized,
+                Task::perform(async {}, |_| Message::Connect),
+            ]),
+        )
     }
 
     /// The theme iced's **own** widgets style themselves from — `pick_list`,
@@ -483,6 +507,13 @@ impl App {
         if self.current_view == View::Snapcast {
             subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Message::SnapcastPollTick));
         }
+
+        // Window geometry: resizes update in-memory state, the close request
+        // is what persists it. `exit_on_close_request` stays true, so this is
+        // best-effort — but a resize is followed by a close often enough that
+        // it lands in practice.
+        subs.push(iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size)));
+        subs.push(iced::window::close_requests().map(Message::WindowCloseRequested));
 
         Subscription::batch(subs)
     }
@@ -2404,6 +2435,36 @@ impl App {
                 } else {
                     Task::none()
                 }
+            }
+            Message::WindowResized(size) => {
+                self.window_size = (size.width, size.height);
+                Task::none()
+            }
+            // Close is intercepted (`exit_on_close_request: false`) so the
+            // maximised state can be *queried* before the window goes — it is
+            // only reachable through an async `Task`, and by the time a normal
+            // close has propagated there is nothing left to ask.
+            //
+            // Both arms end in `window::close`, so a failure anywhere in here
+            // still closes the app. An unclosable window would be a far worse
+            // bug than a forgotten window size.
+            Message::WindowCloseRequested(id) => iced::window::get_maximized(id)
+                .map(move |maximized| Message::WindowClosing(id, maximized)),
+            Message::WindowClosing(id, maximized) => {
+                // A maximised window reports its *restored* size on some
+                // platforms and its full-screen size on others, so don't
+                // overwrite the saved size while maximised — reopening
+                // un-maximised would then use the screen-sized value.
+                if !maximized {
+                    let (w, h) = self.window_size;
+                    self.config.window.width = w;
+                    self.config.window.height = h;
+                }
+                if self.config.window.maximized != maximized {
+                    self.config.window.maximized = maximized;
+                }
+                self.config.save_and_log("window geometry");
+                iced::window::close(id)
             }
             Message::SetDarkMode(dark) => {
                 self.config.theme.dark_mode = dark;

@@ -271,6 +271,13 @@ pub enum Message {
     /// Switch between the light and dark palettes. Applies immediately —
     /// a theme toggle that needs a restart is worse than none.
     SetDarkMode(bool),
+    /// The window was resized. Recorded in memory; written on close.
+    WindowResized(iced::Size),
+    /// The window wants to close. Intercepted so the maximised state can be
+    /// queried before it goes.
+    WindowCloseRequested(iced::window::Id),
+    /// The queried maximised state came back; persist and close for real.
+    WindowClosing(iced::window::Id, bool),
     Tick,
     RefreshAll,
     Noop,
