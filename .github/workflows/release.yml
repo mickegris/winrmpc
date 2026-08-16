@@ -20,11 +20,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Tests run before anything is built, on all three platforms. Windows and
-  # macOS have never run this suite — the whole 0.4.2 batch is about platform
-  # differences that are silent rather than loud, so a green run here is worth
-  # more than usual. macOS is tested but not shipped: there is no .app bundle
-  # yet (see docs/plans/app-icon-cross-platform.md, steps D and E).
+  # Tests run before anything is built, and on every platform that ships a
+  # binary — Windows, Linux and macOS. This gate exists because the bugs it is
+  # meant to catch are silent rather than loud: the first run it ever did found
+  # a test asserting `/proc` was unwritable, which is true on Linux and false
+  # on Windows, where the save simply succeeded.
+  #
+  # `fail-fast: false` so one platform's failure still reports the others.
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -69,8 +71,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          # The macOS job builds both architectures itself (bundle.sh lipos
-          # them), so its `target` is only a label for the artifact name.
+          # macOS ships a universal .app bundle: `packaging/macos/bundle.sh`
+          # builds both architectures and `lipo`s them, so this `target` is
+          # only a label for the artifact name, not a rustc target triple.
+          # (An .app is the *only* way macOS gets a Dock icon — winit's
+          # set_window_icon is a no-op there.)
           - os: macos-latest
             target: universal-apple-darwin
     steps:
