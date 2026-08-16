@@ -38,6 +38,27 @@ earlier runs got 14/14 — the TLS check in the same run got **HTTP 503** from
 MusicBrainz, so that is near-certainly the service, not the matching code.
 Re-run before treating it as a regression.
 
+## Pending for 0.4.4 — mention in the release notes
+
+**`install.sh` in the v0.4.3 Linux tarball does not install the binary.** It
+only knew the git-checkout layout (`target/release/winrmpc`), while the tarball
+puts the binary in the script's *parent* directory with no `target/` at all —
+so it printed "run `cargo build --release` first" to someone who had just
+downloaded a prebuilt binary, and installed a `.desktop` entry pointing at an
+executable that was never put on PATH. The icon appears; clicking it does
+nothing.
+
+Fixed on `main` (PR #25) and verified against the actual released tarball, but
+**the published v0.4.3 asset still carries the broken script**. Anyone
+installing from that download needs to copy the binary onto their PATH by hand:
+
+```bash
+cp winrmpc-v0.4.3-linux-x86_64/winrmpc ~/.local/bin/
+```
+
+The 0.4.4 notes should say the Linux installer is fixed, so anyone who hit it
+knows to re-run it.
+
 ### Still not verified
 
 - **Windows** was never opened by hand this round; its CI tests pass and the
