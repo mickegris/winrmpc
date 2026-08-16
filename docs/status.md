@@ -4,15 +4,65 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-14. Branch: `improve/cross-platform-and-ui` — **all five
-plans implemented, plus lyrics sync/scroll, a track-list layout pass, release
-CI and the 0.4.2 bump**. Merged to `main` and **not yet tagged**: the tag is
-what publishes, and the visual work still needs a look on a real screen.
+Last updated: 2026-08-16. Branch: `improve/ui-0.4.3` — **all eight 0.4.3 plans
+implemented**, one commit each, pushed but **not released**. `Cargo.toml` still
+says 0.4.2; the version bump belongs to the release, not to this branch.
 
-**v0.4.1 shipped.** `release/v0.4.1` was merged to `main` (PR #20, commit
-`a810419`) and tagged `v0.4.1`. Everything in the sections below describing
-that branch as pending is historical record, kept because the *findings* are
-still current — only its "not yet merged" framing is out of date.
+**v0.4.2 shipped** (tag `v0.4.2`, PRs #21/#22), with Linux and Windows binaries
+built and attached by CI. That release is also where the release pipeline was
+first proven end to end.
+
+## 0.4.3 — implemented, unverified visually
+
+| Plan | Commit | Note |
+|---|---|---|
+| 2 — clickable artist/album names | `9116d0d` | also fixes a real bug: multi-disc albums opened from Genres showed only some tracks |
+| 1 — icons for transport + Back | `487710a` | font 17 → 26 glyphs |
+| 6 — album highlighting + jump-to-current | `ffe478a` | finishes 0.4.2 deferrals D/E |
+| 7 — error toasts | `e5dc80b` | errors were only visible on the Settings screen |
+| 3 — light/dark mode | `ed5def3` | 27 files; `accent_color` removed |
+| 8 — window size + maximised | `1635f7d` | position deliberately not restored |
+| 5 — keyboard shortcuts | `f98b2c5` | the app had no key handling at all |
+| 4 — macOS `.app` bundle | `d4e537b` | unsigned; CI now attaches three assets |
+
+**240 offline tests (was 214), zero warnings under `-D warnings`**, debug and
+release both build.
+
+### Three assumptions were checked against the vendored iced before building
+
+Recorded in `16650d9`, and two of them changed the work:
+
+- **`text_input` has no focus/blur callbacks in 0.13**, and `find_focused()`
+  resolves through a `Task` — asynchronous, so it cannot gate a keypress being
+  handled now. Per-view gating isn't the preferred approach, it's the only one.
+- **iced 0.13 has no monitor enumeration**, so a restored window position can't
+  be validated and could strand the window offscreen with no in-app recovery.
+  Position was cut from scope; size and maximised are restored.
+- **`Theme::custom` + a 5-colour `Palette` exist**, so both themes derive from
+  one source rather than hoping iced's stock Light sits well beside a custom
+  palette.
+
+### What is *not* verified
+
+**Nothing visual has been seen.** Not the icons, the toasts, the light palette,
+the highlighted album tiles, the shortcuts, or the restored window size. The
+suite covers the logic beneath them — match rules, clamping, palette
+relationships, the "bare keys never fire where text is typed" rule — but not
+one pixel has been looked at.
+
+Two specific risks worth knowing before running it:
+
+1. **`exit_on_close_request: false`.** Close is intercepted so window geometry
+   can be saved. Both arms of that handler end in `window::close`, but if it is
+   wrong the window won't close. This has not been exercised.
+2. **The previous session ended in a hard machine freeze** — kernel log showed
+   `xe … [drm] *ERROR* [CRTC:151:pipe A] flip_done timed out` seconds after the
+   last edit, then an unclean reboot. That is a display-driver hang and the
+   likely trigger was launching this (wgpu) app. The app *was* launched briefly
+   during plan 8 and behaved, but the risk hasn't gone away.
+
+**macOS is entirely unverified** — the bundle needs a Mac, and CI is where it
+will first run.
 
 ## Current branch: `improve/cross-platform-and-ui`
 
@@ -291,41 +341,26 @@ migration.
    so this is cosmetic — recorded here only so deleting the plan didn't
    silently drop it.
 
-## Suggested next steps — manual testing, then release
+## Suggested next steps
 
-Merged, not tagged. The local release build is at `target/release/winrmpc`, and
-`dist/winrmpc-v0.4.2-linux-x86_64.tar.gz` is the artifact CI would produce
-(binary + `packaging/linux/` + README + LICENSE).
-
-**The workflow had to reach `main` before it could be run at all** —
-`workflow_dispatch` is only offered for workflows already on the default
-branch. That is why this batch was shipped before being tagged, and it is a
-one-time constraint: from here, a manual run can build an `.exe` from any
-branch.
-
-1. **Run the app and look at it.** Everything visual is unverified: icon
-   glyphs and tooltips, the playing-row highlight, the lyrics Sync/Scroll
-   switch, Settings → Storage. **Note the display-driver hang above before
-   launching on this machine.**
-2. **Re-enter the MPD server in Settings** — the config was overwritten with
-   defaults (see the incident note above), so it currently points at
-   `127.0.0.1:6600`.
-3. Run the live suite against the real server, none of which has run since
-   these changes landed:
+1. **Run the app and look at it.** Everything in 0.4.3 is unverified visually —
+   that was the stated verification stance of the whole round and it is still
+   outstanding. Check in particular: the light palette across *every* view (27
+   files changed; there will be one someone forgot), the toasts not covering
+   the player bar, and that **the window still closes** (see the
+   `exit_on_close_request` note above).
+2. **Type in every text box** and confirm Space doesn't pause. That is the
+   acceptance test for the shortcuts and the one failure that would be
+   genuinely annoying.
+3. Run the live suite against the real server — none of it has run since these
+   changes landed:
    ```bash
    WINRMPC_TEST_MPD=10.0.1.3:6600 WINRMPC_TEST_SNAPCAST=10.0.1.3:1705 \
      cargo test -- --ignored --test-threads=1
    ```
-4. **Push the branch and use "Run workflow" on the Release action** to get a
-   Windows `.exe` to test. That path publishes nothing — the `publish` job is
-   gated on `refs/tags/`.
-5. Only then: merge to `main`, tag `v0.4.2`, and let the workflow build and
-   attach both binaries.
+4. **Dispatch the release workflow manually** to get Windows and macOS builds
+   to test — it publishes nothing. The macOS job has never run; that bundle is
+   the least-proven thing on the branch.
+5. Then release 0.4.3 via the `release` skill, which bumps the version, tags,
+   and lets CI attach all three binaries.
 
-Deferred and not blocking a release: plan 1 steps D/E (macOS `.app` bundle),
-plan 3 step D (album-level highlighting).
-
-### Still open from v0.4.1
-
-- If Albums is slow rather than broken at library scale, address item 3 under
-  "Unverified" above.
