@@ -512,6 +512,11 @@ impl App {
         // is what persists it. `exit_on_close_request` stays true, so this is
         // best-effort — but a resize is followed by a close often enough that
         // it lands in practice.
+        // `on_key_press` takes a `fn` pointer, so it can't see app state —
+        // it forwards the raw key and `update` decides. See `ui::shortcut`.
+        subs.push(iced::keyboard::on_key_press(|key, mods| {
+            Some(Message::KeyPressed(key, mods))
+        }));
         subs.push(iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size)));
         subs.push(iced::window::close_requests().map(Message::WindowCloseRequested));
 
@@ -2436,6 +2441,34 @@ impl App {
                     Task::none()
                 }
             }
+            Message::KeyPressed(key, mods) => {
+                let ctx = crate::ui::shortcut::Context {
+                    view: self.current_view.clone(),
+                    is_playing: self.status.state == crate::mpd::types::PlayState::Play,
+                    elapsed: self.status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0),
+                    duration: self.status.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0),
+                    volume: self.status.volume,
+                };
+                match crate::ui::shortcut::resolve(&key, mods, &ctx) {
+                    Some(msg) => self.update(msg),
+                    None => Task::none(),
+                }
+            }
+            Message::FocusSearch => {
+                let already_there = self.current_view == View::Search;
+                let nav = if already_there {
+                    Task::none()
+                } else {
+                    self.update(Message::NavigateTo(View::Search))
+                };
+                // select_all as well as focus: landing in a box that already
+                // holds a query should let the next keystroke replace it.
+                Task::batch([
+                    nav,
+                    iced::widget::text_input::focus(crate::ui::views::search::input_id()),
+                    iced::widget::text_input::select_all(crate::ui::views::search::input_id()),
+                ])
+            }
             Message::WindowResized(size) => {
                 self.window_size = (size.width, size.height);
                 Task::none()
@@ -4108,6 +4141,48 @@ fn settings_view(&self) -> Element<'_, Message> {
         ]
         .spacing(2);
 
+        // --- Shortcuts section ---
+        //
+        // A shortcut nobody knows about is dead code. Settings rather than a
+        // `?` overlay: no new overlay machinery, and it sits next to Storage,
+        // which is already the "how does this thing work" corner.
+        let shortcut_row = |keys: &'static str, what: &'static str| {
+            row![
+                container(text(keys).size(11).color(AppColors::text_primary()))
+                    .padding([2, 6])
+                    .width(120)
+                    .style(|_t: &iced::Theme| container::Style {
+                        background: Some(AppColors::bg_tertiary().into()),
+                        border: iced::Border {
+                            radius: 3.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                Space::with_width(10),
+                text(what).size(12).color(AppColors::text_secondary()),
+            ]
+            .align_y(iced::Alignment::Center)
+        };
+        let shortcuts_section = column![
+            text("Keyboard shortcuts").size(16).color(AppColors::text_primary()),
+            Space::with_height(4),
+            text(
+                "Space and the bare arrow keys are ignored on screens with a text \
+                 box, so they never interrupt typing."
+            )
+            .size(11)
+            .color(AppColors::text_muted()),
+            Space::with_height(8),
+            shortcut_row("Space", "Play / pause"),
+            shortcut_row("← / →", "Seek 5 seconds"),
+            shortcut_row("Ctrl + ← / →", "Previous / next track"),
+            shortcut_row("Ctrl + ↑ / ↓", "Volume"),
+            shortcut_row("Ctrl + F  or  /", "Search"),
+            shortcut_row("Esc", "Back"),
+        ]
+        .spacing(3);
+
         let config_path = AppConfig::config_path();
         let cache_dir = AppConfig::cache_dir();
         let storage_section = column![
@@ -4161,6 +4236,8 @@ fn settings_view(&self) -> Element<'_, Message> {
             add_form,
             Space::with_height(24),
             cache_section,
+            Space::with_height(24),
+            shortcuts_section,
             Space::with_height(24),
             appearance_section,
             Space::with_height(24),

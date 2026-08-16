@@ -11,6 +11,14 @@ use std::collections::BTreeMap;
 
 /// `current_file` marks the playing track among the song rows. The artist and
 /// album sections above them aren't tracks, so they carry no row state.
+/// The search box's id, so `Ctrl+F` / `/` can focus it from anywhere.
+///
+/// A stable id rather than `Id::unique()`: the whole point is that another
+/// module can name this widget.
+pub fn input_id() -> iced::widget::text_input::Id {
+    iced::widget::text_input::Id::new("winrmpc-search-input")
+}
+
 pub fn view<'a>(
     query: &'a str,
     results: &'a [Song],
@@ -18,6 +26,7 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let search_bar = row![
         text_input("Search your library...", query)
+            .id(crate::ui::views::search::input_id())
             .on_input(Message::SearchQueryChanged)
             .on_submit(Message::SearchSubmit)
             .size(16)

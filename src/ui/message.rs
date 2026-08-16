@@ -273,6 +273,11 @@ pub enum Message {
     SetDarkMode(bool),
     /// The window was resized. Recorded in memory; written on close.
     WindowResized(iced::Size),
+    /// A key was pressed. The mapping to an action happens in `update` —
+    /// `on_key_press` takes a `fn` pointer and so can't see app state.
+    KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers),
+    /// Go to Search and put the cursor in the box.
+    FocusSearch,
     /// The window wants to close. Intercepted so the maximised state can be
     /// queried before it goes.
     WindowCloseRequested(iced::window::Id),
