@@ -4,179 +4,48 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-16. Branch: `improve/ui-0.4.3` — **all eight 0.4.3 plans
-implemented**, one commit each, pushed but **not released**. `Cargo.toml` still
-says 0.4.2; the version bump belongs to the release, not to this branch.
+Last updated: 2026-08-16. **v0.4.3 released** — all eight 0.4.3 plans shipped,
+plus the fixes that came out of testing it on Linux and macOS. Binaries for
+Windows, macOS and Linux are attached to the release, built by CI.
 
-**v0.4.2 shipped** (tag `v0.4.2`, PRs #21/#22), with Linux and Windows binaries
-built and attached by CI. That release is also where the release pipeline was
-first proven end to end.
+## 0.4.3 — what shipped
 
-## 0.4.3 — implemented, unverified visually
+The eight planned items (see [ui-0.4.3](plans/ui-0.4.3.md)): clickable
+artist/album names, icons for the transport controls and Back, album-level
+highlighting plus jump-to-current, error toasts, light/dark mode, window
+size/maximised persistence, keyboard shortcuts, and the macOS `.app` bundle.
 
-| Plan | Commit | Note |
-|---|---|---|
-| 2 — clickable artist/album names | `9116d0d` | also fixes a real bug: multi-disc albums opened from Genres showed only some tracks |
-| 1 — icons for transport + Back | `487710a` | font 17 → 26 glyphs |
-| 6 — album highlighting + jump-to-current | `ffe478a` | finishes 0.4.2 deferrals D/E |
-| 7 — error toasts | `e5dc80b` | errors were only visible on the Settings screen |
-| 3 — light/dark mode | `ed5def3` | 27 files; `accent_color` removed |
-| 8 — window size + maximised | `1635f7d` | position deliberately not restored |
-| 5 — keyboard shortcuts | `f98b2c5` | the app had no key handling at all |
-| 4 — macOS `.app` bundle | `d4e537b` | unsigned; CI now attaches three assets |
+**Six bugs came out of the manual test pass**, which is the argument for having
+done one:
 
-**240 offline tests (was 214), zero warnings under `-D warnings`**, debug and
-release both build.
+| Found | Cause |
+|---|---|
+| Transport buttons drew **nothing** | Geometry, not the font: default button padding left an 18px box for a glyph needing ~22px, and iced draws no line rather than a clipped one. Blank-not-tofu is the tell. |
+| "Unknown Artist" on tagged files | `display_artist()` gave up where `display_album_artist()` fell back, so the two disagreed about the same file |
+| Outputs appeared multiple times | MPD leaves a `plugin: dummy` placeholder in **every** partition an output isn't in — the `default` partition listed ten outputs when one was real |
+| Moving an output was incomplete | Only a third of mikMPD's fix was ported; the missing part disables the output first, which is what stops `moveoutput` deadlocking the MPD server |
+| Transport glyphs too small | Fitted, but read as specks — now a ratio test guards "looks right", not just "fits" |
+| **Views didn't scroll** | Settings, Outputs, Partitions and Stats had no scrollable at all; Album/Artist/Playlist detail had their tall header outside the list's scrollable |
 
-### Three assumptions were checked against the vendored iced before building
+**246 offline tests (was 214), 15 live**, zero warnings under `-D warnings`,
+green on Windows, Linux and macOS in CI.
 
-Recorded in `16650d9`, and two of them changed the work:
+### Verified against a real server (10.0.1.3, MPD 0.24.0)
 
-- **`text_input` has no focus/blur callbacks in 0.13**, and `find_focused()`
-  resolves through a `Task` — asynchronous, so it cannot gate a keypress being
-  handled now. Per-view gating isn't the preferred approach, it's the only one.
-- **iced 0.13 has no monitor enumeration**, so a restored window position can't
-  be validated and could strand the window offscreen with no in-app recovery.
-  Position was cut from scope; size and maximised are restored.
-- **`Theme::custom` + a 5-colour `Palette` exist**, so both themes derive from
-  one source rather than hoping iced's stock Light sits well beside a custom
-  palette.
+All 15 live tests pass. One caveat worth remembering:
+`live_musicbrainz_resolves_locally_artless_albums` reported **9 of 14** where
+earlier runs got 14/14 — the TLS check in the same run got **HTTP 503** from
+MusicBrainz, so that is near-certainly the service, not the matching code.
+Re-run before treating it as a regression.
 
-### What is *not* verified
+### Still not verified
 
-**Nothing visual has been seen.** Not the icons, the toasts, the light palette,
-the highlighted album tiles, the shortcuts, or the restored window size. The
-suite covers the logic beneath them — match rules, clamping, palette
-relationships, the "bare keys never fire where text is typed" rule — but not
-one pixel has been looked at.
-
-Two specific risks worth knowing before running it:
-
-1. **`exit_on_close_request: false`.** Close is intercepted so window geometry
-   can be saved. Both arms of that handler end in `window::close`, but if it is
-   wrong the window won't close. This has not been exercised.
-2. **The previous session ended in a hard machine freeze** — kernel log showed
-   `xe … [drm] *ERROR* [CRTC:151:pipe A] flip_done timed out` seconds after the
-   last edit, then an unclean reboot. That is a display-driver hang and the
-   likely trigger was launching this (wgpu) app. The app *was* launched briefly
-   during plan 8 and behaved, but the risk hasn't gone away.
-
-**macOS is entirely unverified** — the bundle needs a Mac, and CI is where it
-will first run.
-
-## Current branch: `improve/cross-platform-and-ui`
-
-Five plans written on 2026-08-14 from a read-only investigation, targeting a
-future `release/v0.4.2`. Umbrella:
-[`docs/plans/cross-platform-and-ui-0.4.2.md`](plans/cross-platform-and-ui-0.4.2.md).
-
-The headline finding is that **three separate bugs are the same mistake** —
-a Windows-only resource named directly, with a silent fallback elsewhere:
-
-1. `Font::with_name("Segoe UI Symbol")` (`link.rs:36`) — the row-action
-   glyphs (`▶ + ⏭ ☰`) almost certainly render as **tofu boxes on macOS and
-   Linux**, since the fallback is the very font the code's own comment says
-   lacks them. This is the real cause of "the buttons are hard to understand".
-2. `window::Settings.icon` → winit `set_window_icon`, which is a **documented
-   no-op on macOS** and an **empty no-op on Wayland**. `application_id` is
-   also left empty, so Wayland can't match a `.desktop` file either.
-3. `reqwest` on default features → `native-tls` → **OpenSSL on Linux only**
-   (schannel/Security.framework elsewhere).
-
-Plus: the MusicBrainz `User-Agent` is a placeholder
-(`winrmpc/0.1.0 (https://github.com/user/winrmpc)`) that risks being blocked;
-only the Queue highlights the playing track; and macOS storage works but lives
-in `~/Library/…/com.winrmpc.winrmpc/`, which Finder hides — that's the whole
-of the "couldn't find the config file" report.
-
-### Done on this branch — all five plans
-
-One commit per plan, in the umbrella's suggested order. **202 offline tests
-(was 181), 13 live, zero build warnings.**
-
-| Plan | Commit | State |
-|---|---|---|
-| 1 — app icon | `190f14e` | steps A–C done; **D (macOS `.app`) and E (release flow) not done** |
-| 4 — row actions | `a44e9f3` | A–D done, E declined |
-| 5 — network | `8868b0a` | all five steps + the optional deadline; **verified on Linux** |
-| 3 — highlighting | `7812d5c` | A–C done, D deferred as planned, E out of scope |
-| 2 — storage | `8c21f53` | A–E done |
-
-Then, on top of the five plans:
-
-| Work | Commit | State |
-|---|---|---|
-| Lyrics sync/scroll toggle | `66cb985` | **verified against real LRCLIB data** |
-| Version bump to 0.4.2 | `283c5b6` | crate description no longer says "Windows" |
-| Release CI | `a91432d` | **not yet run** — no workflow has ever executed for this repo |
-| Queue row/header alignment | `40ace14` | disabled-not-omitted actions; derived widths |
-| Track-list column order | `118ed34` | four passes with the user; final order below |
-| ship/release skills | `6d57337` | rewritten for CI-built binaries |
-
-**Track-list column order**, now identical in all five lists (album, search,
-browser, playlist detail, queue):
-
-```
-[playing marker] [play] [number] [title Fill] … [length] [function buttons]
-```
-
-Play is the primary action so it leads, beside the number and title it acts
-on; the rest are secondary and follow the length. The queue gained a leading
-play button it never had (`QueuePlay(pos)`, **not** `PlaySong(uri)` — that
-would enqueue a second copy). Everything before the `Fill` title is
-fixed-width, which is what keeps rows from drifting against each other.
-
-Each plan file now carries a "What was actually built" section and a status
-banner; the durable rules landed in CLAUDE.md.
-
-**Lyrics.** The pane autoscrolled off the 500ms status poll and called
-`snap_to` unconditionally, so any manual scroll was undone within half a
-second — synced lyrics were readable *only* at the current line. There is now
-a **Sync / Scroll** switch, with the highlight kept in both modes. Two silent
-duplications behind it were collapsed: the lyrics cache key (written by hand
-in three places) into `Song::lyrics_key()`, and the active-line calculation
-(computed separately by the view and the autoscroll, so they could scroll to a
-different line than they highlight) into `lyrics::active_line()`. Verified
-live: `live_lrclib_returns_parseable_synced_lyrics` fetches three real tracks
-and asserts sorted, advancing, non-empty timestamped lines.
-
-**What is actually verified, and what is not.** Plan 5 is the only *plan*
-proven against reality: `openssl-sys` and `native-tls` are gone from the dependency
-tree, and the new `live_tls_reaches_every_lookup_host` gets HTTP 200 from
-MusicBrainz, Cover Art Archive, Wikipedia and LRCLIB on Linux, with
-`live_wikipedia_bios_for_awkward_tags` still resolving all ten awkward tags.
-The Linux config/cache paths were confirmed on disk. The release binary
-links **only libc, libm and libgcc_s** — no libssl, no libcrypto — which is
-finding 1 proven at the binary level: this build is now portable across
-distros.
-
-The lyrics work is verified too, against live LRCLIB responses rather than
-only self-written fixtures.
-
-Everything visual is **code-verified only**. Nobody has seen the bundled icon
-font render in iced, the tooltips, the playing-row highlight, or Settings →
-Storage. The icon glyphs were rasterised directly from the built `.ttf` to
-confirm each codepoint draws the intended shape, which proves the *font* is
-right but not that iced resolves the bundled family at runtime. The window
-icon has still not been seen on a real Wayland or X11 session, and macOS has
-no `.app` bundle so it still has no icon at all.
-
-**The GUI has not been launched this session, deliberately.** The previous
-session ended in a hard machine freeze — kernel log shows
-`xe … [drm] *ERROR* [CRTC:151:pipe A] flip_done timed out` seconds after the
-last edit, then an unclean reboot. That is a display-driver hang, and the
-likely trigger was launching this very (wgpu) app to check the Wayland icon.
-Worth knowing before running it again.
-
-**One self-inflicted incident, recorded because it cost real data.** A test
-written for plan 2 called `AppConfig::save_and_log()`, which resolves the
-*real* user config path — running `cargo test` overwrote
-`~/.config/winrmpc/config.toml` with defaults. Servers, radio stations and the
-saved partition in that file were lost and are not recoverable from the repo
-or the cache DB. The test was replaced with one that sets
-`WINRMPC_CONFIG_DIR` to a scratch dir, and the rule is now written down in
-CLAUDE.md: **never call `save()`/`save_and_log()` from a test without the env
-override in place.**
+- **Windows** was never opened by hand this round; its CI tests pass and the
+  binary builds, and the platform-specific code paths (window close, fonts)
+  are shared with the two that were tested.
+- **macOS signing.** The bundle is unsigned, so first launch needs
+  `xattr -dr com.apple.quarantine`. Documented in the README and the release
+  notes.
 
 ## Where things stood at v0.4.1
 
