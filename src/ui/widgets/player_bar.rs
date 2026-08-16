@@ -9,9 +9,15 @@ use iced::{Alignment, Element, Length};
 /// Transport button geometry. Kept as constants because the relationship
 /// between them is what decides whether the glyph renders at all — see
 /// `styled_control_btn` and `transport_glyph_fits_its_button`.
-const TRANSPORT_ICON: u16 = 16;
-const TRANSPORT_H: u16 = 28;
-const TRANSPORT_PAD_Y: u16 = 2;
+const TRANSPORT_ICON: u16 = 20;
+const TRANSPORT_H: u16 = 36;
+const TRANSPORT_W: u16 = 56;
+const TRANSPORT_PAD_Y: u16 = 3;
+/// Slack the button must keep over the glyph's line box.
+///
+/// Not zero: iced rounds line boxes, and a design that only *just* fits is one
+/// rounding away from the blank-button bug all over again.
+const TRANSPORT_MIN_SLACK: f32 = 3.0;
 /// iced's default line height is 1.3x the text size.
 const LINE_HEIGHT_FACTOR: f32 = 1.3;
 
@@ -246,7 +252,7 @@ fn styled_control_btn<'a>(
                 .center_y(Length::Fill),
         )
         .on_press(msg)
-        .width(52)
+        .width(TRANSPORT_W)
         .height(TRANSPORT_H)
         // **Explicit padding is load-bearing.** With `button`'s default
         // padding of 5 the content box was 28 - 10 = 18px tall, less than the
@@ -369,6 +375,18 @@ fn small_btn(label: &str, msg: Message) -> Element<'_, Message> {
 mod tests {
     use super::*;
 
+    /// The glyph should also *look* like the button's main content rather than a
+    /// speck in a wide box — 16px in a 52x28 button read as mostly air.
+    #[test]
+    fn the_transport_glyph_fills_a_reasonable_share_of_its_button() {
+        let ratio = f32::from(TRANSPORT_ICON) / f32::from(TRANSPORT_H);
+        assert!(
+            (0.5..=0.72).contains(&ratio),
+            "glyph/button height ratio {ratio:.2} — below ~0.5 it reads as a \
+             speck, above ~0.72 it crowds the edges"
+        );
+    }
+
     /// The transport glyphs rendered as **nothing** on first real use: the
     /// button's default padding of 5 left an 18px content box for a glyph
     /// whose line box needs ~22px, and iced drew no line at all rather than a
@@ -379,9 +397,10 @@ mod tests {
         let content_h = f32::from(TRANSPORT_H - 2 * TRANSPORT_PAD_Y);
         let line_h = f32::from(TRANSPORT_ICON) * LINE_HEIGHT_FACTOR;
         assert!(
-            content_h >= line_h,
-            "a {TRANSPORT_ICON}px glyph needs {line_h:.1}px of line box but the \
-             button only offers {content_h:.1}px — it will render blank"
+            content_h >= line_h + TRANSPORT_MIN_SLACK,
+            "a {TRANSPORT_ICON}px glyph needs {line_h:.1}px of line box (plus \
+             {TRANSPORT_MIN_SLACK}px slack) but the button only offers \
+             {content_h:.1}px — it will render blank"
         );
     }
 }
