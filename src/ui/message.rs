@@ -160,7 +160,19 @@ pub enum Message {
 
     // === Outputs ===
     ToggleOutput(u32),
-    MoveOutput { output_name: String, target_partition: String },
+    /// Move an output to another partition.
+    ///
+    /// Carries the id and enabled state because the move has to *disable*
+    /// first and re-enable afterwards — see the handler.
+    MoveOutput {
+        output_id: u32,
+        output_name: String,
+        target_partition: String,
+        was_enabled: bool,
+    },
+
+    /// A move finished — `Ok` or a user-facing failure message.
+    OutputMoved(Result<(), String>),
 
     // === Partitions ===
     SwitchPartition(String),

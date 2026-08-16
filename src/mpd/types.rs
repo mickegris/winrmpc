@@ -86,6 +86,20 @@ pub struct Song {
     pub tags: HashMap<String, Vec<String>>,
 }
 
+/// A tag's value, treating **present-but-blank as absent**.
+///
+/// A tag written as an empty string is common in sloppy rips, and without this
+/// the fallback chain would stop at it and render an empty cell — arguably
+/// worse than "Unknown Artist", because it looks like a rendering fault rather
+/// than missing data.
+///
+/// The *original* value is returned, not a trimmed one: trimming would change
+/// `display_album_artist`, which feeds `art_key`, and silently orphan cached
+/// art for any file with a padded tag.
+fn tag_or(tag: &Option<String>) -> Option<&str> {
+    tag.as_deref().filter(|v| !v.trim().is_empty())
+}
+
 impl Song {
     pub fn duration(&self) -> Option<Duration> {
         self.duration_secs.map(Duration::from_secs_f64)
@@ -152,20 +166,21 @@ impl Song {
     /// turns a guaranteed-miss lookup for "Unknown Artist" into one that can
     /// actually match.
     pub fn display_artist(&self) -> &str {
-        self.artist
-            .as_deref()
-            .or(self.album_artist.as_deref())
+        tag_or(&self.artist)
+            .or_else(|| tag_or(&self.album_artist))
             .unwrap_or("Unknown Artist")
     }
 
     pub fn display_album(&self) -> &str {
-        self.album.as_deref().unwrap_or("Unknown Album")
+        tag_or(&self.album).unwrap_or("Unknown Album")
     }
 
+    /// The album artist, falling back to the track artist. Mirror image of
+    /// [`Self::display_artist`], so the two agree on any file that carries
+    /// only one of the two tags.
     pub fn display_album_artist(&self) -> &str {
-        self.album_artist
-            .as_deref()
-            .or(self.artist.as_deref())
+        tag_or(&self.album_artist)
+            .or_else(|| tag_or(&self.artist))
             .unwrap_or("Unknown Artist")
     }
 
@@ -921,6 +936,25 @@ mod tests {
         s.artist = Some("Nina Simone".into());
         assert_eq!(s.display_artist(), "Nina Simone");
         assert_eq!(s.display_album_artist(), "Blue Öyster Cult");
+    }
+
+    /// A tag written as an empty string must not stop the fallback chain — it
+    /// would render a blank cell, which reads as a rendering fault rather than
+    /// as missing data.
+    #[test]
+    fn a_blank_tag_counts_as_absent() {
+        let mut s = song();
+        s.artist = Some("   ".into());
+        s.album_artist = Some("Eagles".into());
+        assert_eq!(s.display_artist(), "Eagles");
+
+        s.album = Some(String::new());
+        assert_eq!(s.display_album(), "Unknown Album");
+
+        s.album_artist = Some("".into());
+        s.artist = Some("".into());
+        assert_eq!(s.display_artist(), "Unknown Artist");
+        assert_eq!(s.display_album_artist(), "Unknown Artist");
     }
 
     #[test]

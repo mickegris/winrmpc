@@ -30,8 +30,10 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
                     .align_y(Alignment::Center),
                 )
                     .on_press(Message::MoveOutput {
+                        output_id: output.id,
                         output_name: output.name.clone(),
                         target_partition: partition.name.clone(),
+                        was_enabled: output.enabled,
                     })
                     .padding([4, 10]),
             );

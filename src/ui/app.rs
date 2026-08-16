@@ -278,6 +278,8 @@ pub struct App {
     /// event: a drag emits a resize per frame, and rewriting the TOML dozens
     /// of times a second would be pathological.
     window_size: (f32, f32),
+    /// Guards against overlapping output moves — see `Message::MoveOutput`.
+    moving_output: bool,
 }
 
 impl App {
@@ -439,6 +441,7 @@ impl App {
             last_error: None,
             toasts: std::collections::VecDeque::new(),
             window_size: config.window.restored_size(),
+            moving_output: false,
         };
 
         // `window::Settings` has no `maximized` field in 0.13, so it can only
@@ -1742,22 +1745,84 @@ impl App {
                 );
                 Task::batch([toggle_task, outputs_task])
             }
-            Message::MoveOutput { output_name, target_partition } => {
+            Message::MoveOutput {
+                output_id,
+                output_name,
+                target_partition,
+                was_enabled,
+            } => {
+                // One move at a time. A second move starting while this one has
+                // the client parked in another partition would run its commands
+                // against the wrong partition and could leave it there.
+                if self.moving_output {
+                    self.toast_info("A move is already in progress — please wait");
+                    return Task::none();
+                }
+                self.moving_output = true;
+
                 let client = self.client.clone();
-                let current = self.status.partition
+                let current = self
+                    .status
+                    .partition
                     .clone()
                     .unwrap_or_else(|| "default".to_string());
                 Task::perform(
                     async move {
-                        // Switch to target partition
-                        client.switch_partition(&target_partition).await.ok();
-                        // Move the output into the now-current partition
-                        client.move_output(&output_name).await.ok();
-                        // Switch back to where we were
+                        // Settling time between partition-switching commands.
+                        // Ported from mikMPD, where it was needed in practice.
+                        const SETTLE: std::time::Duration =
+                            std::time::Duration::from_millis(100);
+
+                        // 1. Disable first. `moveoutput` on an open,
+                        //    actively-rendering output can deadlock the MPD
+                        //    server — this is the part that makes the move
+                        //    safe rather than merely tidy.
+                        if was_enabled {
+                            if let Err(e) = client.disable_output(output_id).await {
+                                return Err(format!("Couldn't disable the output: {e}"));
+                            }
+                            tokio::time::sleep(SETTLE).await;
+                        }
+
+                        // 2. `moveoutput` moves into the *current* partition,
+                        //    so switch there first.
+                        if let Err(e) = client.switch_partition(&target_partition).await {
+                            return Err(format!("Couldn't switch to {target_partition}: {e}"));
+                        }
+                        tokio::time::sleep(SETTLE).await;
+
+                        let moved = client.move_output(&output_name).await;
+
+                        // 3. Re-enable in the target so the move is seamless.
+                        //    MPD may assign a **new id**, so find it by name —
+                        //    `outputs()` already filters the `dummy`
+                        //    placeholder left behind in the source partition,
+                        //    which shares the name.
+                        if moved.is_ok() && was_enabled {
+                            if let Ok(outs) = client.outputs().await {
+                                if let Some(o) = outs.iter().find(|o| o.name == output_name) {
+                                    client.enable_output(o.id).await.ok();
+                                }
+                            }
+                        }
+
+                        // 4. Always return to where the user was, even if the
+                        //    move failed — leaving them in another partition
+                        //    would be a worse outcome than the failed move.
                         client.switch_partition(&current).await.ok();
+                        tokio::time::sleep(SETTLE).await;
+
+                        moved.map_err(|e| format!("Couldn't move {output_name}: {e}"))
                     },
-                    |_| Message::RefreshAll,
+                    Message::OutputMoved,
                 )
+            }
+            Message::OutputMoved(result) => {
+                self.moving_output = false;
+                if let Err(e) = result {
+                    self.toast_error(e);
+                }
+                self.update(Message::RefreshAll)
             }
 
             // =================================================================
