@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "winrmpc"
 version = "0.4.2"
 edition = "2021"
