@@ -63,11 +63,36 @@ mkdir -p "$DESKTOP_DIR"
 cp -f "$SRC_DIR/$APP_ID.desktop" "$DESKTOP_DIR/$APP_ID.desktop"
 echo "Installed $DESKTOP_DIR/$APP_ID.desktop"
 
-# ── Binary (only if one has been built) ──────────────────────────────────────
+# ── Binary ───────────────────────────────────────────────────────────────────
 # Exec=winrmpc is resolved against PATH, so the binary has to be on it. If you
 # keep winrmpc elsewhere, skip this and edit the Exec= line to an absolute path.
-BIN_SRC="$REPO_ROOT/target/release/winrmpc"
-if [ -x "$BIN_SRC" ]; then
+#
+# Two layouts have to work, and only the second one used to:
+#
+#   released tarball          git checkout
+#   ------------------        ---------------------------
+#   winrmpc          <- bin   target/release/winrmpc  <- bin
+#   packaging/                packaging/linux/
+#     install.sh                install.sh
+#
+# In the tarball the binary is the script's *parent* directory, and there is no
+# target/ at all — so this reported "no release binary, run cargo build first"
+# to someone who had just downloaded a prebuilt binary, installed the .desktop
+# entry pointing at an executable that wasn't there, and left the launcher
+# broken.
+BIN_SRC=""
+for candidate in \
+    "$SRC_DIR/../winrmpc" \
+    "$REPO_ROOT/target/release/winrmpc" \
+    "$SRC_DIR/winrmpc"
+do
+    if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
+        BIN_SRC="$candidate"
+        break
+    fi
+done
+
+if [ -n "$BIN_SRC" ]; then
     mkdir -p "$BIN_DIR"
     cp -f "$BIN_SRC" "$BIN_DIR/winrmpc"
     echo "Installed $BIN_DIR/winrmpc"
@@ -76,8 +101,10 @@ if [ -x "$BIN_SRC" ]; then
         *) echo "NOTE: $BIN_DIR is not on your PATH — the launcher will not find winrmpc" ;;
     esac
 else
-    echo "NOTE: no release binary at $BIN_SRC — run 'cargo build --release' first,"
-    echo "      or put winrmpc on your PATH yourself. Icons and .desktop are installed."
+    echo "NOTE: no winrmpc binary found next to this script or in target/release."
+    echo "      Icons and .desktop are installed, but the launcher won't start"
+    echo "      anything until winrmpc is on your PATH. From a source checkout:"
+    echo "        cargo build --release && $0"
 fi
 
 refresh_caches
