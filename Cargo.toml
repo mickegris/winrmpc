@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "winrmpc"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 description = "A modern MPD client with album art, lyrics, partitions, outputs and Snapcast control"
 license = "MIT"

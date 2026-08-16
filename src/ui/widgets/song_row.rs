@@ -29,9 +29,11 @@
 //!   stopped and the Queue already behaved this way. The player bar is what
 //!   communicates play/pause/stop.
 
+use crate::mpd::types::{album_base_and_disc, Song};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use iced::widget::{container, text};
 use iced::{Color, Element, Length};
 
@@ -83,7 +85,7 @@ pub fn number<'a>(label: impl text::IntoFragment<'a>, size: u16) -> Element<'a, 
         .size(size)
         .width(Length::Fixed(NUMBER_WIDTH as f32))
         .align_x(iced::alignment::Horizontal::Right)
-        .color(AppColors::TEXT_MUTED)
+        .color(AppColors::text_muted())
         .into()
 }
 
@@ -101,7 +103,7 @@ pub fn duration<'a>(label: impl text::IntoFragment<'a>, size: u16) -> Element<'a
         .size(size)
         .width(Length::Fixed(DURATION_WIDTH as f32))
         .align_x(iced::alignment::Horizontal::Right)
-        .color(AppColors::TEXT_MUTED)
+        .color(AppColors::text_muted())
         .into()
 }
 
@@ -120,23 +122,61 @@ pub fn is_current_pos(row_pos: u32, current_pos: Option<u32>) -> bool {
     current_pos == Some(row_pos)
 }
 
+/// Does this album row/tile hold the currently playing track?
+///
+/// **Not `album == album`.** The comparison is against the *disc-collapsed*
+/// base name, because a playing `Disc 2` track has to light up the single
+/// collapsed row that represents the whole set — the row the user is looking
+/// at doesn't have "Disc 2" in its name. Built on the same
+/// `album_base_and_disc` the grouping uses, so the two agree by construction.
+///
+/// Returns `false` for the missing-tag placeholders and for anything with no
+/// album, which is what keeps a radio stream (whose `display_album()` is junk
+/// or empty) from marking every untagged album at once.
+pub fn is_current_album(
+    group_artist: &str,
+    group_base: &str,
+    current: Option<&Song>,
+) -> bool {
+    let Some(song) = current else {
+        return false;
+    };
+    if !link::is_real_name(group_base) {
+        return false;
+    }
+    let playing_album = song.display_album();
+    if !link::is_real_name(playing_album) {
+        return false;
+    }
+    let playing_base = album_base_and_disc(playing_album).0;
+    if !playing_base.eq_ignore_ascii_case(group_base) {
+        return false;
+    }
+    // Artist-scoped, for the same reason album keys are: two artists can have
+    // an identically titled album, and only one of them is playing. An empty
+    // group artist means the listing isn't artist-grouped (a pre-0.21 server),
+    // so the title match is all there is.
+    group_artist.is_empty()
+        || group_artist.eq_ignore_ascii_case(song.display_album_artist())
+}
+
 /// Background for a list row, accounting for zebra striping and playing state.
 pub fn row_bg(index: usize, is_current: bool) -> Color {
     if is_current {
-        AppColors::ROW_PLAYING
+        AppColors::row_playing()
     } else if index % 2 == 0 {
-        AppColors::ROW_EVEN
+        AppColors::row_even()
     } else {
-        AppColors::ROW_ODD
+        AppColors::row_odd()
     }
 }
 
 /// Title colour for a list row.
 pub fn title_color(is_current: bool) -> Color {
     if is_current {
-        AppColors::ACCENT
+        AppColors::accent()
     } else {
-        AppColors::TEXT_PRIMARY
+        AppColors::text_primary()
     }
 }
 
@@ -145,7 +185,7 @@ pub fn title_color(is_current: bool) -> Color {
 pub fn playing_marker<'a>(is_current: bool) -> Element<'a, Message> {
     let inner: Element<'a, Message> = if is_current {
         icon::icon_sized(icon::PLAY, 11)
-            .color(AppColors::ACCENT)
+            .color(AppColors::accent())
             .into()
     } else {
         iced::widget::Space::with_width(0).into()
@@ -215,20 +255,32 @@ mod tests {
         assert!(!is_current_uri("cdda:///2", Some("cdda:///3")));
     }
 
-    #[test]
-    fn playing_row_overrides_zebra_striping_in_both_parities() {
-        assert_eq!(row_bg(0, true), AppColors::ROW_PLAYING);
-        assert_eq!(row_bg(1, true), AppColors::ROW_PLAYING);
-        assert_eq!(row_bg(0, false), AppColors::ROW_EVEN);
-        assert_eq!(row_bg(1, false), AppColors::ROW_ODD);
+    /// Colour assertions take the mode lock — see `theme::colors`.
+    fn colour_guard() -> std::sync::MutexGuard<'static, ()> {
+        crate::ui::theme::colors::TEST_MODE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
+    fn playing_row_overrides_zebra_striping_in_both_parities() {
+        let _guard = colour_guard();
+        assert_eq!(row_bg(0, true), AppColors::row_playing());
+        assert_eq!(row_bg(1, true), AppColors::row_playing());
+        assert_eq!(row_bg(0, false), AppColors::row_even());
+        assert_eq!(row_bg(1, false), AppColors::row_odd());
+    }
+
+    /// Superseded for palette coverage by
+    /// `theme::colors::tests::the_playing_row_is_distinguishable_in_both_palettes`,
+    /// which checks light *and* dark. Kept because it asserts the property
+    /// through the accessors the views actually call.
+    #[test]
     fn the_playing_row_colour_is_distinct_from_both_stripes() {
-        // A highlight equal to either stripe is invisible on half the rows.
-        assert_ne!(AppColors::ROW_PLAYING, AppColors::ROW_EVEN);
-        assert_ne!(AppColors::ROW_PLAYING, AppColors::ROW_ODD);
-        assert_ne!(AppColors::ROW_PLAYING, AppColors::BG_HOVER);
+        let _guard = colour_guard();
+        assert_ne!(AppColors::row_playing(), AppColors::row_even());
+        assert_ne!(AppColors::row_playing(), AppColors::row_odd());
+        assert_ne!(AppColors::row_playing(), AppColors::bg_hover());
     }
 
     #[test]
@@ -255,9 +307,59 @@ mod tests {
         assert_eq!(ACTION_BTN_WIDTH, icon::SIZE + 16);
     }
 
+    fn playing(artist: &str, album: &str) -> Song {
+        let mut s = Song::default();
+        s.album_artist = Some(artist.into());
+        s.album = Some(album.into());
+        s
+    }
+
+    /// The reason this predicate exists rather than `album == album`: the row
+    /// on screen is the collapsed set, the playing track is one disc of it.
+    #[test]
+    fn a_playing_disc_marks_the_collapsed_album_row() {
+        let song = playing("Slayer", "Decade Of Aggression [Disc 2]");
+        assert!(is_current_album("Slayer", "Decade Of Aggression", Some(&song)));
+    }
+
+    #[test]
+    fn album_match_is_artist_scoped() {
+        let song = playing("Bob Dylan", "Greatest Hits");
+        assert!(is_current_album("Bob Dylan", "Greatest Hits", Some(&song)));
+        assert!(
+            !is_current_album("Queen", "Greatest Hits", Some(&song)),
+            "another artist's identically titled album must not light up"
+        );
+    }
+
+    #[test]
+    fn album_match_folds_case_like_the_grouping_does() {
+        let song = playing("Slayer", "decade of aggression - disc 1");
+        assert!(is_current_album("Slayer", "Decade Of Aggression", Some(&song)));
+    }
+
+    /// A radio stream's `display_album()` is junk or the placeholder. Without
+    /// this guard it would mark every untagged album in the library at once.
+    #[test]
+    fn nothing_is_marked_for_streams_or_untagged_playback() {
+        let untagged = Song::default(); // display_album() == "Unknown Album"
+        assert!(!is_current_album("Various", "Unknown Album", Some(&untagged)));
+        assert!(!is_current_album("", "", Some(&untagged)));
+        assert!(!is_current_album("Slayer", "Reign In Blood", None));
+    }
+
+    #[test]
+    fn an_artist_less_listing_falls_back_to_the_title_alone() {
+        // Pre-0.21 servers return no AlbumArtist grouping, so the group's
+        // artist is empty and the title is all there is to match on.
+        let song = playing("Slayer", "Reign In Blood");
+        assert!(is_current_album("", "Reign In Blood", Some(&song)));
+    }
+
     #[test]
     fn title_colour_changes_with_playing_state() {
-        assert_eq!(title_color(true), AppColors::ACCENT);
-        assert_eq!(title_color(false), AppColors::TEXT_PRIMARY);
+        let _guard = colour_guard();
+        assert_eq!(title_color(true), AppColors::accent());
+        assert_eq!(title_color(false), AppColors::text_primary());
     }
 }

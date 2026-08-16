@@ -2,6 +2,7 @@
 use crate::mpd::types::{Output, Partition};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::page::page;
 use crate::ui::widgets::icon;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Length};
@@ -11,9 +12,9 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
 
     for output in outputs {
         let status_color = if output.enabled {
-            AppColors::SUCCESS
+            AppColors::success()
         } else {
-            AppColors::TEXT_MUTED
+            AppColors::text_muted()
         };
         let status_text = if output.enabled { "Enabled" } else { "Disabled" };
 
@@ -30,15 +31,17 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
                     .align_y(Alignment::Center),
                 )
                     .on_press(Message::MoveOutput {
+                        output_id: output.id,
                         output_name: output.name.clone(),
                         target_partition: partition.name.clone(),
+                        was_enabled: output.enabled,
                     })
                     .padding([4, 10]),
             );
         }
 
         let move_row: Element<Message> = if partitions.is_empty() {
-            text("No partitions").size(11).color(AppColors::TEXT_MUTED).into()
+            text("No partitions").size(11).color(AppColors::text_muted()).into()
         } else {
             move_buttons.into()
         };
@@ -50,10 +53,10 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
                         column![
                             text(&output.name)
                                 .size(16)
-                                .color(AppColors::TEXT_PRIMARY),
+                                .color(AppColors::text_primary()),
                             text(format!("Plugin: {} | ID: {}", output.plugin, output.id))
                                 .size(12)
-                                .color(AppColors::TEXT_MUTED),
+                                .color(AppColors::text_muted()),
                         ]
                         .width(Length::Fill),
                         text(status_text).size(14).color(status_color),
@@ -68,7 +71,7 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
                     .align_y(Alignment::Center),
                     Space::with_height(6),
                     row![
-                        text("Move to:").size(11).color(AppColors::TEXT_SECONDARY),
+                        text("Move to:").size(11).color(AppColors::text_secondary()),
                         Space::with_width(8),
                         move_row,
                     ]
@@ -78,7 +81,7 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
             )
             .padding(12)
             .style(|_theme: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_SECONDARY.into()),
+                background: Some(AppColors::bg_secondary().into()),
                 border: iced::Border {
                     radius: 6.0.into(),
                     ..Default::default()
@@ -88,20 +91,17 @@ pub fn view<'a>(outputs: &'a [Output], partitions: &'a [Partition]) -> Element<'
         );
     }
 
-    container(
+    page(
         column![
-            text("Outputs").size(24).color(AppColors::TEXT_PRIMARY),
+            text("Outputs").size(24).color(AppColors::text_primary()),
             Space::with_height(8),
             text("Enable/disable outputs or move them to a partition.")
                 .size(13)
-                .color(AppColors::TEXT_SECONDARY),
+                .color(AppColors::text_secondary()),
             Space::with_height(16),
             output_list,
         ]
         .spacing(4)
         .padding(20),
     )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
 }

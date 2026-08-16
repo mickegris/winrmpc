@@ -1,4 +1,6 @@
 use crate::mpd::types::Song;
+use crate::ui::widgets::link;
+use crate::ui::widgets::page::page;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
@@ -37,9 +39,7 @@ pub fn view<'a>(
     let mut header = Column::new().spacing(2).padding(20);
 
     header = header.push(
-        button(text("<- Back").size(14).color(AppColors::ACCENT))
-            .on_press(Message::GoBack)
-            .padding([4, 8]),
+        link::back_button(),
     );
     header = header.push(Space::with_height(12));
 
@@ -49,7 +49,7 @@ pub fn view<'a>(
             .width(200)
             .height(200)
             .style(|_theme: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_PRIMARY.into()),
+                background: Some(AppColors::bg_primary().into()),
                 border: iced::Border {
                     radius: 4.0.into(),
                     ..Default::default()
@@ -61,15 +61,15 @@ pub fn view<'a>(
 
     header = header.push(art);
     header = header.push(Space::with_height(12));
-    header = header.push(text(album_name).size(22).color(AppColors::TEXT_PRIMARY));
+    header = header.push(text(album_name).size(22).color(AppColors::text_primary()));
     header = header.push(Space::with_height(4));
     header = header.push(
-        button(text(artist).size(16).color(AppColors::ACCENT))
+        button(text(artist).size(16).color(AppColors::accent()))
             .on_press(Message::ArtistSelected(artist.to_string()))
             .padding(0)
             .style(|_theme: &iced::Theme, _status| button::Style {
                 background: None,
-                text_color: AppColors::ACCENT,
+                text_color: AppColors::accent(),
                 border: iced::Border::default(),
                 ..Default::default()
             }),
@@ -83,7 +83,7 @@ pub fn view<'a>(
     header = header.push(
         text(track_count_line)
             .size(13)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
     );
     header = header.push(Space::with_height(8));
 
@@ -107,12 +107,12 @@ pub fn view<'a>(
         Some(bio_text) => {
             let toggle_label = if show_bio { "Hide info" } else { "Show info" };
             header = header.push(
-                button(text(toggle_label).size(12).color(AppColors::ACCENT))
+                button(text(toggle_label).size(12).color(AppColors::accent()))
                     .on_press(Message::ToggleAlbumBio)
                     .padding([4, 8])
                     .style(|_theme: &iced::Theme, _status| button::Style {
                         background: None,
-                        text_color: AppColors::ACCENT,
+                        text_color: AppColors::accent(),
                         border: iced::Border::default(),
                         ..Default::default()
                     }),
@@ -121,15 +121,15 @@ pub fn view<'a>(
                 header = header.push(Space::with_height(4));
                 header = header.push(
                     container(
-                        text(bio_text).size(12).color(AppColors::TEXT_SECONDARY),
+                        text(bio_text).size(12).color(AppColors::text_secondary()),
                     )
                     .padding(12)
                     .width(Length::Fill)
                     .style(|_theme: &iced::Theme| container::Style {
-                        background: Some(AppColors::BG_SECONDARY.into()),
+                        background: Some(AppColors::bg_secondary().into()),
                         border: iced::Border {
                             radius: 4.0.into(),
-                            color: AppColors::BORDER,
+                            color: AppColors::border(),
                             width: 1.0,
                         },
                         ..Default::default()
@@ -146,7 +146,7 @@ pub fn view<'a>(
     if songs.is_empty() {
         track_list = track_list.push(
             container(
-                text("Loading tracks...").size(14).color(AppColors::TEXT_MUTED),
+                text("Loading tracks...").size(14).color(AppColors::text_muted()),
             )
             .padding([10, 20]),
         );
@@ -160,7 +160,7 @@ pub fn view<'a>(
                 last_disc = Some(d);
                 track_list = track_list.push(
                     container(
-                        text(format!("Disc {d}")).size(12).color(AppColors::TEXT_MUTED),
+                        text(format!("Disc {d}")).size(12).color(AppColors::text_muted()),
                     )
                     .padding(iced::Padding {
                         top: 10.0,
@@ -225,14 +225,11 @@ pub fn view<'a>(
         );
     }
 
-    iced::widget::column![
+    // Header and track list share ONE scrollable. They used to be siblings
+    // with only the list scrolling, so a long "Show info" biography could push
+    // the tracks off the bottom with no way to reach them.
+    page(iced::widget::column![
         header,
-        iced::widget::scrollable(
-            container(track_list).padding([0, 20])
-        )
-        .height(Length::Fill),
-    ]
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+        container(track_list).padding([0, 20]),
+    ])
 }

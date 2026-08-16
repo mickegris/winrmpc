@@ -2,6 +2,7 @@ use crate::mpd::types::*;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use crate::ui::widgets::link::icon_btn_tip;
 use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
@@ -26,7 +27,7 @@ pub fn view<'a>(
         let mut path_so_far = String::new();
         for (i, part) in parts.iter().enumerate() {
             if i > 0 {
-                r = r.push(text(" / ").size(14).color(AppColors::TEXT_MUTED));
+                r = r.push(text(" / ").size(14).color(AppColors::text_muted()));
                 if i == 1 {
                     path_so_far = part.to_string();
                 } else {
@@ -39,12 +40,12 @@ pub fn view<'a>(
                 path_so_far.clone()
             };
             r = r.push(
-                button(text(*part).size(14).color(AppColors::ACCENT))
+                button(text(*part).size(14).color(AppColors::accent()))
                     .on_press(Message::BrowsePath(target))
                     .padding([2, 4])
                     .style(|_theme: &iced::Theme, _status| button::Style {
                         background: None,
-                        text_color: AppColors::ACCENT,
+                        text_color: AppColors::accent(),
                         border: iced::Border::default(),
                         ..Default::default()
                     }),
@@ -84,7 +85,11 @@ pub fn view<'a>(
             DirectoryEntry::File(s) => {
                 // File rows carry the same four actions as the album, search and
                 // playlist track lists — see the row-action table in CLAUDE.md.
-                let label = format!("{} – {}", s.display_artist(), s.display_title());
+                // Artist and title are separate cells, not one fused
+                // string — a `format!("{artist} – {title}")` can't have half
+                // of it be a link.
+                let artist = s.display_artist();
+                let title = s.display_title();
                 let duration = s.format_duration();
                 let file_uri = s.file.clone();
                 items = items.push(
@@ -99,10 +104,12 @@ pub fn view<'a>(
                                 "Play now",
                                 Message::PlaySong(file_uri.clone())
                             ),
-                            text(label)
+                            text(title)
                                 .size(13)
                                 .color(song_row::title_color(is_current))
                                 .width(Length::Fill),
+                            container(link::artist_link(artist, 12))
+                                .width(Length::FillPortion(1)),
                             song_row::duration(duration, 11),
                             row![
                                 icon_btn_tip(
@@ -147,14 +154,14 @@ pub fn view<'a>(
                     DirectoryEntry::File(_) => unreachable!(),
                 };
                 let prefix_color = match entry {
-                    DirectoryEntry::Directory(_) => AppColors::ACCENT,
-                    _ => AppColors::SUCCESS,
+                    DirectoryEntry::Directory(_) => AppColors::accent(),
+                    _ => AppColors::success(),
                 };
                 items = items.push(
                     button(
                         row![
                             text(prefix).size(11).width(40).color(prefix_color),
-                            text(label).size(13).color(AppColors::TEXT_PRIMARY),
+                            text(label).size(13).color(AppColors::text_primary()),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),
@@ -164,7 +171,7 @@ pub fn view<'a>(
                     .width(Length::Fill)
                     .style(move |_theme: &iced::Theme, _status| button::Style {
                         background: Some(bg.into()),
-                        text_color: AppColors::TEXT_PRIMARY,
+                        text_color: AppColors::text_primary(),
                         border: iced::Border::default(),
                         ..Default::default()
                     }),
@@ -177,7 +184,7 @@ pub fn view<'a>(
         column![
             container(
                 column![
-                    text("Browse").size(24).color(AppColors::TEXT_PRIMARY),
+                    text("Browse").size(24).color(AppColors::text_primary()),
                     Space::with_height(8),
                     breadcrumb,
                     Space::with_height(8),

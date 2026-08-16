@@ -15,13 +15,13 @@ pub fn view<'a>(
     probing: bool,
     cd_device: &'a str,
 ) -> Element<'a, Message> {
-    let title = text("Audio CD").size(24).color(AppColors::TEXT_PRIMARY);
+    let title = text("Audio CD").size(24).color(AppColors::text_primary());
 
     // CD device configuration row
     let device_row = row![
         text("Device (e.g. /dev/sr0):")
             .size(12)
-            .color(AppColors::TEXT_SECONDARY),
+            .color(AppColors::text_secondary()),
         Space::with_width(8),
         text_input("/dev/sr0", cd_device)
             .on_input(Message::CdDeviceChanged)
@@ -56,12 +56,12 @@ pub fn view<'a>(
     let track_section: Element<Message> = if probing {
         text("Probing disc…")
             .size(13)
-            .color(AppColors::TEXT_SECONDARY)
+            .color(AppColors::text_secondary())
             .into()
     } else if tracks.is_empty() {
         text("No tracks loaded. Insert a disc and click Load Tracks.")
             .size(13)
-            .color(AppColors::TEXT_SECONDARY)
+            .color(AppColors::text_secondary())
             .into()
     } else {
         let mut track_rows = column![].spacing(4);
@@ -69,14 +69,14 @@ pub fn view<'a>(
         for (i, (uri, dur)) in tracks.iter().enumerate() {
             let label = text(format!("Track {}", i + 1))
                 .size(14)
-                .color(AppColors::TEXT_PRIMARY)
+                .color(AppColors::text_primary())
                 .width(Length::Fill);
 
             let dur_label = text(
                 dur.map(fmt_dur).unwrap_or_else(|| "--:--".to_string()),
             )
             .size(12)
-            .color(AppColors::TEXT_MUTED);
+            .color(AppColors::text_muted());
 
             let play_btn = button(text("Play").size(12))
                 .on_press(Message::CdPlayTrack(uri.clone()))
@@ -94,7 +94,7 @@ pub fn view<'a>(
                 .padding([8, 12])
                 .width(Length::Fill)
                 .style(|_theme: &iced::Theme| container::Style {
-                    background: Some(AppColors::BG_SECONDARY.into()),
+                    background: Some(AppColors::bg_secondary().into()),
                     border: iced::Border {
                         radius: 4.0.into(),
                         ..Default::default()

@@ -295,6 +295,18 @@ On first launch winrmpc connects to MPD at `127.0.0.1:6600` and writes a config 
 
 If the config file is ever left in a state that can't be parsed, winrmpc runs on defaults for that session, says so in the **Log** view, and will not save over the file — fix or delete it and settings will start saving again.
 
+### macOS
+
+Download `winrmpc-vX.Y.Z-macos-universal.app.zip` from the [releases page](https://github.com/mickegris/winrmpc/releases), unzip it, and drag `winrmpc.app` to Applications. It's a universal binary, so it runs natively on both Apple Silicon and Intel.
+
+**macOS will refuse to open it the first time**, and may say the app is *damaged*. It isn't — that's Gatekeeper's wording for anything downloaded without an Apple Developer signature, which costs $99/year. Either:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/winrmpc.app
+```
+
+or right-click the app, choose **Open**, and confirm once.
+
 ### Where your settings and cache live
 
 **Settings → Storage** shows both paths and gives you an **Open folder** button for each, which is the quickest way to get there. They're also written to the **Log** view at every startup.
@@ -340,7 +352,6 @@ port = 6600
 
 [theme]
 dark_mode = true
-accent_color = "#4fc3f7"
 ```
 
 Older single-server config files are still read and are migrated to the

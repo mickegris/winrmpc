@@ -25,7 +25,7 @@ pub fn view<'a>(
         .count();
 
     let mut header_row = row![
-        text("Snapcast").size(24).color(AppColors::TEXT_PRIMARY),
+        text("Snapcast").size(24).color(AppColors::text_primary()),
         Space::with_width(Length::Fill),
     ]
     .align_y(Alignment::Center);
@@ -47,20 +47,20 @@ pub fn view<'a>(
         Space::with_height(4),
         text("Control Snapcast multiroom clients.")
             .size(13)
-            .color(AppColors::TEXT_SECONDARY),
+            .color(AppColors::text_secondary()),
     ]
     .spacing(2);
 
     let body: Element<'a, Message> = if let Some(err) = error {
         container(
             column![
-                text("Snapcast unreachable").size(16).color(AppColors::ERROR),
+                text("Snapcast unreachable").size(16).color(AppColors::error()),
                 Space::with_height(4),
-                text(err).size(12).color(AppColors::TEXT_MUTED),
+                text(err).size(12).color(AppColors::text_muted()),
                 Space::with_height(8),
                 text("Check the Snapcast host/port in this server's settings.")
                     .size(11)
-                    .color(AppColors::TEXT_MUTED),
+                    .color(AppColors::text_muted()),
             ],
         )
         .padding(20)
@@ -69,7 +69,7 @@ pub fn view<'a>(
         container(
             text("No Snapcast groups found.")
                 .size(14)
-                .color(AppColors::TEXT_MUTED),
+                .color(AppColors::text_muted()),
         )
         .padding(20)
         .into()
@@ -111,7 +111,7 @@ fn group_section<'a>(
     let was_muted = group.muted;
 
     let mut header = row![
-        text(group.display_name()).size(16).color(AppColors::TEXT_PRIMARY),
+        text(group.display_name()).size(16).color(AppColors::text_primary()),
         Space::with_width(Length::Fill),
     ]
     .align_y(Alignment::Center);
@@ -140,7 +140,7 @@ fn group_section<'a>(
     container(column![header, Space::with_height(10), client_rows].spacing(0))
         .padding(12)
         .style(|_theme: &iced::Theme| container::Style {
-            background: Some(AppColors::BG_SECONDARY.into()),
+            background: Some(AppColors::bg_secondary().into()),
             border: iced::Border {
                 radius: 6.0.into(),
                 ..Default::default()
@@ -152,14 +152,14 @@ fn group_section<'a>(
 
 fn client_row<'a>(client: &'a SnapClient) -> Element<'a, Message> {
     let dot_color = if client.connected {
-        AppColors::SUCCESS
+        AppColors::success()
     } else {
-        AppColors::TEXT_MUTED
+        AppColors::text_muted()
     };
     let name_color = if client.connected {
-        AppColors::TEXT_PRIMARY
+        AppColors::text_primary()
     } else {
-        AppColors::TEXT_MUTED
+        AppColors::text_muted()
     };
 
     let mute_label = if client.muted { "Unmute" } else { "Mute" };
@@ -179,7 +179,7 @@ fn client_row<'a>(client: &'a SnapClient) -> Element<'a, Message> {
             .size(13)
             .color(name_color)
             .width(140),
-        text(latency_label).size(10).color(AppColors::TEXT_MUTED).width(50),
+        text(latency_label).size(10).color(AppColors::text_muted()).width(50),
         slider(0u8..=100u8, client.volume, move |v| {
             Message::SnapcastSetVolume(slider_id.clone(), v)
         })
@@ -187,7 +187,7 @@ fn client_row<'a>(client: &'a SnapClient) -> Element<'a, Message> {
         .step(1u8),
         text(format!("{}%", client.volume))
             .size(12)
-            .color(AppColors::TEXT_MUTED)
+            .color(AppColors::text_muted())
             .width(36),
         button(text(mute_label).size(11))
             .on_press(Message::SnapcastToggleClientMute(mute_id, was_muted))

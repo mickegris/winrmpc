@@ -1,7 +1,9 @@
-use crate::mpd::types::AlbumGroup;
+use crate::mpd::types::{AlbumGroup, Song};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::album_grid;
+use crate::ui::widgets::link;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -11,6 +13,7 @@ pub fn view<'a>(
     title: &'a str,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     grid_view: bool,
+    current_song: Option<&'a Song>,
 ) -> Element<'a, Message> {
     let body: Element<'a, Message> = if grid_view {
         let tiles: Vec<Element<'a, Message>> = albums
@@ -22,7 +25,7 @@ pub fn view<'a>(
                     group.artist.clone(),
                     (group.variants.len() > 1)
                         .then(|| format!("{} discs", group.variants.len())),
-                    Message::AlbumSelected(group.base.clone(), artist_opt(group)),
+                    song_row::is_current_album(&group.artist, &group.base, current_song),
                 )
             })
             .collect();
@@ -33,9 +36,9 @@ pub fn view<'a>(
         let mut list = column![].spacing(0);
         for (i, group) in albums.iter().enumerate() {
             let bg = if i % 2 == 0 {
-                AppColors::ROW_EVEN
+                AppColors::row_even()
             } else {
-                AppColors::ROW_ODD
+                AppColors::row_odd()
             };
 
             // Same cover as the grid, just small — so switching layouts
@@ -46,35 +49,50 @@ pub fn view<'a>(
                 &group.base,
             ));
 
-            let mut label = row![
-                thumb,
-                text(group.base.as_str()).size(14).color(AppColors::TEXT_PRIMARY),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center);
+            // Thumb + album title are one button; the artist beside them is
+            // its own link. Same reasoning as `album_grid::tile` — the artist
+            // must not be a small region of a bigger button that goes
+            // somewhere else.
+            let is_current =
+                song_row::is_current_album(&group.artist, &group.base, current_song);
+            let album_btn = button(
+                row![
+                    thumb,
+                    text(group.base.as_str())
+                        .size(14)
+                        .color(song_row::title_color(is_current)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .on_press(link::album_message(&group.base, artist_opt(group).as_deref()))
+            .padding(0)
+            .style(|_theme: &iced::Theme, _status| button::Style {
+                background: None,
+                text_color: AppColors::text_primary(),
+                border: iced::Border::default(),
+                ..Default::default()
+            });
+
+            let mut label = row![album_btn].spacing(8).align_y(Alignment::Center);
 
             if !group.artist.is_empty() {
-                label = label.push(
-                    text(group.artist.as_str()).size(12).color(AppColors::TEXT_MUTED),
-                );
+                label = label.push(link::artist_link(&group.artist, 12));
             }
             if group.variants.len() > 1 {
                 label = label.push(
                     text(format!("{} discs", group.variants.len()))
                         .size(11)
-                        .color(AppColors::ACCENT),
+                        .color(AppColors::accent()),
                 );
             }
 
             list = list.push(
-                button(label)
-                    .on_press(Message::AlbumSelected(group.base.clone(), artist_opt(group)))
+                container(label)
                     .padding([7, 12])
                     .width(Length::Fill)
-                    .style(move |_theme: &iced::Theme, _status| button::Style {
+                    .style(move |_theme: &iced::Theme| container::Style {
                         background: Some(bg.into()),
-                        text_color: AppColors::TEXT_PRIMARY,
-                        border: iced::Border::default(),
                         ..Default::default()
                     }),
             );
@@ -85,15 +103,13 @@ pub fn view<'a>(
     container(
         column![
             row![
-                button(text("<- Back").size(14).color(AppColors::ACCENT))
-                    .on_press(Message::GoBack)
-                    .padding([4, 8]),
+                link::back_button(),
                 Space::with_width(12),
-                text(title).size(24).color(AppColors::TEXT_PRIMARY),
+                text(title).size(24).color(AppColors::text_primary()),
                 Space::with_width(12),
                 text(format!("{} albums", albums.len()))
                     .size(14)
-                    .color(AppColors::TEXT_MUTED),
+                    .color(AppColors::text_muted()),
                 Space::with_width(Length::Fill),
                 album_grid::layout_toggle(grid_view),
             ]

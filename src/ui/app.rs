@@ -6,6 +6,7 @@ use crate::mpd::MpdClient;
 use crate::store::Store;
 use crate::mpd::types::{push_recent, *};
 use crate::ui::message::{ArtOutcome, Message, View};
+use crate::ui::theme::colors;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
 use crate::ui::views;
@@ -15,6 +16,67 @@ use iced::{Element, Length, Subscription, Task, Theme};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// One toast: a rounded card, error-coloured or not, dismissible by click.
+fn toast_view(toast: &Toast) -> Element<'_, Message> {
+    let (border, fg) = if toast.is_error {
+        (AppColors::error(), AppColors::error())
+    } else {
+        (AppColors::border(), AppColors::text_primary())
+    };
+    iced::widget::button(
+        container(iced::widget::text(toast.text.clone()).size(12).color(fg))
+            .padding([8, 14])
+            .max_width(420)
+            .style(move |_t: &iced::Theme| container::Style {
+                background: Some(AppColors::bg_tertiary().into()),
+                border: iced::Border {
+                    radius: 6.0.into(),
+                    width: 1.0,
+                    color: border,
+                },
+                ..Default::default()
+            }),
+    )
+    .on_press(Message::DismissToast)
+    .padding(0)
+    .style(|_t: &iced::Theme, _s| iced::widget::button::Style {
+        background: None,
+        text_color: AppColors::text_primary(),
+        border: iced::Border::default(),
+        shadow: iced::Shadow::default(),
+    })
+    .into()
+}
+
+/// How long a toast stays up before it expires on its own.
+const TOAST_INFO_SECS: u64 = 4;
+/// Errors linger longer than info — they are the ones worth reading.
+const TOAST_ERROR_SECS: u64 = 8;
+/// More than this on screen and they'd cover the content they're reporting on.
+const MAX_TOASTS: usize = 3;
+
+/// A transient message shown over the main content.
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub text: String,
+    /// Errors are styled and timed differently from progress notes — the field
+    /// this replaced was named `last_error` but also carried "Database update
+    /// started", so the two were indistinguishable.
+    pub is_error: bool,
+    shown_at: std::time::Instant,
+}
+
+impl Toast {
+    fn expired(&self) -> bool {
+        let ttl = if self.is_error {
+            TOAST_ERROR_SECS
+        } else {
+            TOAST_INFO_SECS
+        };
+        self.shown_at.elapsed().as_secs() >= ttl
+    }
+}
 
 pub struct App {
     // MPD
@@ -38,7 +100,7 @@ pub struct App {
     albums: Vec<AlbumGroup>,
     genres: Vec<String>,
     artist_albums: HashMap<String, Vec<AlbumGroup>>,
-    genre_albums: HashMap<String, Vec<String>>,
+    genre_albums: HashMap<String, Vec<AlbumGroup>>,
     album_songs: HashMap<String, Vec<Song>>,
     selected_artist: Option<String>,
     selected_album: Option<String>,
@@ -198,9 +260,26 @@ pub struct App {
     /// a durable preference.
     lyrics_follow: bool,
     lyrics_scroll_id: scrollable::Id,
+    queue_scroll_id: scrollable::Id,
 
     // Errors
     last_error: Option<String>,
+    /// Transient messages shown over the content, newest last.
+    ///
+    /// `last_error` is rendered *only* by `settings_view`, so before this
+    /// existed an error was invisible unless the user happened to be standing
+    /// on the Settings screen when it happened. A queue rather than a single
+    /// slot: two failures in quick succession (a bulk enqueue hitting several
+    /// bad URIs) must not have the second silently replace the first.
+    toasts: std::collections::VecDeque<Toast>,
+    /// Latest window size seen from `window::resize_events`.
+    ///
+    /// Kept in memory and written **once, on close** rather than on every
+    /// event: a drag emits a resize per frame, and rewriting the TOML dozens
+    /// of times a second would be pathological.
+    window_size: (f32, f32),
+    /// Guards against overlapping output moves — see `Message::MoveOutput`.
+    moving_output: bool,
 }
 
 impl App {
@@ -214,6 +293,11 @@ impl App {
             .or_else(|| config.servers.first().map(|s| s.name.clone()))
             .unwrap_or_else(|| "Default".into());
         let client = MpdClient::new(&config.server_addr(&active_server));
+        // Before anything is drawn: the palette is a process global, so it has
+        // to reflect the saved preference before the first frame rather than
+        // after the first toggle.
+        colors::set_dark_mode(config.theme.dark_mode);
+
         // Log both resolved paths at startup so they land in the in-app Log
         // view. This is the zero-UI answer to "where does this thing keep its
         // settings" — on macOS the directory is `~/Library/Application
@@ -352,15 +436,66 @@ impl App {
             show_lyrics: true,
             lyrics_follow: true,
             lyrics_scroll_id: scrollable::Id::unique(),
+            queue_scroll_id: scrollable::Id::unique(),
 
             last_error: None,
+            toasts: std::collections::VecDeque::new(),
+            window_size: config.window.restored_size(),
+            moving_output: false,
         };
 
-        (app, Task::perform(async {}, |_| Message::Connect))
+        // `window::Settings` has no `maximized` field in 0.13, so it can only
+        // be applied once the window exists.
+        let restore_maximized: Task<Message> = if config.window.maximized {
+            iced::window::get_latest().then(|id| match id {
+                Some(id) => iced::window::maximize(id, true),
+                None => Task::none(),
+            })
+        } else {
+            Task::none()
+        };
+
+        (
+            app,
+            Task::batch([
+                restore_maximized,
+                Task::perform(async {}, |_| Message::Connect),
+            ]),
+        )
     }
 
+    /// The theme iced's **own** widgets style themselves from — `pick_list`,
+    /// `slider`, `text_input`, `scrollable`, default buttons, the menu popup.
+    ///
+    /// Swapping only `AppColors` would give a light app with dark dropdowns
+    /// and dark text inputs, because those don't go through `AppColors` at
+    /// all. Both halves are built from the same `Palette` so they can't drift.
+    ///
+    /// Cached: this is called on every redraw, and `Theme::custom` allocates a
+    /// `String` and an `Arc` and derives a full extended palette each time.
     pub fn theme(&self) -> Theme {
-        Theme::Dark
+        use std::sync::OnceLock;
+        static DARK_THEME: OnceLock<Theme> = OnceLock::new();
+        static LIGHT_THEME: OnceLock<Theme> = OnceLock::new();
+
+        fn build(name: &str, p: &colors::Palette) -> Theme {
+            Theme::custom(
+                name.to_string(),
+                iced::theme::Palette {
+                    background: p.bg_primary,
+                    text: p.text_primary,
+                    primary: p.accent,
+                    success: p.success,
+                    danger: p.error,
+                },
+            )
+        }
+
+        if colors::is_dark_mode() {
+            DARK_THEME.get_or_init(|| build("winrmpc dark", &colors::DARK)).clone()
+        } else {
+            LIGHT_THEME.get_or_init(|| build("winrmpc light", &colors::LIGHT)).clone()
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -375,6 +510,18 @@ impl App {
         if self.current_view == View::Snapcast {
             subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Message::SnapcastPollTick));
         }
+
+        // Window geometry: resizes update in-memory state, the close request
+        // is what persists it. `exit_on_close_request` stays true, so this is
+        // best-effort — but a resize is followed by a close often enough that
+        // it lands in practice.
+        // `on_key_press` takes a `fn` pointer, so it can't see app state —
+        // it forwards the raw key and `update` decides. See `ui::shortcut`.
+        subs.push(iced::keyboard::on_key_press(|key, mods| {
+            Some(Message::KeyPressed(key, mods))
+        }));
+        subs.push(iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size)));
+        subs.push(iced::window::close_requests().map(Message::WindowCloseRequested));
 
         Subscription::batch(subs)
     }
@@ -418,7 +565,7 @@ impl App {
                     }
                     Err(e) => {
                         self.connected = false;
-                        self.last_error = Some(e);
+                        self.toast_error(e);
                     }
                 }
                 Task::none()
@@ -760,6 +907,24 @@ impl App {
                     |_| Message::Tick,
                 )
             }
+            Message::JumpToCurrent => {
+                // Same ratio trick the lyrics pane uses: iced 0.13 exposes no
+                // per-item scroll offset, but snapping to index/(len-1) is
+                // accurate here in a way it isn't there, because queue rows
+                // are a uniform height and lyric lines aren't.
+                let Some(pos) = self.status.song_pos else {
+                    return Task::none();
+                };
+                let len = self.queue.len();
+                if len < 2 {
+                    return Task::none();
+                }
+                let ratio = pos as f32 / (len - 1) as f32;
+                scrollable::snap_to(
+                    self.queue_scroll_id.clone(),
+                    scrollable::RelativeOffset { x: 0.0, y: ratio },
+                )
+            }
             Message::QueueShuffle => {
                 let client = self.client.clone();
                 Task::perform(
@@ -1017,12 +1182,14 @@ impl App {
                 let client = self.client.clone();
                 Task::perform(
                     async move {
-                        let mut albums = client
-                            .list_tag_filtered("Album", "Genre", &name)
+                        // Artist-scoped and disc-collapsed, like every other
+                        // album listing — so an album opened from a genre gets
+                        // the same view as one opened from Albums.
+                        let pairs = client
+                            .list_albums_by_artist_filtered("Genre", &name)
                             .await
                             .unwrap_or_default();
-                        albums.sort();
-                        (name, albums)
+                        (name, group_albums_by_artist(&pairs))
                     },
                     |(name, albums)| Message::GenreAlbumsLoaded(name, albums),
                 )
@@ -1305,8 +1472,8 @@ impl App {
                     }
                     Some(_) => Task::none(),
                     None => {
-                        self.last_error = Some(
-                            "Playlist names must not be empty or contain slashes.".to_string(),
+                        self.toast_error(
+                            "Playlist names must not be empty or contain slashes.",
                         );
                         Task::none()
                     }
@@ -1341,8 +1508,8 @@ impl App {
                         }
                         Some(_) => {}
                         None => {
-                            self.last_error = Some(
-                                "Playlist names must not be empty or contain slashes.".to_string(),
+                            self.toast_error(
+                                "Playlist names must not be empty or contain slashes.",
                             );
                         }
                     }
@@ -1413,8 +1580,8 @@ impl App {
                         }
                     }
                     None => {
-                        self.last_error = Some(
-                            "Playlist names must not be empty or contain slashes.".to_string(),
+                        self.toast_error(
+                            "Playlist names must not be empty or contain slashes.",
                         );
                         Task::none()
                     }
@@ -1578,22 +1745,84 @@ impl App {
                 );
                 Task::batch([toggle_task, outputs_task])
             }
-            Message::MoveOutput { output_name, target_partition } => {
+            Message::MoveOutput {
+                output_id,
+                output_name,
+                target_partition,
+                was_enabled,
+            } => {
+                // One move at a time. A second move starting while this one has
+                // the client parked in another partition would run its commands
+                // against the wrong partition and could leave it there.
+                if self.moving_output {
+                    self.toast_info("A move is already in progress — please wait");
+                    return Task::none();
+                }
+                self.moving_output = true;
+
                 let client = self.client.clone();
-                let current = self.status.partition
+                let current = self
+                    .status
+                    .partition
                     .clone()
                     .unwrap_or_else(|| "default".to_string());
                 Task::perform(
                     async move {
-                        // Switch to target partition
-                        client.switch_partition(&target_partition).await.ok();
-                        // Move the output into the now-current partition
-                        client.move_output(&output_name).await.ok();
-                        // Switch back to where we were
+                        // Settling time between partition-switching commands.
+                        // Ported from mikMPD, where it was needed in practice.
+                        const SETTLE: std::time::Duration =
+                            std::time::Duration::from_millis(100);
+
+                        // 1. Disable first. `moveoutput` on an open,
+                        //    actively-rendering output can deadlock the MPD
+                        //    server — this is the part that makes the move
+                        //    safe rather than merely tidy.
+                        if was_enabled {
+                            if let Err(e) = client.disable_output(output_id).await {
+                                return Err(format!("Couldn't disable the output: {e}"));
+                            }
+                            tokio::time::sleep(SETTLE).await;
+                        }
+
+                        // 2. `moveoutput` moves into the *current* partition,
+                        //    so switch there first.
+                        if let Err(e) = client.switch_partition(&target_partition).await {
+                            return Err(format!("Couldn't switch to {target_partition}: {e}"));
+                        }
+                        tokio::time::sleep(SETTLE).await;
+
+                        let moved = client.move_output(&output_name).await;
+
+                        // 3. Re-enable in the target so the move is seamless.
+                        //    MPD may assign a **new id**, so find it by name —
+                        //    `outputs()` already filters the `dummy`
+                        //    placeholder left behind in the source partition,
+                        //    which shares the name.
+                        if moved.is_ok() && was_enabled {
+                            if let Ok(outs) = client.outputs().await {
+                                if let Some(o) = outs.iter().find(|o| o.name == output_name) {
+                                    client.enable_output(o.id).await.ok();
+                                }
+                            }
+                        }
+
+                        // 4. Always return to where the user was, even if the
+                        //    move failed — leaving them in another partition
+                        //    would be a worse outcome than the failed move.
                         client.switch_partition(&current).await.ok();
+                        tokio::time::sleep(SETTLE).await;
+
+                        moved.map_err(|e| format!("Couldn't move {output_name}: {e}"))
                     },
-                    |_| Message::RefreshAll,
+                    Message::OutputMoved,
                 )
+            }
+            Message::OutputMoved(result) => {
+                self.moving_output = false;
+                if let Err(e) = result {
+                    self.toast_error(e);
+                }
+                self.update(Message::RefreshAll)
             }
 
             // =================================================================
@@ -2255,7 +2484,7 @@ impl App {
                 )
             }
             Message::DatabaseUpdating(_job_id) => {
-                self.last_error = Some("Database update started".to_string());
+                self.toast_info("Database update started");
                 self.fetch_stats()
             }
 
@@ -2264,6 +2493,9 @@ impl App {
             // =================================================================
             Message::Tick => {
                 self.log_entries = crate::logger::get_entries();
+                // Expiry rides the 500ms poll that already exists — a
+                // dedicated timer for a 4-second toast would be waste.
+                self.toasts.retain(|t| !t.expired());
                 if self.connected {
                     let mut tasks = vec![self.refresh_status(), self.lyrics_autoscroll()];
                     if self.current_view == View::ServerStats {
@@ -2274,13 +2506,117 @@ impl App {
                     Task::none()
                 }
             }
+            Message::KeyPressed(key, mods) => {
+                let ctx = crate::ui::shortcut::Context {
+                    view: self.current_view.clone(),
+                    is_playing: self.status.state == crate::mpd::types::PlayState::Play,
+                    elapsed: self.status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0),
+                    duration: self.status.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0),
+                    volume: self.status.volume,
+                };
+                match crate::ui::shortcut::resolve(&key, mods, &ctx) {
+                    Some(msg) => self.update(msg),
+                    None => Task::none(),
+                }
+            }
+            Message::FocusSearch => {
+                let already_there = self.current_view == View::Search;
+                let nav = if already_there {
+                    Task::none()
+                } else {
+                    self.update(Message::NavigateTo(View::Search))
+                };
+                // select_all as well as focus: landing in a box that already
+                // holds a query should let the next keystroke replace it.
+                Task::batch([
+                    nav,
+                    iced::widget::text_input::focus(crate::ui::views::search::input_id()),
+                    iced::widget::text_input::select_all(crate::ui::views::search::input_id()),
+                ])
+            }
+            Message::WindowResized(size) => {
+                self.window_size = (size.width, size.height);
+                Task::none()
+            }
+            // Close is intercepted (`exit_on_close_request: false`) so the
+            // maximised state can be *queried* before the window goes — it is
+            // only reachable through an async `Task`, and by the time a normal
+            // close has propagated there is nothing left to ask.
+            //
+            // Both arms end in `window::close`, so a failure anywhere in here
+            // still closes the app. An unclosable window would be a far worse
+            // bug than a forgotten window size.
+            Message::WindowCloseRequested(id) => iced::window::get_maximized(id)
+                .map(move |maximized| Message::WindowClosing(id, maximized)),
+            Message::WindowClosing(id, maximized) => {
+                // A maximised window reports its *restored* size on some
+                // platforms and its full-screen size on others, so don't
+                // overwrite the saved size while maximised — reopening
+                // un-maximised would then use the screen-sized value.
+                if !maximized {
+                    let (w, h) = self.window_size;
+                    self.config.window.width = w;
+                    self.config.window.height = h;
+                }
+                if self.config.window.maximized != maximized {
+                    self.config.window.maximized = maximized;
+                }
+                self.config.save_and_log("window geometry");
+                iced::window::close(id)
+            }
+            Message::SetDarkMode(dark) => {
+                self.config.theme.dark_mode = dark;
+                colors::set_dark_mode(dark);
+                self.config.save_and_log("appearance");
+                Task::none()
+            }
+            Message::DismissToast => {
+                self.toasts.pop_front();
+                Task::none()
+            }
             Message::ErrorOccurred(e) => {
                 tracing::error!("{e}");
-                self.last_error = Some(e);
+                self.toast_error(e);
                 Task::none()
             }
             Message::Noop => Task::none(),
         }
+    }
+
+    /// Show a transient error over the content.
+    ///
+    /// Use this **instead of writing `last_error` directly** for anything the
+    /// user should notice. `last_error` still backs the Settings status line,
+    /// so both are set — but this is the half that is visible from wherever
+    /// they actually are.
+    fn toast_error(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.last_error = Some(text.clone());
+        self.push_toast(Toast {
+            text,
+            is_error: true,
+            shown_at: std::time::Instant::now(),
+        });
+    }
+
+    /// Show a transient progress/status note.
+    fn toast_info(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.last_error = Some(text.clone());
+        self.push_toast(Toast {
+            text,
+            is_error: false,
+            shown_at: std::time::Instant::now(),
+        });
+    }
+
+    fn push_toast(&mut self, toast: Toast) {
+        // Drop the oldest rather than refusing the newest: the most recent
+        // failure is the one the user is most likely to be looking for.
+        while self.toasts.len() >= MAX_TOASTS {
+            self.toasts.pop_front();
+        }
+        self.toasts.push_back(toast);
     }
 
     /// The playing track's URI, for row highlighting in library listings.
@@ -2333,7 +2669,11 @@ impl App {
                 )
             }
             View::Queue => {
-                views::queue::view(&self.queue, self.status.song_pos)
+                views::queue::view(
+                    &self.queue,
+                    self.status.song_pos,
+                    self.queue_scroll_id.clone(),
+                )
             }
             View::Library => {
                 // Redirect to Artists if someone navigates here
@@ -2348,6 +2688,7 @@ impl App {
                     "Albums",
                     &self.art_handles,
                     self.config.album_grid_view,
+                    self.current_song.as_ref(),
                 )
             }
             View::Genres => {
@@ -2359,6 +2700,7 @@ impl App {
                     "Recently Added",
                     &self.art_handles,
                     self.config.album_grid_view,
+                    self.current_song.as_ref(),
                 )
             }
             View::RecentlyPlayed => views::recently_played::view(
@@ -2367,6 +2709,7 @@ impl App {
                 self.config.album_grid_view,
                 &self.art_handles,
                 self.current_file(),
+                self.current_song.as_ref(),
             ),
             View::ArtistDetail(name) => {
                 let albums = self
@@ -2381,6 +2724,7 @@ impl App {
                     &self.art_handles,
                     bio,
                     self.show_artist_bio,
+                    self.current_song.as_ref(),
                 )
             }
             View::AlbumDetail(name, artist) => {
@@ -2411,7 +2755,7 @@ impl App {
                     .get(name)
                     .map(|a| a.as_slice())
                     .unwrap_or(&[]);
-                views::genre_detail::view(name, albums)
+                views::genre_detail::view(name, albums, self.current_song.as_ref())
             }
             View::Browser => {
                 views::browser::view(
@@ -2504,11 +2848,40 @@ impl App {
             player_bar,
         ];
 
+        // Toasts float over the content rather than displacing it, so a
+        // message can't reflow the view underneath it while it's being read.
+        // Bottom-aligned above the player bar; `Shrink` on the overlay column
+        // is what keeps it from covering (and swallowing clicks meant for)
+        // the whole window.
+        let content: Element<'_, Message> = if self.toasts.is_empty() {
+            content.into()
+        } else {
+            let mut stack = iced::widget::stack![content];
+            let toasts = column(self.toasts.iter().map(toast_view).collect::<Vec<_>>())
+                .spacing(6)
+                .width(Length::Shrink);
+            stack = stack.push(
+                container(toasts)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .align_y(iced::alignment::Vertical::Bottom)
+                    .padding(iced::Padding {
+                        top: 0.0,
+                        right: 20.0,
+                        // Clear of the player bar.
+                        bottom: 110.0,
+                        left: 0.0,
+                    }),
+            );
+            stack.into()
+        };
+
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_PRIMARY.into()),
+                background: Some(AppColors::bg_primary().into()),
                 ..Default::default()
             })
             .into()
@@ -3391,15 +3764,15 @@ fn settings_view(&self) -> Element<'_, Message> {
         let error_text: Element<'_, Message> = match &self.last_error {
             Some(e) => text(format!("Status: {e}"))
                 .size(13)
-                .color(AppColors::WARNING)
+                .color(AppColors::warning())
                 .into(),
             None => Space::with_height(0).into(),
         };
 
         let conn_badge = if self.connected {
-            text("Connected").size(13).color(AppColors::SUCCESS)
+            text("Connected").size(13).color(AppColors::success())
         } else {
-            text("Disconnected").size(13).color(AppColors::ERROR)
+            text("Disconnected").size(13).color(AppColors::error())
         };
 
         // Server list rows
@@ -3412,9 +3785,9 @@ fn settings_view(&self) -> Element<'_, Message> {
             let is_renaming = self.settings_renaming.as_deref() == Some(server.name.as_str());
 
             let row_bg = if is_active {
-                AppColors::BG_TERTIARY
+                AppColors::bg_tertiary()
             } else {
-                AppColors::BG_SECONDARY
+                AppColors::bg_secondary()
             };
 
             let row_content: Element<'_, Message> = if is_renaming {
@@ -3440,15 +3813,15 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .into()
             } else {
                 let name_text: Element<'_, Message> = if is_active {
-                    text(&server.name).size(13).color(AppColors::ACCENT).into()
+                    text(&server.name).size(13).color(AppColors::accent()).into()
                 } else {
-                    text(&server.name).size(13).color(AppColors::TEXT_PRIMARY).into()
+                    text(&server.name).size(13).color(AppColors::text_primary()).into()
                 };
 
-                let addr_text = text(server.addr()).size(11).color(AppColors::TEXT_MUTED);
+                let addr_text = text(server.addr()).size(11).color(AppColors::text_muted());
 
                 let connect_btn: Element<'_, Message> = if is_active {
-                    icon::icon_sized(icon::DOT, 13).color(AppColors::SUCCESS).into()
+                    icon::icon_sized(icon::DOT, 13).color(AppColors::success()).into()
                 } else {
                     button(text("Connect").size(11))
                         .on_press(Message::SwitchServer(server.name.clone()))
@@ -3457,12 +3830,12 @@ fn settings_view(&self) -> Element<'_, Message> {
                 };
 
                 let default_btn: Element<'_, Message> = if is_default {
-                    container(text("Default").size(10).color(AppColors::ACCENT))
+                    container(text("Default").size(10).color(AppColors::accent()))
                         .padding([3, 8])
                         .style(|_t: &iced::Theme| container::Style {
                             background: None,
                             border: iced::Border {
-                                color: AppColors::ACCENT,
+                                color: AppColors::accent(),
                                 width: 1.0,
                                 radius: 3.0.into(),
                             },
@@ -3477,12 +3850,12 @@ fn settings_view(&self) -> Element<'_, Message> {
                             background: None,
                             text_color: match s {
                                 button::Status::Hovered | button::Status::Pressed => {
-                                    AppColors::TEXT_PRIMARY
+                                    AppColors::text_primary()
                                 }
-                                _ => AppColors::TEXT_MUTED,
+                                _ => AppColors::text_muted(),
                             },
                             border: iced::Border {
-                                color: AppColors::TEXT_MUTED,
+                                color: AppColors::text_muted(),
                                 width: 1.0,
                                 radius: 3.0.into(),
                             },
@@ -3499,9 +3872,9 @@ fn settings_view(&self) -> Element<'_, Message> {
                             background: None,
                             text_color: match s {
                                 button::Status::Hovered | button::Status::Pressed => {
-                                    AppColors::TEXT_PRIMARY
+                                    AppColors::text_primary()
                                 }
-                                _ => AppColors::TEXT_MUTED,
+                                _ => AppColors::text_muted(),
                             },
                             border: iced::Border::default(),
                             shadow: iced::Shadow::default(),
@@ -3519,7 +3892,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                         .padding([3, 8])
                         .style(|_t: &iced::Theme, _s: button::Status| button::Style {
                             background: None,
-                            text_color: AppColors::TEXT_MUTED,
+                            text_color: AppColors::text_muted(),
                             border: iced::Border::default(),
                             shadow: iced::Shadow::default(),
                         })
@@ -3553,7 +3926,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                                  width: u16,
                                  on_input: fn(String) -> Message| {
                         column![
-                            text(label).size(10).color(AppColors::TEXT_MUTED),
+                            text(label).size(10).color(AppColors::text_muted()),
                             text_input(placeholder, value)
                                 .on_input(on_input)
                                 .on_submit(Message::ConfirmEditServer)
@@ -3623,11 +3996,11 @@ fn settings_view(&self) -> Element<'_, Message> {
 
         // Add-server form
         let add_form = column![
-            text("Add server").size(14).color(AppColors::TEXT_SECONDARY),
+            text("Add server").size(14).color(AppColors::text_secondary()),
             Space::with_height(6),
             row![
                 column![
-                    text("Name").size(11).color(AppColors::TEXT_MUTED),
+                    text("Name").size(11).color(AppColors::text_muted()),
                     text_input("My Server", &self.settings_server_name)
                         .on_input(Message::ServerNameChanged)
                         .padding(6)
@@ -3637,7 +4010,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .width(Length::FillPortion(2)),
                 Space::with_width(6),
                 column![
-                    text("Host").size(11).color(AppColors::TEXT_MUTED),
+                    text("Host").size(11).color(AppColors::text_muted()),
                     text_input("127.0.0.1", &self.settings_host)
                         .on_input(Message::HostChanged)
                         .padding(6)
@@ -3647,7 +4020,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .width(Length::FillPortion(3)),
                 Space::with_width(6),
                 column![
-                    text("Port").size(11).color(AppColors::TEXT_MUTED),
+                    text("Port").size(11).color(AppColors::text_muted()),
                     text_input("6600", &self.settings_port)
                         .on_input(Message::PortChanged)
                         .padding(6)
@@ -3657,7 +4030,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .width(70),
                 Space::with_width(6),
                 column![
-                    text("Password").size(11).color(AppColors::TEXT_MUTED),
+                    text("Password").size(11).color(AppColors::text_muted()),
                     text_input("", &self.settings_password)
                         .on_input(Message::PasswordChanged)
                         .padding(6)
@@ -3690,7 +4063,7 @@ fn settings_view(&self) -> Element<'_, Message> {
         };
 
         let size_limit_row = row![
-            text("Limit").size(11).color(AppColors::TEXT_MUTED),
+            text("Limit").size(11).color(AppColors::text_muted()),
             Space::with_width(8),
             text_input("500", &self.settings_cache_size)
                 .on_input(Message::ArtCacheSizeChanged)
@@ -3699,7 +4072,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                 .size(12)
                 .width(70),
             Space::with_width(4),
-            text("MB").size(11).color(AppColors::TEXT_MUTED),
+            text("MB").size(11).color(AppColors::text_muted()),
             Space::with_width(8),
             button(text("Save").size(11))
                 .on_press(Message::SaveArtCacheSize)
@@ -3711,9 +4084,9 @@ fn settings_view(&self) -> Element<'_, Message> {
             row![
                 text("Clear all cached art, lyrics and biographies?")
                     .size(12)
-                    .color(AppColors::TEXT_SECONDARY),
+                    .color(AppColors::text_secondary()),
                 Space::with_width(10),
-                button(text("Clear").size(12).color(AppColors::ERROR))
+                button(text("Clear").size(12).color(AppColors::error()))
                     .on_press(Message::ClearCaches)
                     .padding([4, 12]),
                 Space::with_width(6),
@@ -3725,7 +4098,7 @@ fn settings_view(&self) -> Element<'_, Message> {
             .into()
         } else {
             row![
-                text(size_label).size(12).color(AppColors::TEXT_MUTED),
+                text(size_label).size(12).color(AppColors::text_muted()),
                 Space::with_width(Length::Fill),
                 button(text("Clear cache").size(12))
                     .on_press(Message::ClearCaches)
@@ -3736,7 +4109,7 @@ fn settings_view(&self) -> Element<'_, Message> {
         };
 
         let cache_section = column![
-            text("Cache").size(16).color(AppColors::TEXT_PRIMARY),
+            text("Cache").size(16).color(AppColors::text_primary()),
             Space::with_height(4),
             text(
                 "Album art, lyrics and Wikipedia biographies are cached on disk. \
@@ -3745,7 +4118,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                  MusicBrainz takes a while. Play history is not affected."
             )
             .size(11)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
             Space::with_height(8),
             size_limit_row,
             Space::with_height(8),
@@ -3770,20 +4143,20 @@ fn settings_view(&self) -> Element<'_, Message> {
             let path_line: Element<'_, Message> = match &path {
                 Some(p) => text(p.clone())
                     .size(11)
-                    .color(AppColors::TEXT_SECONDARY)
+                    .color(AppColors::text_secondary())
                     .into(),
                 None => text("unavailable — this will not be saved this session")
                     .size(11)
-                    .color(AppColors::ERROR)
+                    .color(AppColors::error())
                     .into(),
             };
             let mut left = column![
-                text(label).size(12).color(AppColors::TEXT_PRIMARY),
+                text(label).size(12).color(AppColors::text_primary()),
                 path_line,
             ]
             .spacing(1);
             if let Some(note) = note {
-                left = left.push(text(note).size(10).color(AppColors::WARNING));
+                left = left.push(text(note).size(10).color(AppColors::warning()));
             }
 
             let mut r = row![left.width(Length::Fill)].align_y(iced::Alignment::Center);
@@ -3797,10 +4170,88 @@ fn settings_view(&self) -> Element<'_, Message> {
             r.into()
         };
 
+        // --- Appearance section ---
+        let dark = self.config.theme.dark_mode;
+        let mode_btn = |label: &'static str, is_dark: bool| {
+            let selected = dark == is_dark;
+            button(text(label).size(12))
+                .on_press(Message::SetDarkMode(is_dark))
+                .padding([4, 14])
+                .style(move |_t: &iced::Theme, _s: button::Status| button::Style {
+                    background: Some(if selected {
+                        AppColors::accent().into()
+                    } else {
+                        AppColors::bg_tertiary().into()
+                    }),
+                    text_color: if selected {
+                        AppColors::bg_primary()
+                    } else {
+                        AppColors::text_muted()
+                    },
+                    border: iced::Border {
+                        radius: 3.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+        };
+        let appearance_section = column![
+            text("Appearance").size(16).color(AppColors::text_primary()),
+            Space::with_height(4),
+            text("Applies immediately and is remembered.")
+                .size(11)
+                .color(AppColors::text_muted()),
+            Space::with_height(8),
+            row![mode_btn("Dark", true), mode_btn("Light", false)].spacing(6),
+        ]
+        .spacing(2);
+
+        // --- Shortcuts section ---
+        //
+        // A shortcut nobody knows about is dead code. Settings rather than a
+        // `?` overlay: no new overlay machinery, and it sits next to Storage,
+        // which is already the "how does this thing work" corner.
+        let shortcut_row = |keys: &'static str, what: &'static str| {
+            row![
+                container(text(keys).size(11).color(AppColors::text_primary()))
+                    .padding([2, 6])
+                    .width(120)
+                    .style(|_t: &iced::Theme| container::Style {
+                        background: Some(AppColors::bg_tertiary().into()),
+                        border: iced::Border {
+                            radius: 3.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                Space::with_width(10),
+                text(what).size(12).color(AppColors::text_secondary()),
+            ]
+            .align_y(iced::Alignment::Center)
+        };
+        let shortcuts_section = column![
+            text("Keyboard shortcuts").size(16).color(AppColors::text_primary()),
+            Space::with_height(4),
+            text(
+                "Space and the bare arrow keys are ignored on screens with a text \
+                 box, so they never interrupt typing."
+            )
+            .size(11)
+            .color(AppColors::text_muted()),
+            Space::with_height(8),
+            shortcut_row("Space", "Play / pause"),
+            shortcut_row("← / →", "Seek 5 seconds"),
+            shortcut_row("Ctrl + ← / →", "Previous / next track"),
+            shortcut_row("Ctrl + ↑ / ↓", "Volume"),
+            shortcut_row("Ctrl + F  or  /", "Search"),
+            shortcut_row("Esc", "Back"),
+        ]
+        .spacing(3);
+
         let config_path = AppConfig::config_path();
         let cache_dir = AppConfig::cache_dir();
         let storage_section = column![
-            text("Storage").size(16).color(AppColors::TEXT_PRIMARY),
+            text("Storage").size(16).color(AppColors::text_primary()),
             Space::with_height(4),
             text(
                 "Where winrmpc keeps your settings and its cache. Both paths \
@@ -3808,7 +4259,7 @@ fn settings_view(&self) -> Element<'_, Message> {
                  WINRMPC_CACHE_DIR environment variables."
             )
             .size(11)
-            .color(AppColors::TEXT_MUTED),
+            .color(AppColors::text_muted()),
             Space::with_height(8),
             storage_row(
                 "Settings",
@@ -3836,14 +4287,14 @@ fn settings_view(&self) -> Element<'_, Message> {
 
         let content = column![
             row![
-                text("Settings").size(24).color(AppColors::TEXT_PRIMARY),
+                text("Settings").size(24).color(AppColors::text_primary()),
                 Space::with_width(Length::Fill),
                 conn_badge,
             ]
             .align_y(iced::Alignment::Center),
             error_text,
             Space::with_height(20),
-            text("Servers").size(16).color(AppColors::TEXT_PRIMARY),
+            text("Servers").size(16).color(AppColors::text_primary()),
             Space::with_height(8),
             server_list,
             Space::with_height(12),
@@ -3851,15 +4302,49 @@ fn settings_view(&self) -> Element<'_, Message> {
             Space::with_height(24),
             cache_section,
             Space::with_height(24),
+            shortcuts_section,
+            Space::with_height(24),
+            appearance_section,
+            Space::with_height(24),
             storage_section,
         ]
         .spacing(4)
         .padding(20)
         .max_width(600);
 
-        container(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        crate::ui::widgets::page::page(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn toast(is_error: bool, age_secs: u64) -> Toast {
+        Toast {
+            text: "x".into(),
+            is_error,
+            shown_at: std::time::Instant::now()
+                - std::time::Duration::from_secs(age_secs),
+        }
+    }
+
+    /// The field this replaced was called `last_error` but also carried
+    /// "Database update started", so the two were indistinguishable. They now
+    /// differ in styling *and* in how long they stay up.
+    #[test]
+    fn errors_linger_longer_than_info() {
+        assert!(toast(false, TOAST_INFO_SECS).expired());
+        assert!(
+            !toast(true, TOAST_INFO_SECS).expired(),
+            "an error must outlive the info timeout — it is the one worth reading"
+        );
+        assert!(toast(true, TOAST_ERROR_SECS).expired());
+    }
+
+    #[test]
+    fn a_fresh_toast_has_not_expired() {
+        assert!(!toast(false, 0).expired());
+        assert!(!toast(true, 0).expired());
     }
 }

@@ -4,129 +4,48 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-14. Branch: `improve/cross-platform-and-ui` — **all five
-plans implemented, plus lyrics sync/scroll, a track-list layout pass, release
-CI and the 0.4.2 bump**. Merged to `main` and **not yet tagged**: the tag is
-what publishes, and the visual work still needs a look on a real screen.
+Last updated: 2026-08-16. **v0.4.3 released** — all eight 0.4.3 plans shipped,
+plus the fixes that came out of testing it on Linux and macOS. Binaries for
+Windows, macOS and Linux are attached to the release, built by CI.
 
-**v0.4.1 shipped.** `release/v0.4.1` was merged to `main` (PR #20, commit
-`a810419`) and tagged `v0.4.1`. Everything in the sections below describing
-that branch as pending is historical record, kept because the *findings* are
-still current — only its "not yet merged" framing is out of date.
+## 0.4.3 — what shipped
 
-## Current branch: `improve/cross-platform-and-ui`
+The eight planned items (see [ui-0.4.3](plans/ui-0.4.3.md)): clickable
+artist/album names, icons for the transport controls and Back, album-level
+highlighting plus jump-to-current, error toasts, light/dark mode, window
+size/maximised persistence, keyboard shortcuts, and the macOS `.app` bundle.
 
-Five plans written on 2026-08-14 from a read-only investigation, targeting a
-future `release/v0.4.2`. Umbrella:
-[`docs/plans/cross-platform-and-ui-0.4.2.md`](plans/cross-platform-and-ui-0.4.2.md).
+**Six bugs came out of the manual test pass**, which is the argument for having
+done one:
 
-The headline finding is that **three separate bugs are the same mistake** —
-a Windows-only resource named directly, with a silent fallback elsewhere:
+| Found | Cause |
+|---|---|
+| Transport buttons drew **nothing** | Geometry, not the font: default button padding left an 18px box for a glyph needing ~22px, and iced draws no line rather than a clipped one. Blank-not-tofu is the tell. |
+| "Unknown Artist" on tagged files | `display_artist()` gave up where `display_album_artist()` fell back, so the two disagreed about the same file |
+| Outputs appeared multiple times | MPD leaves a `plugin: dummy` placeholder in **every** partition an output isn't in — the `default` partition listed ten outputs when one was real |
+| Moving an output was incomplete | Only a third of mikMPD's fix was ported; the missing part disables the output first, which is what stops `moveoutput` deadlocking the MPD server |
+| Transport glyphs too small | Fitted, but read as specks — now a ratio test guards "looks right", not just "fits" |
+| **Views didn't scroll** | Settings, Outputs, Partitions and Stats had no scrollable at all; Album/Artist/Playlist detail had their tall header outside the list's scrollable |
 
-1. `Font::with_name("Segoe UI Symbol")` (`link.rs:36`) — the row-action
-   glyphs (`▶ + ⏭ ☰`) almost certainly render as **tofu boxes on macOS and
-   Linux**, since the fallback is the very font the code's own comment says
-   lacks them. This is the real cause of "the buttons are hard to understand".
-2. `window::Settings.icon` → winit `set_window_icon`, which is a **documented
-   no-op on macOS** and an **empty no-op on Wayland**. `application_id` is
-   also left empty, so Wayland can't match a `.desktop` file either.
-3. `reqwest` on default features → `native-tls` → **OpenSSL on Linux only**
-   (schannel/Security.framework elsewhere).
+**246 offline tests (was 214), 15 live**, zero warnings under `-D warnings`,
+green on Windows, Linux and macOS in CI.
 
-Plus: the MusicBrainz `User-Agent` is a placeholder
-(`winrmpc/0.1.0 (https://github.com/user/winrmpc)`) that risks being blocked;
-only the Queue highlights the playing track; and macOS storage works but lives
-in `~/Library/…/com.winrmpc.winrmpc/`, which Finder hides — that's the whole
-of the "couldn't find the config file" report.
+### Verified against a real server (10.0.1.3, MPD 0.24.0)
 
-### Done on this branch — all five plans
+All 15 live tests pass. One caveat worth remembering:
+`live_musicbrainz_resolves_locally_artless_albums` reported **9 of 14** where
+earlier runs got 14/14 — the TLS check in the same run got **HTTP 503** from
+MusicBrainz, so that is near-certainly the service, not the matching code.
+Re-run before treating it as a regression.
 
-One commit per plan, in the umbrella's suggested order. **202 offline tests
-(was 181), 13 live, zero build warnings.**
+### Still not verified
 
-| Plan | Commit | State |
-|---|---|---|
-| 1 — app icon | `190f14e` | steps A–C done; **D (macOS `.app`) and E (release flow) not done** |
-| 4 — row actions | `a44e9f3` | A–D done, E declined |
-| 5 — network | `8868b0a` | all five steps + the optional deadline; **verified on Linux** |
-| 3 — highlighting | `7812d5c` | A–C done, D deferred as planned, E out of scope |
-| 2 — storage | `8c21f53` | A–E done |
-
-Then, on top of the five plans:
-
-| Work | Commit | State |
-|---|---|---|
-| Lyrics sync/scroll toggle | `66cb985` | **verified against real LRCLIB data** |
-| Version bump to 0.4.2 | `283c5b6` | crate description no longer says "Windows" |
-| Release CI | `a91432d` | **not yet run** — no workflow has ever executed for this repo |
-| Queue row/header alignment | `40ace14` | disabled-not-omitted actions; derived widths |
-| Track-list column order | `118ed34` | four passes with the user; final order below |
-| ship/release skills | `6d57337` | rewritten for CI-built binaries |
-
-**Track-list column order**, now identical in all five lists (album, search,
-browser, playlist detail, queue):
-
-```
-[playing marker] [play] [number] [title Fill] … [length] [function buttons]
-```
-
-Play is the primary action so it leads, beside the number and title it acts
-on; the rest are secondary and follow the length. The queue gained a leading
-play button it never had (`QueuePlay(pos)`, **not** `PlaySong(uri)` — that
-would enqueue a second copy). Everything before the `Fill` title is
-fixed-width, which is what keeps rows from drifting against each other.
-
-Each plan file now carries a "What was actually built" section and a status
-banner; the durable rules landed in CLAUDE.md.
-
-**Lyrics.** The pane autoscrolled off the 500ms status poll and called
-`snap_to` unconditionally, so any manual scroll was undone within half a
-second — synced lyrics were readable *only* at the current line. There is now
-a **Sync / Scroll** switch, with the highlight kept in both modes. Two silent
-duplications behind it were collapsed: the lyrics cache key (written by hand
-in three places) into `Song::lyrics_key()`, and the active-line calculation
-(computed separately by the view and the autoscroll, so they could scroll to a
-different line than they highlight) into `lyrics::active_line()`. Verified
-live: `live_lrclib_returns_parseable_synced_lyrics` fetches three real tracks
-and asserts sorted, advancing, non-empty timestamped lines.
-
-**What is actually verified, and what is not.** Plan 5 is the only *plan*
-proven against reality: `openssl-sys` and `native-tls` are gone from the dependency
-tree, and the new `live_tls_reaches_every_lookup_host` gets HTTP 200 from
-MusicBrainz, Cover Art Archive, Wikipedia and LRCLIB on Linux, with
-`live_wikipedia_bios_for_awkward_tags` still resolving all ten awkward tags.
-The Linux config/cache paths were confirmed on disk. The release binary
-links **only libc, libm and libgcc_s** — no libssl, no libcrypto — which is
-finding 1 proven at the binary level: this build is now portable across
-distros.
-
-The lyrics work is verified too, against live LRCLIB responses rather than
-only self-written fixtures.
-
-Everything visual is **code-verified only**. Nobody has seen the bundled icon
-font render in iced, the tooltips, the playing-row highlight, or Settings →
-Storage. The icon glyphs were rasterised directly from the built `.ttf` to
-confirm each codepoint draws the intended shape, which proves the *font* is
-right but not that iced resolves the bundled family at runtime. The window
-icon has still not been seen on a real Wayland or X11 session, and macOS has
-no `.app` bundle so it still has no icon at all.
-
-**The GUI has not been launched this session, deliberately.** The previous
-session ended in a hard machine freeze — kernel log shows
-`xe … [drm] *ERROR* [CRTC:151:pipe A] flip_done timed out` seconds after the
-last edit, then an unclean reboot. That is a display-driver hang, and the
-likely trigger was launching this very (wgpu) app to check the Wayland icon.
-Worth knowing before running it again.
-
-**One self-inflicted incident, recorded because it cost real data.** A test
-written for plan 2 called `AppConfig::save_and_log()`, which resolves the
-*real* user config path — running `cargo test` overwrote
-`~/.config/winrmpc/config.toml` with defaults. Servers, radio stations and the
-saved partition in that file were lost and are not recoverable from the repo
-or the cache DB. The test was replaced with one that sets
-`WINRMPC_CONFIG_DIR` to a scratch dir, and the rule is now written down in
-CLAUDE.md: **never call `save()`/`save_and_log()` from a test without the env
-override in place.**
+- **Windows** was never opened by hand this round; its CI tests pass and the
+  binary builds, and the platform-specific code paths (window close, fonts)
+  are shared with the two that were tested.
+- **macOS signing.** The bundle is unsigned, so first launch needs
+  `xattr -dr com.apple.quarantine`. Documented in the README and the release
+  notes.
 
 ## Where things stood at v0.4.1
 
@@ -291,41 +210,26 @@ migration.
    so this is cosmetic — recorded here only so deleting the plan didn't
    silently drop it.
 
-## Suggested next steps — manual testing, then release
+## Suggested next steps
 
-Merged, not tagged. The local release build is at `target/release/winrmpc`, and
-`dist/winrmpc-v0.4.2-linux-x86_64.tar.gz` is the artifact CI would produce
-(binary + `packaging/linux/` + README + LICENSE).
-
-**The workflow had to reach `main` before it could be run at all** —
-`workflow_dispatch` is only offered for workflows already on the default
-branch. That is why this batch was shipped before being tagged, and it is a
-one-time constraint: from here, a manual run can build an `.exe` from any
-branch.
-
-1. **Run the app and look at it.** Everything visual is unverified: icon
-   glyphs and tooltips, the playing-row highlight, the lyrics Sync/Scroll
-   switch, Settings → Storage. **Note the display-driver hang above before
-   launching on this machine.**
-2. **Re-enter the MPD server in Settings** — the config was overwritten with
-   defaults (see the incident note above), so it currently points at
-   `127.0.0.1:6600`.
-3. Run the live suite against the real server, none of which has run since
-   these changes landed:
+1. **Run the app and look at it.** Everything in 0.4.3 is unverified visually —
+   that was the stated verification stance of the whole round and it is still
+   outstanding. Check in particular: the light palette across *every* view (27
+   files changed; there will be one someone forgot), the toasts not covering
+   the player bar, and that **the window still closes** (see the
+   `exit_on_close_request` note above).
+2. **Type in every text box** and confirm Space doesn't pause. That is the
+   acceptance test for the shortcuts and the one failure that would be
+   genuinely annoying.
+3. Run the live suite against the real server — none of it has run since these
+   changes landed:
    ```bash
    WINRMPC_TEST_MPD=10.0.1.3:6600 WINRMPC_TEST_SNAPCAST=10.0.1.3:1705 \
      cargo test -- --ignored --test-threads=1
    ```
-4. **Push the branch and use "Run workflow" on the Release action** to get a
-   Windows `.exe` to test. That path publishes nothing — the `publish` job is
-   gated on `refs/tags/`.
-5. Only then: merge to `main`, tag `v0.4.2`, and let the workflow build and
-   attach both binaries.
+4. **Dispatch the release workflow manually** to get Windows and macOS builds
+   to test — it publishes nothing. The macOS job has never run; that bundle is
+   the least-proven thing on the branch.
+5. Then release 0.4.3 via the `release` skill, which bumps the version, tags,
+   and lets CI attach all three binaries.
 
-Deferred and not blocking a release: plan 1 steps D/E (macOS `.app` bundle),
-plan 3 step D (album-level highlighting).
-
-### Still open from v0.4.1
-
-- If Albums is slow rather than broken at library scale, address item 3 under
-  "Unverified" above.

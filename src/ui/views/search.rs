@@ -2,6 +2,7 @@ use crate::mpd::types::Song;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
 use crate::ui::widgets::link::icon_btn_tip;
 use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
@@ -10,6 +11,14 @@ use std::collections::BTreeMap;
 
 /// `current_file` marks the playing track among the song rows. The artist and
 /// album sections above them aren't tracks, so they carry no row state.
+/// The search box's id, so `Ctrl+F` / `/` can focus it from anywhere.
+///
+/// A stable id rather than `Id::unique()`: the whole point is that another
+/// module can name this widget.
+pub fn input_id() -> iced::widget::text_input::Id {
+    iced::widget::text_input::Id::new("winrmpc-search-input")
+}
+
 pub fn view<'a>(
     query: &'a str,
     results: &'a [Song],
@@ -17,6 +26,7 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let search_bar = row![
         text_input("Search your library...", query)
+            .id(crate::ui::views::search::input_id())
             .on_input(Message::SearchQueryChanged)
             .on_submit(Message::SearchSubmit)
             .size(16)
@@ -57,11 +67,11 @@ pub fn view<'a>(
                 row![
                     text(album.clone())
                         .size(13)
-                        .color(AppColors::ACCENT),
+                        .color(AppColors::accent()),
                     Space::with_width(8),
                     text(format!("by {artist}"))
                         .size(11)
-                        .color(AppColors::TEXT_MUTED),
+                        .color(AppColors::text_muted()),
                 ]
                 .align_y(Alignment::Center),
             )
@@ -69,8 +79,8 @@ pub fn view<'a>(
             .padding([8, 12])
             .width(Length::Fill)
             .style(|_theme: &iced::Theme, _status| button::Style {
-                background: Some(AppColors::BG_TERTIARY.into()),
-                text_color: AppColors::TEXT_PRIMARY,
+                background: Some(AppColors::bg_tertiary().into()),
+                text_color: AppColors::text_primary(),
                 border: iced::Border::default(),
                 ..Default::default()
             }),
@@ -118,9 +128,7 @@ pub fn view<'a>(
                             .size(12)
                             .color(song_row::title_color(is_current))
                             .width(Length::Fill),
-                        text(song.display_artist())
-                            .size(11)
-                            .color(AppColors::TEXT_SECONDARY)
+                        container(link::artist_link(song.display_artist(), 11))
                             .width(Length::FillPortion(2)),
                         song_row::duration(song.format_duration(), 11),
                         actions,
@@ -148,11 +156,11 @@ pub fn view<'a>(
         column![
             container(
                 column![
-                    text("Search").size(24).color(AppColors::TEXT_PRIMARY),
+                    text("Search").size(24).color(AppColors::text_primary()),
                     Space::with_height(12),
                     search_bar,
                     Space::with_height(8),
-                    text(status_text).size(13).color(AppColors::TEXT_MUTED),
+                    text(status_text).size(13).color(AppColors::text_muted()),
                 ]
             )
             .padding(12),

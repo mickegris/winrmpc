@@ -18,8 +18,8 @@ pub fn link<'a>(
         .padding(0)
         .style(|_t: &iced::Theme, status: button::Status| {
             let text_color = match status {
-                button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
-                _ => AppColors::TEXT_SECONDARY,
+                button::Status::Hovered | button::Status::Pressed => AppColors::accent(),
+                _ => AppColors::text_secondary(),
             };
             button::Style {
                 background: None,
@@ -51,8 +51,8 @@ pub fn link_icon<'a>(
     .padding(0)
     .style(|_t: &iced::Theme, status: button::Status| {
         let text_color = match status {
-            button::Status::Hovered | button::Status::Pressed => AppColors::ACCENT,
-            _ => AppColors::TEXT_SECONDARY,
+            button::Status::Hovered | button::Status::Pressed => AppColors::accent(),
+            _ => AppColors::text_secondary(),
         };
         button::Style {
             background: None,
@@ -64,17 +64,124 @@ pub fn link_icon<'a>(
     .into()
 }
 
+/// The Back button, shared by every view that has one.
+///
+/// This was hand-written **ten times**, each with its own copy of the style
+/// block, so the back affordance could drift between views and twice nearly
+/// did. One definition means it cannot.
+pub fn back_button<'a>() -> Element<'a, Message> {
+    button(
+        row![
+            icon::icon_sized(icon::BACK, 14),
+            text("Back").size(14),
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::GoBack)
+    .padding([4, 8])
+    .style(|_t: &iced::Theme, status: button::Status| button::Style {
+        background: None,
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => AppColors::text_primary(),
+            _ => AppColors::accent(),
+        },
+        border: iced::Border::default(),
+        shadow: iced::Shadow::default(),
+    })
+    .into()
+}
+
+/// The tag values `display_artist()` / `display_album()` fall back to when a
+/// song carries no such tag. Navigating to them produces a junk view — MPD has
+/// no artist called "Unknown Artist" — so [`artist_link`] and [`album_link`]
+/// render them as inert text instead of links.
+pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
+pub const UNKNOWN_ALBUM: &str = "Unknown Album";
+
+/// Is this a real name, or the placeholder for a missing tag?
+pub fn is_real_name(name: &str) -> bool {
+    !name.is_empty() && name != UNKNOWN_ARTIST && name != UNKNOWN_ALBUM
+}
+
+/// The shared look for a name link: muted at rest, accent on hover.
+///
+/// Deliberately **not underlined** — at size 11-12 in a dense track list,
+/// underlining every artist turns the list into a thicket.
+fn name_link_style(_t: &iced::Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => AppColors::accent(),
+            _ => AppColors::text_secondary(),
+        },
+        border: iced::Border::default(),
+        shadow: iced::Shadow::default(),
+    }
+}
+
+/// An artist name that navigates to that artist.
+///
+/// Use this **everywhere an artist name is rendered**, so no call site has to
+/// remember to build `Message::ArtistSelected` or to check for the
+/// missing-tag placeholder. Falls back to inert text when the name isn't real.
+pub fn artist_link<'a>(name: &str, size: u16) -> Element<'a, Message> {
+    if !is_real_name(name) {
+        return text(name.to_string())
+            .size(size)
+            .color(AppColors::text_muted())
+            .into();
+    }
+    button(text(name.to_string()).size(size))
+        .on_press(Message::ArtistSelected(name.to_string()))
+        .padding(0)
+        .style(name_link_style)
+        .into()
+}
+
+/// An album name that navigates to that album.
+///
+/// `artist` should be the **album artist** where it is known. Passing `None`
+/// reaches `AlbumSelected`'s artist-less path, which skips multi-disc
+/// expansion and degrades the bio lookup — see CLAUDE.md's "Album identity".
+/// Prefer supplying it.
+pub fn album_link<'a>(album: &str, artist: Option<&str>, size: u16) -> Element<'a, Message> {
+    if !is_real_name(album) {
+        return text(album.to_string())
+            .size(size)
+            .color(AppColors::text_muted())
+            .into();
+    }
+    button(text(album.to_string()).size(size))
+        .on_press(album_message(album, artist))
+        .padding(0)
+        .style(name_link_style)
+        .into()
+}
+
+/// The `AlbumSelected` message for an album, with the artist normalised.
+///
+/// Split out of [`album_link`] so a *container* that navigates to an album —
+/// the cover tile, a list row — builds the identical message rather than
+/// assembling its own and forgetting to drop the missing-tag placeholder.
+pub fn album_message(album: &str, artist: Option<&str>) -> Message {
+    Message::AlbumSelected(
+        album.to_string(),
+        artist.filter(|a| is_real_name(a)).map(str::to_string),
+    )
+}
+
 /// The shared look for a compact glyph button: no background at rest, hover
 /// reveals `BG_HOVER` with accent text.
 fn icon_btn_style(_t: &iced::Theme, status: button::Status) -> button::Style {
     let (bg, text_color) = match status {
         button::Status::Hovered | button::Status::Pressed => {
-            (Some(AppColors::BG_HOVER.into()), AppColors::ACCENT)
+            (Some(AppColors::bg_hover().into()), AppColors::accent())
         }
         // Disabled has to be visually distinct or the button lies: it looks
         // pressable and isn't. This arm used to fall into the catch-all.
-        button::Status::Disabled => (None, AppColors::TEXT_DISABLED),
-        _ => (None, AppColors::TEXT_MUTED),
+        button::Status::Disabled => (None, AppColors::text_disabled()),
+        _ => (None, AppColors::text_muted()),
     };
     button::Style {
         background: bg,
@@ -125,10 +232,10 @@ pub fn icon_btn_danger_maybe<'a>(
             .style(|_t: &iced::Theme, status: button::Status| {
                 let (bg, text_color) = match status {
                     button::Status::Hovered | button::Status::Pressed => {
-                        (Some(AppColors::BG_HOVER.into()), AppColors::ERROR)
+                        (Some(AppColors::bg_hover().into()), AppColors::error())
                     }
-                    button::Status::Disabled => (None, AppColors::TEXT_DISABLED),
-                    _ => (None, AppColors::ERROR),
+                    button::Status::Disabled => (None, AppColors::text_disabled()),
+                    _ => (None, AppColors::error()),
                 };
                 button::Style {
                     background: bg,
@@ -187,18 +294,21 @@ pub fn icon_btn_tip_maybe<'a>(
 }
 
 /// Wrap any element in the shared tooltip styling.
-fn with_tip<'a>(inner: Element<'a, Message>, tip: &'static str) -> Element<'a, Message> {
+///
+/// Public because the player bar's transport controls need it too, and a
+/// second tooltip style would drift from this one.
+pub fn with_tip<'a>(inner: Element<'a, Message>, tip: &'static str) -> Element<'a, Message> {
     tooltip(
         inner,
         container(text(tip).size(12))
             .padding([4, 8])
             .style(|_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_TERTIARY.into()),
-                text_color: Some(AppColors::TEXT_PRIMARY),
+                background: Some(AppColors::bg_tertiary().into()),
+                text_color: Some(AppColors::text_primary()),
                 border: iced::Border {
                     radius: 4.0.into(),
                     width: 1.0,
-                    color: AppColors::BORDER,
+                    color: AppColors::border(),
                 },
                 ..Default::default()
             }),
@@ -221,8 +331,8 @@ pub fn link_accent<'a>(
         .padding(0)
         .style(|_t: &iced::Theme, status: button::Status| {
             let text_color = match status {
-                button::Status::Hovered | button::Status::Pressed => AppColors::TEXT_PRIMARY,
-                _ => AppColors::ACCENT,
+                button::Status::Hovered | button::Status::Pressed => AppColors::text_primary(),
+                _ => AppColors::accent(),
             };
             button::Style {
                 background: None,
@@ -232,4 +342,48 @@ pub fn link_accent<'a>(
             }
         })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_tag_placeholders_are_not_real_names() {
+        // These are what `display_artist()`/`display_album()` return for an
+        // untagged file. Linking them navigates to an artist MPD has never
+        // heard of, which renders an empty page.
+        assert!(!is_real_name(UNKNOWN_ARTIST));
+        assert!(!is_real_name(UNKNOWN_ALBUM));
+        assert!(!is_real_name(""));
+        assert!(is_real_name("Tiamat"));
+        assert!(is_real_name("AC/DC"));
+    }
+
+    #[test]
+    fn album_message_carries_the_artist_when_it_is_real() {
+        match album_message("Wildhoney", Some("Tiamat")) {
+            Message::AlbumSelected(album, artist) => {
+                assert_eq!(album, "Wildhoney");
+                assert_eq!(artist.as_deref(), Some("Tiamat"));
+            }
+            other => panic!("expected AlbumSelected, got {other:?}"),
+        }
+    }
+
+    /// The artist-less path skips multi-disc expansion and degrades the bio
+    /// lookup, so it must only be reached when there is genuinely no artist —
+    /// never because the placeholder was passed through as if it were one.
+    #[test]
+    fn album_message_drops_a_placeholder_artist() {
+        for artist in [Some(UNKNOWN_ARTIST), Some(""), None] {
+            match album_message("Greatest Hits", artist) {
+                Message::AlbumSelected(_, resolved) => assert_eq!(
+                    resolved, None,
+                    "placeholder artist {artist:?} should not be sent as an artist"
+                ),
+                other => panic!("expected AlbumSelected, got {other:?}"),
+            }
+        }
+    }
 }

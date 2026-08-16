@@ -14,10 +14,18 @@ This is the heavier sibling of the **ship** skill; use it when the change is use
 `.github/workflows/release.yml` owns the build. Pushing a `vX.Y.Z` tag makes it:
 
 1. run `cargo test --all-targets` on **ubuntu, windows and macOS**, and fail the release if any of them fails,
-2. build `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`,
-3. create the GitHub release (or upload into one that already exists) with both assets:
+2. build Linux (`x86_64-unknown-linux-gnu`), Windows (`x86_64-pc-windows-msvc`) and a **universal macOS `.app`**,
+3. create the GitHub release (or upload into one that already exists) with all three assets:
    - `winrmpc-vX.Y.Z-linux-x86_64.tar.gz` — binary + `packaging/linux/` + README + LICENSE
    - `winrmpc-vX.Y.Z-windows-x86_64.exe`
+   - `winrmpc-vX.Y.Z-macos-universal.app.zip` — **unsigned**, see below
+
+**The macOS bundle is unsigned**, and the release notes must say so. macOS
+refuses to open an unsigned download by double-click and reports it as
+*damaged*, which reads like a corrupt file rather than a policy — users need
+`xattr -dr com.apple.quarantine /Applications/winrmpc.app`, or right-click →
+Open. Signing needs a paid Apple Developer account; see
+`docs/plans/macos-app-bundle.md`.
 
 **Do not try to build the `.exe` locally on Linux.** There is no cross toolchain in this repo's assumptions — it would need `cargo-xwin` + `clang`/`lld`, or mingw. Building on `windows-latest` also keeps the MSVC ABI earlier releases shipped.
 
@@ -111,9 +119,12 @@ gh run download <run-id> -D ./ci-artifacts
    gh run watch
    gh release view vX.Y.Z --json assets --jq '.assets[].name'
    ```
-   Expect exactly two names: the `-linux-x86_64.tar.gz` and the `-windows-x86_64.exe`.
+   Expect exactly three names: the `-linux-x86_64.tar.gz`, the
+   `-windows-x86_64.exe` and the `-macos-universal.app.zip`.
 
-10. **Report** the release URL and list the attached assets. If the Windows job failed, say so plainly — a release with only a Linux binary is a half-finished release, not a finished one.
+10. **Report** the release URL and list the attached assets. If any platform's
+    job failed, say so plainly — a release missing one of its three binaries is
+    a half-finished release, not a finished one.
 
 ## Pitfalls
 

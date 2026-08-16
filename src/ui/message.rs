@@ -59,6 +59,11 @@ pub enum Message {
     QueueAddNext(String),
     QueueClear,
     QueueShuffle,
+    /// Scroll the queue to the playing track.
+    ///
+    /// A **button**, not automatic scrolling: the lyrics pane already showed
+    /// what unconditional autoscroll does to a pane someone is trying to read.
+    JumpToCurrent,
     QueueAddUri(String),
     QueueAddAndPlay(String),
     QueueAddOnly(String),
@@ -85,7 +90,7 @@ pub enum Message {
     /// detail), which fall back to a plain tag-exact `find`.
     AlbumSelected(String, Option<String>),
     GenreSelected(String),
-    GenreAlbumsLoaded(String, Vec<String>),
+    GenreAlbumsLoaded(String, Vec<crate::mpd::types::AlbumGroup>),
     ArtistAlbumsLoaded(String, Vec<AlbumGroup>),
     AlbumSongsLoaded(String, Vec<Song>),
 
@@ -155,7 +160,19 @@ pub enum Message {
 
     // === Outputs ===
     ToggleOutput(u32),
-    MoveOutput { output_name: String, target_partition: String },
+    /// Move an output to another partition.
+    ///
+    /// Carries the id and enabled state because the move has to *disable*
+    /// first and re-enable afterwards — see the handler.
+    MoveOutput {
+        output_id: u32,
+        output_name: String,
+        target_partition: String,
+        was_enabled: bool,
+    },
+
+    /// A move finished — `Ok` or a user-facing failure message.
+    OutputMoved(Result<(), String>),
 
     // === Partitions ===
     SwitchPartition(String),
@@ -261,6 +278,23 @@ pub enum Message {
 
     // === Misc ===
     ErrorOccurred(String),
+    /// Dismiss the oldest toast (any toast click).
+    DismissToast,
+    /// Switch between the light and dark palettes. Applies immediately —
+    /// a theme toggle that needs a restart is worse than none.
+    SetDarkMode(bool),
+    /// The window was resized. Recorded in memory; written on close.
+    WindowResized(iced::Size),
+    /// A key was pressed. The mapping to an action happens in `update` —
+    /// `on_key_press` takes a `fn` pointer and so can't see app state.
+    KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers),
+    /// Go to Search and put the cursor in the box.
+    FocusSearch,
+    /// The window wants to close. Intercepted so the maximised state can be
+    /// queried before it goes.
+    WindowCloseRequested(iced::window::Id),
+    /// The queried maximised state came back; persist and close for real.
+    WindowClosing(iced::window::Id, bool),
     Tick,
     RefreshAll,
     Noop,

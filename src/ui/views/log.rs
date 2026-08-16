@@ -10,7 +10,7 @@ use iced::{Alignment, Element, Length};
 pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Message> {
     let title = text("Log")
         .size(24)
-        .color(AppColors::TEXT_PRIMARY);
+        .color(AppColors::text_primary());
 
     let toggle_inner: Element<'_, Message> = if show_mpd_only {
         row![
@@ -65,7 +65,7 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
             container(
                 text(msg)
                     .size(12)
-                    .color(AppColors::TEXT_MUTED),
+                    .color(AppColors::text_muted()),
             )
             .padding([3, 8]),
         );
@@ -73,13 +73,13 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
         for (i, entry) in displayed.iter().rev().enumerate() {
             let slow = entry.is_slow();
             let level_color = if slow {
-                AppColors::WARNING
+                AppColors::warning()
             } else {
                 match entry.level.as_str() {
-                    "ERROR" => AppColors::ERROR,
-                    "WARN"  => AppColors::WARNING,
-                    "INFO"  => AppColors::TEXT_PRIMARY,
-                    _       => AppColors::TEXT_MUTED,
+                    "ERROR" => AppColors::error(),
+                    "WARN"  => AppColors::warning(),
+                    "INFO"  => AppColors::text_primary(),
+                    _       => AppColors::text_muted(),
                 }
             };
 
@@ -102,7 +102,7 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
             // text starting at the same x, marked or not.
             let marker: Element<'_, Message> = if slow {
                 icon::icon_sized(icon::WARNING, 12)
-                    .color(AppColors::WARNING)
+                    .color(AppColors::warning())
                     .into()
             } else {
                 Space::with_width(0).into()
@@ -112,9 +112,9 @@ pub fn view<'a>(entries: &'a [LogEntry], show_mpd_only: bool) -> Element<'a, Mes
                 .align_y(Alignment::Center);
 
             let bg = if i % 2 == 0 {
-                AppColors::ROW_EVEN
+                AppColors::row_even()
             } else {
-                AppColors::ROW_ODD
+                AppColors::row_odd()
             };
 
             log_col = log_col.push(

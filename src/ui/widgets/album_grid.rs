@@ -8,6 +8,8 @@
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
+use crate::ui::widgets::link;
+use crate::ui::widgets::song_row;
 use iced::widget::{button, column, container, image, row, text, Space};
 use iced::{Alignment, Element, Length};
 use std::collections::HashMap;
@@ -18,14 +20,20 @@ pub const TILE_SIZE: u16 = 120;
 /// scrolls comfortably, big enough to recognise a cover.
 pub const LIST_THUMB: u16 = 36;
 
-/// One cover tile: art (or a placeholder block), title, and a muted
-/// subtitle. `caption` is an optional third line — "2 discs", "3d ago".
+/// One cover tile: art (or a placeholder block), the album title, and the
+/// artist beneath it. `caption` is an optional fourth line — "2 discs", "3d ago".
+///
+/// **The cover and the album title are one button; the artist is a separate
+/// link.** Nesting the artist link *inside* an album-wide button would leave
+/// one small region of a large clickable area doing something different, with
+/// no way to tell by looking — so they are siblings instead. The cover plus
+/// title keeps a big, forgiving target for the common action.
 pub fn tile<'a>(
     art: Option<&'a iced::widget::image::Handle>,
-    title: String,
-    subtitle: String,
+    album: String,
+    artist: String,
     caption: Option<String>,
-    on_press: Message,
+    is_current: bool,
 ) -> Element<'a, Message> {
     let art_widget: Element<'a, Message> = match art {
         Some(handle) => image(handle.clone())
@@ -36,7 +44,7 @@ pub fn tile<'a>(
             .width(TILE_SIZE)
             .height(TILE_SIZE)
             .style(|_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_SECONDARY.into()),
+                background: Some(AppColors::bg_secondary().into()),
                 border: iced::Border {
                     radius: 4.0.into(),
                     ..Default::default()
@@ -46,29 +54,54 @@ pub fn tile<'a>(
             .into(),
     };
 
-    let mut col = column![
-        art_widget,
-        Space::with_height(6),
-        text(title).size(13).color(AppColors::TEXT_PRIMARY),
-        text(subtitle).size(11).color(AppColors::TEXT_SECONDARY),
-    ]
-    .align_x(Alignment::Center)
-    .width(TILE_SIZE);
+    // An accent frame around the cover, plus the accent title below it. The
+    // title colour alone is too subtle at grid density; a glyph overlaid on
+    // the cover would need `stack` and has to survive the cover being a
+    // placeholder block, so the border is the cheaper honest signal.
+    let art_widget: Element<'a, Message> = if is_current {
+        container(art_widget)
+            .style(|_t: &iced::Theme| container::Style {
+                border: iced::Border {
+                    radius: 4.0.into(),
+                    width: 2.0,
+                    color: AppColors::accent(),
+                },
+                ..Default::default()
+            })
+            .into()
+    } else {
+        art_widget
+    };
+
+    let cover_and_title = button(
+        column![
+            art_widget,
+            Space::with_height(6),
+            text(album.clone())
+                .size(13)
+                .color(song_row::title_color(is_current)),
+        ]
+        .align_x(Alignment::Center)
+        .width(TILE_SIZE),
+    )
+    .on_press(link::album_message(&album, Some(&artist)))
+    .padding(0)
+    .style(|_t: &iced::Theme, _s| button::Style {
+        background: None,
+        text_color: AppColors::text_primary(),
+        border: iced::Border::default(),
+        ..Default::default()
+    });
+
+    let mut col = column![cover_and_title, link::artist_link(&artist, 11)]
+        .align_x(Alignment::Center)
+        .width(TILE_SIZE);
 
     if let Some(c) = caption {
-        col = col.push(text(c).size(10).color(AppColors::TEXT_MUTED));
+        col = col.push(text(c).size(10).color(AppColors::text_muted()));
     }
 
-    button(col)
-        .on_press(on_press)
-        .padding(4)
-        .style(|_t: &iced::Theme, _s| button::Style {
-            background: None,
-            text_color: AppColors::TEXT_PRIMARY,
-            border: iced::Border::default(),
-            ..Default::default()
-        })
-        .into()
+    container(col).padding(4).into()
 }
 
 /// The list-mode counterpart to a tile's cover: the same art at `LIST_THUMB`,
@@ -87,7 +120,7 @@ pub fn list_thumb<'a>(
             .width(LIST_THUMB)
             .height(LIST_THUMB)
             .style(|_t: &iced::Theme| container::Style {
-                background: Some(AppColors::BG_SECONDARY.into()),
+                background: Some(AppColors::bg_secondary().into()),
                 border: iced::Border {
                     radius: 3.0.into(),
                     ..Default::default()
