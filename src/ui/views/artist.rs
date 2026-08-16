@@ -1,5 +1,6 @@
 use crate::mpd::types::{art_key_for, AlbumGroup, Song};
 use crate::ui::widgets::link;
+use crate::ui::widgets::page::page;
 use crate::ui::widgets::song_row;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
@@ -184,14 +185,9 @@ pub fn view<'a>(
         );
     }
 
-    iced::widget::column![
+    // One scrollable for header + list — see `album.rs` for why.
+    page(iced::widget::column![
         header,
-        iced::widget::scrollable(
-            container(album_list).padding([0, 20])
-        )
-        .height(Length::Fill),
-    ]
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+        container(album_list).padding([0, 20]),
+    ])
 }

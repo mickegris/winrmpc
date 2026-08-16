@@ -1,6 +1,7 @@
 use crate::mpd::types::Partition;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::page::page;
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
@@ -61,7 +62,7 @@ pub fn view<'a>(
     ]
     .spacing(8);
 
-    container(
+    page(
         column![
             text("Partitions").size(24).color(AppColors::text_primary()),
             Space::with_height(8),
@@ -80,7 +81,4 @@ pub fn view<'a>(
         .spacing(4)
         .padding(20),
     )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
 }

@@ -6,6 +6,7 @@ use crate::mpd::types::Stats;
 use crate::ui::widgets::link;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
+use crate::ui::widgets::page::page;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Length};
 use std::time::Duration;
@@ -51,10 +52,7 @@ pub fn view<'a>(stats: Option<&'a Stats>, updating: bool) -> Element<'a, Message
         }
     };
 
-    container(column![header, body].spacing(0))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    page(column![header, body].spacing(0))
 }
 
 fn stat_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {

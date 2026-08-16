@@ -4312,10 +4312,7 @@ fn settings_view(&self) -> Element<'_, Message> {
         .padding(20)
         .max_width(600);
 
-        container(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        crate::ui::widgets::page::page(content)
     }
 }
 

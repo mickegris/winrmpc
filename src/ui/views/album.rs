@@ -1,5 +1,6 @@
 use crate::mpd::types::Song;
 use crate::ui::widgets::link;
+use crate::ui::widgets::page::page;
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
@@ -224,14 +225,11 @@ pub fn view<'a>(
         );
     }
 
-    iced::widget::column![
+    // Header and track list share ONE scrollable. They used to be siblings
+    // with only the list scrolling, so a long "Show info" biography could push
+    // the tracks off the bottom with no way to reach them.
+    page(iced::widget::column![
         header,
-        iced::widget::scrollable(
-            container(track_list).padding([0, 20])
-        )
-        .height(Length::Fill),
-    ]
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+        container(track_list).padding([0, 20]),
+    ])
 }

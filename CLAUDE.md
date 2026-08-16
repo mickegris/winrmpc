@@ -420,6 +420,13 @@ Tooltips sit **above** the button (`tooltip::Position::Top`) because the right-m
 
 **A header row must reserve `song_row::action_group_width(n)`.** The Queue's header had no action column at all, so its `FillPortion`s divided ~134px more than the rows beneath and every label sat visibly right of its data. `ACTION_BTN_WIDTH` is *derived*, not eyeballed: every glyph in the bundled font advances exactly one em (`icon::tests::every_glyph_advances_exactly_one_em` parses `hmtx` and asserts it), so a glyph is exactly `icon::SIZE` px and `padding([2, 8])` adds 8 each side. Regenerate the font with non-square glyphs and that test fails rather than the layout quietly drifting.
 
+## Every view scrolls (`src/ui/widgets/page.rs`)
+`page(content)` is the standard wrapper: full-size, vertically scrollable, scrollbar only when the content overflows. **Use it for any view that is a plain column of content.**
+- Settings, Outputs, Partitions and Stats had **no scrollable at all**, so on a short window anything past the bottom was simply unreachable. It hid for a long time because the *long* views scroll their list, and these are only too tall on a small window — Settings is where it finally bit, having grown Appearance, Shortcuts and Storage sections.
+- **Album, Artist and Playlist detail had a subtler form of the same bug**: the header (200px of art, plus an arbitrarily long "Show info" biography) sat *outside* the list's scrollable, so a long bio could push the track list off the bottom with no way to reach it. Header and list now share **one** scrollable.
+- **Never put a `Length::Fill` child inside `page`.** A vertical scrollable lays content out with unbounded height, so a Fill child has nothing to resolve against. Every `page` user is a `Shrink` column; the outer container fills the window.
+- **Now Playing deliberately does not use `page`** — its two-column layout is `Fill` throughout (the lyrics pane fills the height and scrolls internally), so a page scroller can't wrap it. `window::Settings`' `min_size` is what protects it instead.
+
 ## Album cover grid vs list (`src/ui/widgets/album_grid.rs`)
 The Albums list, Recently Added and Recently Played (Albums mode) all render through one shared widget, so they look and behave identically. `album_grid` exposes `tile()` (cover + title + subtitle + optional caption), `grid()`, `list_thumb()` (the list-mode cover), `layout_toggle()` (the Grid / List button — `icon::GRID` / `icon::LIST` plus a text label) and `art_for()` (cache lookup via `art_key_for`).
 - **One flag for all three views**: `AppConfig::album_grid_view` (`#[serde(default)]`, persisted), toggled by `Message::ToggleAlbumGridView`. Deliberately not per-view — three independent layout memories would feel arbitrary.
