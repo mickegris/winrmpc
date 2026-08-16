@@ -102,6 +102,18 @@ pub fn parse_songs(pairs: &[(String, String)]) -> Vec<Song> {
         .collect()
 }
 
+/// The plugin name MPD reports for the placeholder it leaves behind when an
+/// output is moved to another partition.
+pub const DUMMY_PLUGIN: &str = "dummy";
+
+/// Parse an `outputs` response, **dropping MPD's dummy placeholders**.
+///
+/// Moving an output to another partition leaves a same-named entry behind in
+/// the partition it came from, with `plugin: dummy`. It is not a real output —
+/// it can't play anything and enabling it does nothing — but it looks exactly
+/// like the original in a list, so moving an output back and forth appeared to
+/// clone it. Filtering here means every consumer is clean rather than each
+/// view remembering to check.
 pub fn parse_outputs(pairs: &[(String, String)]) -> Vec<Output> {
     split_groups(pairs, "outputid")
         .into_iter()
@@ -117,6 +129,7 @@ pub fn parse_outputs(pairs: &[(String, String)]) -> Vec<Output> {
                 attributes: HashMap::new(),
             }
         })
+        .filter(|o| !o.plugin.eq_ignore_ascii_case(DUMMY_PLUGIN))
         .collect()
 }
 
@@ -346,6 +359,47 @@ mod tests {
         assert_eq!(outs[0].name, "Living Room");
         assert!(outs[0].enabled);
         assert!(!outs[1].enabled);
+    }
+
+    /// Moving an output to another partition leaves a same-named `plugin:
+    /// dummy` entry behind in the partition it came from. It can't play
+    /// anything, but it is indistinguishable from the real output in a list —
+    /// so moving one back and forth looked like it cloned the output.
+    #[test]
+    fn parse_outputs_drops_the_dummy_left_behind_by_a_partition_move() {
+        let p = pairs(&[
+            ("outputid", "0"),
+            ("outputname", "Living Room"),
+            ("plugin", "dummy"),
+            ("outputenabled", "0"),
+            ("outputid", "1"),
+            ("outputname", "Kitchen"),
+            ("plugin", "alsa"),
+            ("outputenabled", "1"),
+        ]);
+        let outs = parse_outputs(&p);
+        assert_eq!(outs.len(), 1, "the dummy placeholder must not be listed");
+        assert_eq!(outs[0].name, "Kitchen");
+    }
+
+    /// The real output and its ghost share a name, so the filter has to key on
+    /// the plugin. Keying on the name would hide both.
+    #[test]
+    fn a_real_output_survives_a_same_named_dummy() {
+        let p = pairs(&[
+            ("outputid", "0"),
+            ("outputname", "Living Room"),
+            ("plugin", "dummy"),
+            ("outputenabled", "0"),
+            ("outputid", "3"),
+            ("outputname", "Living Room"),
+            ("plugin", "alsa"),
+            ("outputenabled", "1"),
+        ]);
+        let outs = parse_outputs(&p);
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].id, 3);
+        assert!(outs[0].enabled);
     }
 
     #[test]

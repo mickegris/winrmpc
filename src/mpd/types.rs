@@ -140,8 +140,22 @@ impl Song {
             .unwrap_or_else(|| self.file.rsplit('/').next().unwrap_or(&self.file))
     }
 
+    /// The track artist, falling back to the **album artist** before giving up.
+    ///
+    /// Plenty of real files carry `AlbumArtist` and no `Artist` — a rip where
+    /// only the album-level tag was written. Those showed as "Unknown Artist"
+    /// in the queue and every track list while the album page, which uses
+    /// [`Self::display_album_artist`], showed the name perfectly well. Falling
+    /// back mirrors that method and makes the two agree.
+    ///
+    /// This is also what's sent to LRCLIB and MusicBrainz, so the fallback
+    /// turns a guaranteed-miss lookup for "Unknown Artist" into one that can
+    /// actually match.
     pub fn display_artist(&self) -> &str {
-        self.artist.as_deref().unwrap_or("Unknown Artist")
+        self.artist
+            .as_deref()
+            .or(self.album_artist.as_deref())
+            .unwrap_or("Unknown Artist")
     }
 
     pub fn display_album(&self) -> &str {
@@ -884,6 +898,29 @@ mod tests {
 
         s.album_artist = Some("Album Artist".into());
         assert_eq!(s.display_album_artist(), "Album Artist");
+    }
+
+    /// A file tagged with only `AlbumArtist` used to read "Unknown Artist" in
+    /// the queue while its album page showed the name — the two methods
+    /// disagreed about the same file.
+    #[test]
+    fn display_artist_falls_back_to_the_album_artist() {
+        let mut s = song();
+        assert_eq!(s.display_artist(), "Unknown Artist");
+
+        s.album_artist = Some("Blue Öyster Cult".into());
+        assert_eq!(
+            s.display_artist(),
+            "Blue Öyster Cult",
+            "an AlbumArtist-only file must not read as Unknown"
+        );
+        assert_eq!(s.display_artist(), s.display_album_artist());
+
+        // A real track artist still wins — on a compilation the two differ,
+        // and the row is showing the *track's* artist.
+        s.artist = Some("Nina Simone".into());
+        assert_eq!(s.display_artist(), "Nina Simone");
+        assert_eq!(s.display_album_artist(), "Blue Öyster Cult");
     }
 
     #[test]

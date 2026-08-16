@@ -6,6 +6,15 @@ use crate::ui::widgets::link;
 use iced::widget::{button, column, container, pick_list, row, slider, text, Space};
 use iced::{Alignment, Element, Length};
 
+/// Transport button geometry. Kept as constants because the relationship
+/// between them is what decides whether the glyph renders at all — see
+/// `styled_control_btn` and `transport_glyph_fits_its_button`.
+const TRANSPORT_ICON: u16 = 16;
+const TRANSPORT_H: u16 = 28;
+const TRANSPORT_PAD_Y: u16 = 2;
+/// iced's default line height is 1.3x the text size.
+const LINE_HEIGHT_FACTOR: f32 = 1.3;
+
 /// MPD's four replay-gain modes (protocol: `replay_gain_mode {MODE}`).
 const REPLAY_GAIN_MODES: [&str; 4] = ["off", "track", "album", "auto"];
 
@@ -232,13 +241,22 @@ fn styled_control_btn<'a>(
 
     link::with_tip(
         button(
-            container(icon::icon_sized(glyph, 17).color(fg))
+            container(icon::icon_sized(glyph, TRANSPORT_ICON).color(fg))
                 .center_x(Length::Fill)
                 .center_y(Length::Fill),
         )
         .on_press(msg)
         .width(52)
-        .height(28)
+        .height(TRANSPORT_H)
+        // **Explicit padding is load-bearing.** With `button`'s default
+        // padding of 5 the content box was 28 - 10 = 18px tall, less than the
+        // ~22px line box a 17px glyph needs, and the glyph did not render at
+        // all — blank buttons, not clipped ones. The mode buttons never showed
+        // this because they set their own smaller padding.
+        //
+        // The invariant: TRANSPORT_H - 2*vertical padding must exceed
+        // TRANSPORT_ICON * iced's 1.3 default line height. A test pins it.
+        .padding([TRANSPORT_PAD_Y, 8])
         .style(move |_theme: &iced::Theme, _status| button::Style {
             background: Some(bg.into()),
             text_color: fg,
@@ -345,4 +363,25 @@ fn small_btn(label: &str, msg: Message) -> Element<'_, Message> {
             ..Default::default()
         })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The transport glyphs rendered as **nothing** on first real use: the
+    /// button's default padding of 5 left an 18px content box for a glyph
+    /// whose line box needs ~22px, and iced drew no line at all rather than a
+    /// clipped one. Blank, not tofu — which is why it looked like a font
+    /// problem and wasn't.
+    #[test]
+    fn transport_glyph_fits_its_button() {
+        let content_h = f32::from(TRANSPORT_H - 2 * TRANSPORT_PAD_Y);
+        let line_h = f32::from(TRANSPORT_ICON) * LINE_HEIGHT_FACTOR;
+        assert!(
+            content_h >= line_h,
+            "a {TRANSPORT_ICON}px glyph needs {line_h:.1}px of line box but the \
+             button only offers {content_h:.1}px — it will render blank"
+        );
+    }
 }
