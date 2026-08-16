@@ -759,6 +759,65 @@ fn first_sentence(s: &str) -> String {
     s[..cut.min(s.len()).min(180)].replace('\n', " ")
 }
 
+/// Every partition's output list must come back free of MPD's `dummy`
+/// placeholders.
+///
+/// This is not a rare post-move artifact — it is the **steady state** of any
+/// multi-partition setup. On the development server the `default` partition
+/// reports ten outputs of which **nine are dummies**, one for every output
+/// that actually lives in another partition. Unfiltered, the Outputs view is
+/// mostly ghosts that look exactly like the real thing and do nothing when
+/// enabled.
+///
+/// Read-only: it switches the *connection's* partition, which is per-session
+/// state, and restores it. Nothing on the server is modified.
+#[tokio::test]
+#[ignore]
+async fn live_outputs_never_include_dummy_placeholders() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    let original = client
+        .status()
+        .await
+        .ok()
+        .and_then(|s| s.partition)
+        .unwrap_or_else(|| "default".into());
+
+    let partitions = client.list_partitions().await.expect("listpartitions");
+    assert!(!partitions.is_empty(), "server reports no partitions");
+
+    let mut total = 0usize;
+    for p in &partitions {
+        client.switch_partition(&p.name).await.expect("partition");
+        let outs = client.outputs().await.expect("outputs");
+        for o in &outs {
+            assert!(
+                !o.plugin.eq_ignore_ascii_case(crate::mpd::commands::DUMMY_PLUGIN),
+                "partition {} still lists a dummy placeholder: {} (id {})",
+                p.name,
+                o.name,
+                o.id
+            );
+            assert!(
+                !o.plugin.is_empty(),
+                "partition {} output {} has no plugin at all",
+                p.name,
+                o.name
+            );
+        }
+        println!("  {:<12} {} real output(s)", p.name, outs.len());
+        total += outs.len();
+    }
+    client.switch_partition(&original).await.ok();
+
+    assert!(total > 0, "no real outputs anywhere — the filter is too greedy");
+}
+
 /// Fetches real synced lyrics from LRCLIB and checks they parse into
 /// timestamped lines that actually advance.
 ///
