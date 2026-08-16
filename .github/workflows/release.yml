@@ -69,6 +69,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+          # The macOS job builds both architectures itself (bundle.sh lipos
+          # them), so its `target` is only a label for the artifact name.
+          - os: macos-latest
+            target: universal-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -82,6 +86,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
+        if: runner.os != 'macOS'
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Determine version
@@ -111,6 +116,17 @@ jobs:
           cp README.md LICENSE "dist/$NAME/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
           echo "ASSET=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # bundle.sh does the whole job: universal binary via lipo, .icns via
+          # iconutil from the shared generator, Info.plist from the template,
+          # and a ditto zip. It is macOS-only by nature.
+          DIST="$PWD/dist" ./packaging/macos/bundle.sh
+          ASSET=$(ls dist/winrmpc-*-macos-universal.app.zip)
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'

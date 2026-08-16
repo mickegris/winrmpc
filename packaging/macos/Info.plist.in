@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. @VERSION@ is substituted by packaging/macos/bundle.sh from
+  Cargo.toml, rather than being committed as a literal — a hardcoded version
+  here would silently say 0.4.3 forever, the same staleness that left the
+  MusicBrainz User-Agent claiming 0.1.0 for four releases.
+
+  CFBundleIdentifier is icon_design::APP_ID, the same string used for the
+  Wayland app_id and the Linux .desktop basename. It is deliberately NOT the
+  ProjectDirs identifier (com.winrmpc.winrmpc) that names the config and cache
+  directories — changing either to match the other would orphan every existing
+  install's settings.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>winrmpc</string>
+    <key>CFBundleDisplayName</key>
+    <string>winrmpc</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.mickegris.winrmpc</string>
+    <key>CFBundleExecutable</key>
+    <string>winrmpc</string>
+    <key>CFBundleIconFile</key>
+    <string>winrmpc</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <!-- Without this the window renders at 1x and looks soft on every Mac
+         made in the last decade. -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- winrmpc is a normal windowed app, not a background agent. -->
+    <key>LSUIElement</key>
+    <false/>
+</dict>
+</plist>
