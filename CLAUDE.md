@@ -622,7 +622,7 @@ Design docs written before implementing a feature — read the relevant one befo
 `cross-platform-and-ui-0.4.2.md` is the previous umbrella (shipped in 0.4.2), linking five plans: `app-icon-cross-platform.md`, `persistent-storage-cross-platform.md`, `current-song-highlighting.md`, `row-action-affordance.md`, `network-fetch-cross-platform.md`. **Read that umbrella before touching fonts, glyphs, the window icon, `ProjectDirs`, or the `reqwest` features** — three of the five findings are one recurring mistake (a Windows-only resource named directly, silently falling back to nothing on macOS/Linux). The `Segoe UI Symbol` reference in `ui/widgets/link.rs` was the load-bearing example — the fallback font was the one its own comment said renders tofu — and is **fixed**: see "Icon font + row actions" above. Every claim in those plans is sourced from the vendored `iced`/`winit` crates with file:line references and **none is yet verified on real macOS or Linux hardware** — each plan's "How to confirm on the real OS" section is the acceptance criterion.
 
 ## Current Version
-`0.4.4` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
+`0.4.5` — see `Cargo.toml`. There are `release` and `ship` skills that automate the release/merge flow — prefer them over doing the steps by hand.
 
 `Cargo.lock` **is committed** (`.gitignore` has `*.lock` with a `!Cargo.lock` exception). This is a binary crate, so the lockfile belongs in version control: without it every machine resolves its own versions, builds aren't reproducible, and a bad upstream patch release can't be pinned back.
 
