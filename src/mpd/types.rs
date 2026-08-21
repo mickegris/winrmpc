@@ -765,6 +765,278 @@ impl RecentlyPlayedEntry {
     }
 }
 
+/// The comparator behind every A-Z / Z-A library list.
+///
+/// **Not `str::cmp`.** A plain `Vec<String>::sort()` is byte order, so every
+/// lowercase initial files after every uppercase one: `ZZ Top` (`Z` = 0x5A)
+/// sorts before `a-ha` (`a` = 0x61). A real library has `a-ha`, `dEUS`,
+/// `k.d. lang` and `will.i.am`, all of which were exiled past Z in the
+/// Artists list until this existed.
+///
+/// Case-folded first, then a byte-order tiebreak so the ordering stays
+/// **total** — names differing only in case must still have a defined
+/// order, or reversing the list twice isn't the identity and rows shuffle
+/// each time the direction is toggled.
+pub fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let folded = a.to_lowercase().cmp(&b.to_lowercase());
+    folded.then_with(|| a.cmp(b))
+}
+
+/// `name_cmp`, reversed when `desc`.
+pub fn name_cmp_dir(a: &str, b: &str, desc: bool) -> std::cmp::Ordering {
+    let ord = name_cmp(a, b);
+    if desc {
+        ord.reverse()
+    } else {
+        ord
+    }
+}
+
+/// Accumulates each album's **newest** add-time from one page of raw `find`
+/// pairs, without ever building a `Song`.
+///
+/// Deliberately not `parse_songs` + a fold: a full-library scan is the one
+/// place where allocating a `Song` per track is most of the cost, and every
+/// field but three is thrown away immediately.
+///
+/// Keyed on the raw `AlbumArtist` tag (empty when absent) rather than
+/// `display_album_artist()`, because that is what `list Album group
+/// AlbumArtist` keys the album list itself on — a fallback here would build
+/// keys the album rows never look up.
+pub fn fold_album_added(pairs: &[(String, String)], out: &mut HashMap<String, String>) {
+    let mut album_artist = String::new();
+    let mut album = String::new();
+    let mut added = String::new();
+
+    let mut flush = |album_artist: &mut String, album: &mut String, added: &mut String| {
+        if !album.is_empty() && !added.is_empty() {
+            let base = album_base_and_disc(album).0;
+            let key = album_scoped_key(Some(album_artist), &base);
+            out.entry(key)
+                .and_modify(|cur| {
+                    if *added > *cur {
+                        cur.clone_from(added);
+                    }
+                })
+                .or_insert_with(|| added.clone());
+        }
+        album_artist.clear();
+        album.clear();
+        added.clear();
+    };
+
+    for (k, v) in pairs {
+        match k.as_str() {
+            // `file` opens a new song record, so it closes the previous one.
+            "file" => flush(&mut album_artist, &mut album, &mut added),
+            "AlbumArtist" => album_artist.clone_from(v),
+            "Album" => album.clone_from(v),
+            // Whichever the rung produced. `Added` wins if both are present.
+            "Added" => added.clone_from(v),
+            "Last-Modified" if added.is_empty() => added.clone_from(v),
+            _ => {}
+        }
+    }
+    flush(&mut album_artist, &mut album, &mut added);
+}
+
+/// What an album list is ordered by.
+///
+/// Only the album lists offer a choice — Artists, Genres and Playlists have
+/// nothing but a name, so they always use [`name_cmp`] and show only the
+/// direction control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SortKey {
+    #[default]
+    /// Album title. Deliberately **not** artist-then-title: an A-Z album list
+    /// is expected to run A-Z by the name on the row, and sorting by artist
+    /// first makes it look unsorted to anyone reading the titles.
+    Name,
+    /// When the file entered MPD's database (0.24's `Added`, else mtime).
+    Added,
+}
+
+impl SortKey {
+    pub const ALL: [SortKey; 2] = [SortKey::Name, SortKey::Added];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortKey::Name => "Name",
+            SortKey::Added => "Added",
+        }
+    }
+
+    /// What the direction control should read for this key. "A-Z" is
+    /// meaningless for a date and "Oldest" is meaningless for a title, so the
+    /// button's wording follows the key rather than being fixed.
+    pub fn direction_label(self, desc: bool) -> &'static str {
+        match (self, desc) {
+            (SortKey::Name, false) => "A\u{2013}Z",
+            (SortKey::Name, true) => "Z\u{2013}A",
+            (_, false) => "Oldest",
+            (_, true) => "Newest",
+        }
+    }
+}
+
+impl std::fmt::Display for SortKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Orders two albums for a list.
+///
+/// `a_added` / `b_added` are the albums' add-times, which don't live on
+/// `AlbumGroup` because they arrive from a completely different (and much
+/// more expensive) query than the album list itself — see
+/// `App::album_added`. Passing them in keeps this a pure function.
+///
+/// **A missing add-time sorts last in *both* directions.** The unknown-ness
+/// is checked outside the reversal on purpose: an album the walk never
+/// reached jumping to the top of a "newest first" list would read as data,
+/// and the same rule already governs `last_modified` in Recently Added.
+///
+/// The name is always the final tiebreak, so the order stays total and
+/// flipping the direction twice restores the list rather than shuffling
+/// albums added at the same moment.
+pub fn album_cmp(
+    a: &AlbumGroup,
+    a_added: Option<&str>,
+    b: &AlbumGroup,
+    b_added: Option<&str>,
+    key: SortKey,
+    desc: bool,
+) -> std::cmp::Ordering {
+    let by_name = || {
+        name_cmp(&a.base, &b.base)
+            .then_with(|| name_cmp(&a.artist, &b.artist))
+            .then_with(|| a.base.cmp(&b.base))
+            .then_with(|| a.artist.cmp(&b.artist))
+    };
+
+    match key {
+        SortKey::Name => by_name().pipe_reverse(desc),
+        SortKey::Added => unknown_last(a_added, b_added, |x, y| x.cmp(y), desc, by_name),
+    }
+}
+
+/// Compares two optional keys with `Some` always ahead of `None`, reversing
+/// only the comparison between two `Some`s. Ties fall through to `tiebreak`,
+/// which is **not** reversed either — albums sharing an add-time stay A-Z
+/// whichever way the dates run.
+fn unknown_last<T>(
+    a: Option<T>,
+    b: Option<T>,
+    cmp: impl Fn(T, T) -> std::cmp::Ordering,
+    desc: bool,
+    tiebreak: impl Fn() -> std::cmp::Ordering,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(x), Some(y)) => cmp(x, y).pipe_reverse(desc).then_with(tiebreak),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => tiebreak(),
+    }
+}
+
+/// Small helper so the `.then_with` chains above read in one direction.
+trait PipeReverse {
+    fn pipe_reverse(self, yes: bool) -> Self;
+}
+
+impl PipeReverse for std::cmp::Ordering {
+    fn pipe_reverse(self, yes: bool) -> Self {
+        if yes {
+            self.reverse()
+        } else {
+            self
+        }
+    }
+}
+
+/// Which `find` form a server accepts for the Recently Added query.
+///
+/// The three rungs differ in *what* they call "recent" as much as in syntax,
+/// and the top one is the only one that means what the view says:
+///
+/// - `Added` is MPD 0.24's real database add-time. Immune to the mtime
+///   problem below.
+/// - `Last-Modified` is the file's mtime, which lies in both directions:
+///   `cp -p` / `rsync -a` / a restored backup carry the original date
+///   forward, so files added today can be years old and never appear, while
+///   editing a tag on an old file resurfaces it as "recently added".
+/// - The bottom rung is mtime *unsorted*, for servers with no `sort` clause
+///   (pre-0.22). There the `window` truncates MPD's database order — an
+///   effectively arbitrary slice — so the caller must sort what it gets and
+///   accept that the set itself may be wrong. It exists so an ancient server
+///   shows something rather than nothing.
+///
+/// Discriminants are the on-the-wire cache value in `MpdClient`; `0` is
+/// reserved for "not probed yet", so they start at 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RecentlyAddedRung {
+    /// MPD 0.24+ — database add-time, sorted server-side.
+    AddedSince = 1,
+    /// MPD 0.22+ — file mtime, sorted server-side.
+    ModifiedSinceSorted = 2,
+    /// Pre-0.22 — file mtime, unsorted; the caller must sort.
+    ModifiedSinceUnsorted = 3,
+}
+
+impl RecentlyAddedRung {
+    /// The rung tried first on an unprobed server.
+    pub const TOP: Self = Self::AddedSince;
+
+    pub fn from_repr(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(Self::AddedSince),
+            2 => Some(Self::ModifiedSinceSorted),
+            3 => Some(Self::ModifiedSinceUnsorted),
+            _ => None,
+        }
+    }
+
+    /// This rung and every weaker one, in the order they should be tried.
+    pub fn from(start: Self) -> impl Iterator<Item = Self> {
+        [
+            Self::AddedSince,
+            Self::ModifiedSinceSorted,
+            Self::ModifiedSinceUnsorted,
+        ]
+        .into_iter()
+        .skip_while(move |r| *r != start)
+    }
+
+    /// Whether the server orders the result for us. When false the caller's
+    /// own sort is the only ordering there is — and the `window` has already
+    /// chosen *which* rows, so sorting can't recover the ones it dropped.
+    pub fn is_server_sorted(self) -> bool {
+        !matches!(self, Self::ModifiedSinceUnsorted)
+    }
+
+    /// The `find` command for this rung. `since` must already be escaped.
+    ///
+    /// `sort` runs **before** `window` in MPD, which is the whole point: a
+    /// descending sort (the `-` prefix) makes the limit drop the *oldest*
+    /// matches instead of an arbitrary slice of database order.
+    pub fn query(self, since: &str, limit: u32) -> String {
+        match self {
+            Self::AddedSince => {
+                format!("find \"(added-since '{since}')\" sort -Added window 0:{limit}")
+            }
+            Self::ModifiedSinceSorted => format!(
+                "find \"(modified-since '{since}')\" sort -Last-Modified window 0:{limit}"
+            ),
+            Self::ModifiedSinceUnsorted => {
+                format!("find \"(modified-since '{since}')\" window 0:{limit}")
+            }
+        }
+    }
+}
+
 /// Drop entries older than 30 days, then cap at the 100 newest. `entries`
 /// must already be newest-first; this never reorders.
 pub fn prune_recently_played(entries: &mut Vec<RecentlyPlayedEntry>, now: i64) {
@@ -1458,6 +1730,322 @@ mod tests {
         assert_eq!(v.len(), 8);
         // Most recent is at front
         assert_eq!(v[0].album, "9");
+    }
+
+    // --- name_cmp / list sorting --------------------------------------------
+
+    #[test]
+    fn name_cmp_files_lowercase_initials_where_they_belong() {
+        // The bug this replaces: `Vec<String>::sort()` is byte order, so
+        // every lowercase initial landed after every uppercase one. A real
+        // library has all four of these and they all sat past Z.
+        let mut v = vec!["ZZ Top", "a-ha", "will.i.am", "Blur", "dEUS", "k.d. lang"];
+        v.sort_by(|a, b| name_cmp(a, b));
+        assert_eq!(
+            v,
+            vec!["a-ha", "Blur", "dEUS", "k.d. lang", "will.i.am", "ZZ Top"]
+        );
+        // Explicitly: the byte comparison this replaced got it wrong.
+        assert!("ZZ Top" < "a-ha", "premise of the test no longer holds");
+    }
+
+    #[test]
+    fn name_cmp_is_a_total_order_across_case_only_differences() {
+        // Case-folding alone makes these Equal, which is not a total order:
+        // a sort could then leave them in either order and reversing twice
+        // would shuffle the list. The byte tiebreak is what fixes that.
+        assert_ne!(name_cmp("abba", "ABBA"), std::cmp::Ordering::Equal);
+        assert_eq!(name_cmp("ABBA", "abba"), std::cmp::Ordering::Less);
+        assert_eq!(name_cmp("abba", "abba"), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn reversing_the_sort_twice_is_the_identity() {
+        let names = ["ZZ Top", "abba", "ABBA", "a-ha", "Blur"];
+        let sorted = |desc: bool| {
+            let mut v = names.to_vec();
+            v.sort_by(|a, b| name_cmp_dir(a, b, desc));
+            v
+        };
+        let asc = sorted(false);
+        let mut back = sorted(true);
+        back.reverse();
+        assert_eq!(asc, back, "A-Z and reversed Z-A must agree");
+    }
+
+    fn ag(artist: &str, base: &str) -> AlbumGroup {
+        AlbumGroup {
+            artist: artist.into(),
+            base: base.into(),
+            variants: vec![base.into()],
+        }
+    }
+
+    fn sorted(src: &[AlbumGroup], key: SortKey, desc: bool) -> Vec<String> {
+        sorted_with(src, key, desc, &HashMap::new())
+    }
+
+    fn sorted_with(
+        src: &[AlbumGroup],
+        key: SortKey,
+        desc: bool,
+        added: &HashMap<String, String>,
+    ) -> Vec<String> {
+        let mut v = src.to_vec();
+        let look = |g: &AlbumGroup| added.get(&album_scoped_key(Some(&g.artist), &g.base)).cloned();
+        v.sort_by(|a, b| {
+            album_cmp(a, look(a).as_deref(), b, look(b).as_deref(), key, desc)
+        });
+        v.into_iter().map(|g| g.base).collect()
+    }
+
+    #[test]
+    fn albums_sort_by_album_name_not_by_artist() {
+        // The whole point of the fix: an A-Z album list must run A-Z by the
+        // name on the row. Sorting by artist first put "Arrival" after
+        // "Reign in Blood" and the list read as unsorted.
+        let src = [
+            ag("Slayer", "Reign in Blood"),
+            ag("ABBA", "Arrival"),
+            ag("Slayer", "Hell Awaits"),
+            ag("ABBA", "Waterloo"),
+        ];
+        assert_eq!(
+            sorted(&src, SortKey::Name, false),
+            vec!["Arrival", "Hell Awaits", "Reign in Blood", "Waterloo"]
+        );
+        assert_eq!(
+            sorted(&src, SortKey::Name, true),
+            vec!["Waterloo", "Reign in Blood", "Hell Awaits", "Arrival"]
+        );
+    }
+
+    #[test]
+    fn two_artists_same_album_title_stay_deterministically_ordered() {
+        // Name-only sorting makes these tie, so the artist is the tiebreak —
+        // without it the pair could swap on every re-sort.
+        let src = [
+            ag("Slayer", "Greatest Hits"),
+            ag("ABBA", "Greatest Hits"),
+        ];
+        let mut v = src.to_vec();
+        v.sort_by(|a, b| album_cmp(a, None, b, None, SortKey::Name, false));
+        assert_eq!(v[0].artist, "ABBA");
+    }
+
+    #[test]
+    fn albums_sort_by_add_time() {
+        let src = [ag("A", "First"), ag("A", "Second")];
+        let mut added = HashMap::new();
+        added.insert(
+            album_scoped_key(Some("A"), "First"),
+            "2020-01-01T00:00:00Z".to_string(),
+        );
+        added.insert(
+            album_scoped_key(Some("A"), "Second"),
+            "2026-01-01T00:00:00Z".to_string(),
+        );
+        assert_eq!(
+            sorted_with(&src, SortKey::Added, false, &added),
+            vec!["First", "Second"]
+        );
+        assert_eq!(
+            sorted_with(&src, SortKey::Added, true, &added),
+            vec!["Second", "First"]
+        );
+        // An album the walk never reached sorts last either way, rather than
+        // pretending to be the oldest or the newest.
+        assert_eq!(
+            sorted_with(&src, SortKey::Added, true, &HashMap::new()),
+            vec!["First", "Second"],
+        );
+    }
+
+    #[test]
+    fn reversing_an_album_sort_twice_is_the_identity_for_every_key() {
+        let src = [
+            ag("Slayer", "Reign in Blood"),
+            ag("ABBA", "Arrival"),
+            ag("ABBA", "Arrival"),
+            ag("Nobody", "Undated"),
+        ];
+        for key in SortKey::ALL {
+            let mut back = sorted(&src, key, true);
+            back.reverse();
+            if key == SortKey::Name {
+                assert_eq!(sorted(&src, key, false), back, "{key:?}");
+            } else {
+                // With unknowns pinned last in both directions, reversing
+                // can't be a pure mirror — but the known ones must still
+                // mirror, and the unknown must stay at the end.
+                assert_eq!(sorted(&src, key, false).last().unwrap(), "Undated");
+                assert_eq!(sorted(&src, key, true).last().unwrap(), "Undated");
+            }
+        }
+    }
+
+    #[test]
+    fn fold_album_added_keeps_the_newest_track_per_album() {
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let pairs = vec![
+            p("file", "a/1.flac"),
+            p("Album", "Reign in Blood"),
+            p("AlbumArtist", "Slayer"),
+            p("Added", "2020-01-01T00:00:00Z"),
+            p("file", "a/2.flac"),
+            p("Album", "Reign in Blood"),
+            p("AlbumArtist", "Slayer"),
+            p("Added", "2026-03-03T00:00:00Z"),
+        ];
+        let mut out = HashMap::new();
+        fold_album_added(&pairs, &mut out);
+        assert_eq!(
+            out.get(&album_scoped_key(Some("Slayer"), "Reign in Blood")).map(String::as_str),
+            Some("2026-03-03T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn fold_album_added_collapses_discs_and_accumulates_across_pages() {
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[
+                p("file", "a/1.flac"),
+                p("Album", "Blast from the Past [Disc 1]"),
+                p("AlbumArtist", "Gamma Ray"),
+                p("Last-Modified", "2019-01-01T00:00:00Z"),
+            ],
+            &mut out,
+        );
+        // The second page must merge into the same key, not replace it.
+        fold_album_added(
+            &[
+                p("file", "a/2.flac"),
+                p("Album", "Blast from the Past [Disc 2]"),
+                p("AlbumArtist", "Gamma Ray"),
+                p("Last-Modified", "2021-01-01T00:00:00Z"),
+            ],
+            &mut out,
+        );
+        assert_eq!(out.len(), 1, "the two discs did not collapse");
+        assert_eq!(
+            out.get(&album_scoped_key(Some("Gamma Ray"), "Blast from the Past")).map(String::as_str),
+            Some("2021-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn fold_album_added_prefers_added_over_last_modified() {
+        // The rung decides which the server sent; when both arrive, the real
+        // database add-time is the one that means what the sort claims.
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[
+                p("file", "a/1.flac"),
+                p("Last-Modified", "1999-01-01T00:00:00Z"),
+                p("Added", "2026-01-01T00:00:00Z"),
+                p("Album", "X"),
+                p("AlbumArtist", "A"),
+            ],
+            &mut out,
+        );
+        assert_eq!(
+            out.get(&album_scoped_key(Some("A"), "X")).map(String::as_str),
+            Some("2026-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn fold_album_added_ignores_a_song_with_no_timestamp() {
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[p("file", "a/1.flac"), p("Album", "X"), p("AlbumArtist", "A")],
+            &mut out,
+        );
+        assert!(out.is_empty(), "an undated song must not claim an add-time");
+    }
+
+    // --- RecentlyAddedRung --------------------------------------------------
+
+    #[test]
+    fn recently_added_top_rung_sorts_by_added_descending() {
+        // `sort` must come before `window`: MPD applies them in that order,
+        // and that ordering is the whole fix — it makes the limit drop the
+        // oldest matches instead of an arbitrary slice of database order.
+        let q = RecentlyAddedRung::AddedSince.query("2026-01-01T00:00:00Z", 5000);
+        assert_eq!(
+            q,
+            "find \"(added-since '2026-01-01T00:00:00Z')\" sort -Added window 0:5000"
+        );
+        assert!(q.find("sort").unwrap() < q.find("window").unwrap());
+    }
+
+    #[test]
+    fn recently_added_middle_rung_sorts_by_last_modified_descending() {
+        let q = RecentlyAddedRung::ModifiedSinceSorted.query("2026-01-01T00:00:00Z", 10);
+        assert_eq!(
+            q,
+            "find \"(modified-since '2026-01-01T00:00:00Z')\" sort -Last-Modified window 0:10"
+        );
+        // The minus is what makes it *descending*. Without it the window
+        // keeps the oldest additions, i.e. exactly the wrong end.
+        assert!(q.contains("sort -Last-Modified"));
+    }
+
+    #[test]
+    fn recently_added_bottom_rung_is_the_legacy_unsorted_query() {
+        let q = RecentlyAddedRung::ModifiedSinceUnsorted.query("2026-01-01T00:00:00Z", 10);
+        assert_eq!(q, "find \"(modified-since '2026-01-01T00:00:00Z')\" window 0:10");
+        assert!(!q.contains("sort"));
+    }
+
+    #[test]
+    fn only_the_bottom_rung_needs_a_client_side_sort() {
+        assert!(RecentlyAddedRung::AddedSince.is_server_sorted());
+        assert!(RecentlyAddedRung::ModifiedSinceSorted.is_server_sorted());
+        assert!(!RecentlyAddedRung::ModifiedSinceUnsorted.is_server_sorted());
+    }
+
+    #[test]
+    fn the_ladder_descends_and_never_retries_a_rung_already_rejected() {
+        let from_top: Vec<_> = RecentlyAddedRung::from(RecentlyAddedRung::TOP).collect();
+        assert_eq!(
+            from_top,
+            vec![
+                RecentlyAddedRung::AddedSince,
+                RecentlyAddedRung::ModifiedSinceSorted,
+                RecentlyAddedRung::ModifiedSinceUnsorted,
+            ]
+        );
+        // A server already known to lack `added-since` must not be asked for
+        // it again on every view entry.
+        let from_middle: Vec<_> =
+            RecentlyAddedRung::from(RecentlyAddedRung::ModifiedSinceSorted).collect();
+        assert_eq!(
+            from_middle,
+            vec![
+                RecentlyAddedRung::ModifiedSinceSorted,
+                RecentlyAddedRung::ModifiedSinceUnsorted,
+            ]
+        );
+        assert_eq!(
+            RecentlyAddedRung::from(RecentlyAddedRung::ModifiedSinceUnsorted).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rung_discriminants_round_trip_and_reserve_zero_for_unprobed() {
+        // `MpdClient` caches the rung as a `u8` where 0 means "not probed",
+        // so no rung may claim it.
+        assert_eq!(RecentlyAddedRung::from_repr(0), None);
+        for r in RecentlyAddedRung::from(RecentlyAddedRung::TOP) {
+            assert_eq!(RecentlyAddedRung::from_repr(r as u8), Some(r));
+            assert_ne!(r as u8, 0);
+        }
     }
 
     // --- prune_recently_played ---------------------------------------------

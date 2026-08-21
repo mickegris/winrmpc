@@ -1,4 +1,4 @@
-use crate::mpd::types::{AlbumGroup, Song};
+use crate::mpd::types::{AlbumGroup, Song, SortKey};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::album_grid;
@@ -11,9 +11,18 @@ use std::collections::HashMap;
 pub fn view<'a>(
     albums: &'a [AlbumGroup],
     title: &'a str,
+    // A note under the count, e.g. the window Recently Added covers. Without
+    // it a list bounded by a query looks the same as a list that is simply
+    // short.
+    subtitle: Option<String>,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     grid_view: bool,
     current_song: Option<&'a Song>,
+    // `None` where the list isn't name- or add-time-sorted at all (Recently
+    // Added, which is ordered by time and only by time). An Option rather
+    // than a plain pair because the control must be *absent* there, not
+    // present and doing nothing.
+    sort: Option<(SortKey, bool)>,
 ) -> Element<'a, Message> {
     let body: Element<'a, Message> = if grid_view {
         let tiles: Vec<Element<'a, Message>> = albums
@@ -110,7 +119,19 @@ pub fn view<'a>(
                 text(format!("{} albums", albums.len()))
                     .size(14)
                     .color(AppColors::text_muted()),
+                Space::with_width(8),
+                text(subtitle.unwrap_or_default())
+                    .size(13)
+                    .color(AppColors::text_muted()),
                 Space::with_width(Length::Fill),
+                // `None` on the recency lists: Recently Added is ordered by
+                // time, which is the only thing it's for, so the control is
+                // absent rather than present-and-ignored.
+                match sort {
+                    Some((key, desc)) => link::album_sort_controls(key, desc),
+                    None => Space::with_width(0).into(),
+                },
+                Space::with_width(8),
                 album_grid::layout_toggle(grid_view),
             ]
             .align_y(Alignment::Center)

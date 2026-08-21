@@ -1,4 +1,4 @@
-use crate::mpd::types::AlbumGroup;
+use crate::mpd::types::{AlbumGroup, SortKey};
 use crate::ui::message::Message;
 use crate::ui::widgets::link;
 use crate::ui::widgets::song_row;
@@ -15,6 +15,7 @@ pub fn view<'a>(
     genre_name: &'a str,
     albums: &'a [AlbumGroup],
     current_song: Option<&'a crate::mpd::types::Song>,
+    sort: (SortKey, bool),
 ) -> Element<'a, Message> {
     let mut list = column![].spacing(0);
     for (i, album) in albums.iter().enumerate() {
@@ -67,6 +68,8 @@ pub fn view<'a>(
                 text(format!("{} albums", albums.len()))
                     .size(14)
                     .color(AppColors::text_muted()),
+                Space::with_width(Length::Fill),
+                link::album_sort_controls(sort.0, sort.1),
             ]
             .align_y(Alignment::Center)
             .padding([12, 12]),

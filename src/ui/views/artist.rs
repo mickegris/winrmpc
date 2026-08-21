@@ -1,4 +1,4 @@
-use crate::mpd::types::{art_key_for, AlbumGroup, Song};
+use crate::mpd::types::{art_key_for, AlbumGroup, Song, SortKey};
 use crate::ui::widgets::link;
 use crate::ui::widgets::page::page;
 use crate::ui::widgets::song_row;
@@ -14,6 +14,7 @@ pub fn view<'a>(
     bio: Option<&'a str>,
     show_bio: bool,
     current_song: Option<&'a Song>,
+    sort: (SortKey, bool),
 ) -> Element<'a, Message> {
     // Fixed header
     let mut header = Column::new().spacing(4).padding(20);
@@ -57,6 +58,8 @@ pub fn view<'a>(
                         .size(14)
                         .color(AppColors::text_muted())
                 ),
+            Space::with_width(Length::Fill),
+            link::album_sort_controls(sort.0, sort.1),
         ]
         .align_y(Alignment::Center),
     );

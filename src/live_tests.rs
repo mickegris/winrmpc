@@ -958,3 +958,367 @@ async fn live_tls_reaches_every_lookup_host() {
         "TLS/transport failed for: {failures:?}"
     );
 }
+
+// ============================================================================
+// Recently Added
+// ============================================================================
+
+/// The bug this guards, and the reason it has to be a *live* test: MPD
+/// returns `find` matches in database order (documented as undefined —
+/// effectively directory traversal), and `window` slices **that**. The old
+/// query had no `sort`, so once the library held more matches than the
+/// window, which songs came back was decided by path order and the newest
+/// additions were silently dropped. Sorting client-side afterwards can't
+/// recover a row the server never sent.
+///
+/// A unit test can only check the string we build. Only a real server proves
+/// the server honours it, so the window here is deliberately **smaller** than
+/// the match count — that's the exact condition under which the old query
+/// returns an arbitrary slice.
+#[tokio::test]
+#[ignore]
+async fn live_recently_added_is_newest_first() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    // Ten years back, so a library of any age has far more matches than the
+    // window below.
+    let since = (chrono::Utc::now() - chrono::Duration::days(3650))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+
+    let (songs, rung) = client
+        .find_recently_added(&since, 50)
+        .await
+        .expect("recently-added query");
+    eprintln!("rung: {rung:?}, {} songs", songs.len());
+
+    assert!(!songs.is_empty(), "library has no songs at all?");
+    if !rung.is_server_sorted() {
+        eprintln!("server has no `sort` clause — ordering is not guaranteed, skipping");
+        return;
+    }
+
+    // Descending, with unknown timestamps allowed only at the tail.
+    let stamps: Vec<Option<&String>> = songs.iter().map(|s| s.last_modified.as_ref()).collect();
+    for pair in stamps.windows(2) {
+        match (pair[0], pair[1]) {
+            (Some(a), Some(b)) => assert!(
+                a >= b,
+                "not newest-first: {a} came before {b} — the server ignored `sort`"
+            ),
+            (None, Some(b)) => panic!("a song with no timestamp sorted above {b}"),
+            _ => {}
+        }
+    }
+
+    // And the slice really is the newest end of the library, not a slice of
+    // path order: a second, larger window must not surface anything newer.
+    let (wider, _) = client
+        .find_recently_added(&since, 500)
+        .await
+        .expect("wider recently-added query");
+    let newest_narrow = stamps.first().copied().flatten();
+    let newest_wide = wider.iter().filter_map(|s| s.last_modified.as_ref()).max();
+    assert_eq!(
+        newest_narrow, newest_wide,
+        "a wider window found a newer song, so the narrow one was not the newest end"
+    );
+}
+
+/// Records which rung this server actually supports. Not an assertion about
+/// the server — a 0.21 box legitimately answers on the bottom rung — but the
+/// ladder is invisible from the outside otherwise, and knowing which one
+/// answers is what tells you whether Recently Added is using real add-times
+/// or file mtimes.
+#[tokio::test]
+#[ignore]
+async fn live_recently_added_reports_which_rung_the_server_answers_on() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    let since = (chrono::Utc::now() - chrono::Duration::days(3650))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+
+    // A fresh client starts at the top of the ladder, so whichever rung it
+    // settles on is the highest this server supports.
+    let (_, chosen) = client
+        .find_recently_added(&since, 1)
+        .await
+        .expect("some rung must answer");
+    eprintln!("highest supported rung: {chosen:?}");
+    if !chosen.is_server_sorted() {
+        eprintln!(
+            "NOTE: no `sort` clause — Recently Added on this server shows an arbitrary \
+             slice, not the newest additions"
+        );
+    }
+
+    // And it must remember it: the second call issues no further probing.
+    let (_, again) = client
+        .find_recently_added(&since, 1)
+        .await
+        .expect("second call");
+    assert_eq!(chosen, again, "the probed rung was not cached");
+}
+
+/// A mock MPD server that answers `find` only when the command contains none
+/// of `reject`, and ACKs otherwise. Records every command it was sent.
+///
+/// This is how the pre-0.24 / pre-0.22 fallbacks get tested at all: they can
+/// only be exercised against a server that *lacks* the newer syntax, and the
+/// one real server available runs 0.24. A mock is the difference between
+/// "the fallback is written" and "the fallback works".
+#[cfg(test)]
+async fn mock_mpd_rejecting(
+    version: &'static str,
+    reject: &'static [&'static str],
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+
+    let recorder = std::sync::Arc::clone(&seen);
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            let recorder = std::sync::Arc::clone(&recorder);
+            tokio::spawn(async move {
+                let (rh, mut wh) = tokio::io::split(stream);
+                let mut reader = BufReader::new(rh);
+                let _ = wh.write_all(format!("OK MPD {version}\n").as_bytes()).await;
+                let _ = wh.flush().await;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let cmd = line.trim_end().to_string();
+                    recorder.lock().unwrap().push(cmd.clone());
+
+                    let reply = if reject.iter().any(|r| cmd.contains(r)) {
+                        // What a real MPD says when it doesn't know a filter
+                        // or sort name.
+                        "ACK [2@0] {find} Unknown filter type\n".to_string()
+                    } else {
+                        "file: a/b.flac\nLast-Modified: 2026-08-01T00:00:00Z\nOK\n".to_string()
+                    };
+                    let _ = wh.write_all(reply.as_bytes()).await;
+                    let _ = wh.flush().await;
+                }
+            });
+        }
+    });
+
+    (addr, seen)
+}
+
+/// MPD 0.23: no `added-since`, but `sort` works. Must land on the middle
+/// rung — mtime, still sorted server-side, so the window still keeps the
+/// newest end.
+#[tokio::test]
+async fn recently_added_falls_back_to_modified_since_on_a_pre_0_24_server() {
+    let (addr, seen) = mock_mpd_rejecting("0.23.5", &["added-since"]).await;
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    let (songs, rung) = client
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect("must degrade rather than fail");
+
+    assert_eq!(rung, RecentlyAddedRung::ModifiedSinceSorted);
+    assert!(rung.is_server_sorted(), "0.23 has sort; don't give it up too");
+    assert_eq!(songs.len(), 1, "the fallback query's result must be parsed");
+
+    let sent = seen.lock().unwrap().clone();
+    assert!(sent.iter().any(|c| c.contains("added-since")), "never probed");
+    assert!(sent.iter().any(|c| c.contains("sort -Last-Modified")));
+    assert!(
+        !sent.iter().any(|c| c.contains("sort -Added")
+            && !c.contains("added-since")),
+        "the `Added` sort name must not leak onto the mtime query"
+    );
+}
+
+/// MPD 0.21: neither `added-since` nor `sort`. Must reach the bottom rung and
+/// report itself as unsorted, which is what makes the app warn that the list
+/// is an arbitrary slice rather than the newest additions.
+#[tokio::test]
+async fn recently_added_falls_back_to_the_legacy_query_on_a_pre_0_22_server() {
+    let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    let (songs, rung) = client
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect("an ancient server must still show something");
+
+    assert_eq!(rung, RecentlyAddedRung::ModifiedSinceUnsorted);
+    assert!(!rung.is_server_sorted());
+    assert_eq!(songs.len(), 1);
+
+    let sent = seen.lock().unwrap().clone();
+    assert_eq!(sent.len(), 3, "all three rungs should have been tried once");
+}
+
+/// The probe must happen once, not on every view entry. Three ACKs per visit
+/// to Recently Added is three wasted round trips on exactly the servers least
+/// able to spare them.
+#[tokio::test]
+async fn the_recently_added_rung_is_probed_once_and_then_remembered() {
+    let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    for _ in 0..3 {
+        client
+            .find_recently_added("2026-01-01T00:00:00Z", 10)
+            .await
+            .expect("query");
+    }
+
+    let sent = seen.lock().unwrap().clone();
+    // 3 for the first call's descent, then 1 each for the two after it.
+    assert_eq!(sent.len(), 5, "sent: {sent:#?}");
+    assert_eq!(
+        sent.iter().filter(|c| c.contains("added-since")).count(),
+        1,
+        "the top rung must not be re-probed"
+    );
+}
+
+/// A clone shares the cache — `App` clones the client into every task, so a
+/// per-clone cache would mean re-probing on essentially every call.
+#[tokio::test]
+async fn a_cloned_client_shares_the_probed_rung() {
+    let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+    client
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect("first");
+
+    let cloned = client.clone();
+    let (_, rung) = cloned
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect("clone");
+
+    assert_eq!(rung, RecentlyAddedRung::ModifiedSinceUnsorted);
+    assert_eq!(seen.lock().unwrap().len(), 4, "the clone re-probed");
+}
+
+/// A dead socket must not be read as "the server doesn't support this rung".
+/// Walking the ladder on a connection error would cache a weaker rung the
+/// server never rejected, permanently downgrading Recently Added for the rest
+/// of the session — and it would do it silently.
+#[tokio::test]
+async fn a_connection_error_does_not_walk_the_ladder() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    tokio::spawn(async move {
+        // Greet, then hang up on the first command.
+        let Ok((stream, _)) = listener.accept().await else { return };
+        let (_rh, mut wh) = tokio::io::split(stream);
+        use tokio::io::AsyncWriteExt;
+        let _ = wh.write_all(b"OK MPD 0.24.0\n").await;
+        let _ = wh.flush().await;
+    });
+
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+    let err = client
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect_err("a dropped socket must surface as an error");
+    assert!(
+        err.is_connection_fatal(),
+        "must propagate the connection error, not degrade: {err}"
+    );
+}
+
+/// The add-time walk against a real library: paging must terminate, cover
+/// most albums, and produce timestamps that actually sort.
+///
+/// This is the expensive query in the app, so the test also prints how long
+/// it took and how many pages it needed — the numbers that decide whether
+/// `ADDED_PAGE` is set sensibly.
+#[tokio::test]
+#[ignore]
+async fn live_album_added_walk_covers_the_library() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    const PAGE: u32 = 10_000;
+    let started = std::time::Instant::now();
+    let mut index = std::collections::HashMap::new();
+    let mut pages = 0u32;
+    loop {
+        let pairs = client
+            .added_page(pages * PAGE, PAGE)
+            .await
+            .expect("added page");
+        let songs = pairs.iter().filter(|(k, _)| k == "file").count() as u32;
+        fold_album_added(&pairs, &mut index);
+        pages += 1;
+        if songs < PAGE || pages >= 40 {
+            break;
+        }
+    }
+    eprintln!(
+        "{} albums in {pages} page(s), {:?}",
+        index.len(),
+        started.elapsed()
+    );
+
+    assert!(!index.is_empty(), "the walk found no albums at all");
+
+    // Most album rows should have an add-time; a large shortfall means the
+    // fold's key doesn't match the one the list looks up.
+    let albums = client.list_albums_by_artist().await.expect("album list");
+    let rows: std::collections::HashSet<String> = albums
+        .iter()
+        .map(|(artist, album)| {
+            album_scoped_key(Some(artist), &album_base_and_disc(album).0)
+        })
+        .collect();
+    let covered = rows.iter().filter(|k| index.contains_key(*k)).count();
+    eprintln!("{covered} of {} album rows have an add-time", rows.len());
+    assert!(
+        covered * 10 >= rows.len() * 9,
+        "under 90% coverage — the fold's key probably disagrees with the \
+         album list's key"
+    );
+
+    // And the timestamps must be lexicographically comparable, which is what
+    // the sort relies on.
+    let mut stamps: Vec<&String> = index.values().collect();
+    stamps.sort();
+    assert!(
+        stamps.first().unwrap() <= stamps.last().unwrap(),
+        "timestamps don't order"
+    );
+    eprintln!("oldest: {}, newest: {}", stamps.first().unwrap(), stamps.last().unwrap());
+}

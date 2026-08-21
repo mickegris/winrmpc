@@ -56,6 +56,28 @@ const TOAST_ERROR_SECS: u64 = 8;
 /// More than this on screen and they'd cover the content they're reporting on.
 const MAX_TOASTS: usize = 3;
 
+/// How far back Recently Added looks.
+const RECENTLY_ADDED_DAYS: i64 = 90;
+
+/// How many songs the Recently Added query may return.
+///
+/// The bound is not optional: an unbounded `added-since`/`modified-since`
+/// scan on a large library can outrun the socket read. What changed in 0.4.4
+/// is *which* songs the bound keeps — the query now sorts server-side, so the
+/// limit drops the oldest matches rather than an arbitrary slice of MPD's
+/// database order. Sized for albums, not tracks: these collapse to unique
+/// albums, so 5000 songs is roughly 350 rows.
+const RECENTLY_ADDED_LIMIT: u32 = 5000;
+
+/// Songs per page of the add-time walk. Small enough that one response is a
+/// bounded allocation, large enough that a big library is a handful of round
+/// trips rather than hundreds.
+const ADDED_PAGE: u32 = 10_000;
+
+/// Hard stop for the add-time walk, so a library larger than anything
+/// expected degrades to partial data instead of looping.
+const ADDED_MAX_PAGES: u32 = 40;
+
 /// A transient message shown over the main content.
 #[derive(Debug, Clone)]
 pub struct Toast {
@@ -101,6 +123,12 @@ pub struct App {
     genres: Vec<String>,
     artist_albums: HashMap<String, Vec<AlbumGroup>>,
     genre_albums: HashMap<String, Vec<AlbumGroup>>,
+    /// `album_scoped_key` -> newest add-time. Loaded **lazily**, only when
+    /// the Added sort is actually selected — it needs a paged walk of every
+    /// song in the library, since `Added` is not a tag `list` can enumerate.
+    album_added: HashMap<String, String>,
+    /// Guards against starting a second add-time walk while one is running.
+    album_added_loading: bool,
     album_songs: HashMap<String, Vec<Song>>,
     selected_artist: Option<String>,
     selected_album: Option<String>,
@@ -348,6 +376,8 @@ impl App {
             genres: Vec::new(),
             artist_albums: HashMap::new(),
             genre_albums: HashMap::new(),
+            album_added: HashMap::new(),
+            album_added_loading: false,
             album_songs: HashMap::new(),
             selected_artist: None,
             selected_album: None,
@@ -1049,14 +1079,17 @@ impl App {
             // =================================================================
             Message::ArtistsLoaded(a) => {
                 self.artists = a;
+                self.sort_library_lists();
                 Task::none()
             }
             Message::AlbumsLoaded(a) => {
                 self.albums = a;
+                self.sort_library_lists();
                 self.queue_album_art()
             }
             Message::GenresLoaded(g) => {
                 self.genres = g;
+                self.sort_library_lists();
                 Task::none()
             }
             Message::ArtistSelected(name) => {
@@ -1080,7 +1113,9 @@ impl App {
                                 albums.push(a);
                             }
                         }
-                        albums.sort();
+                        // Ordering happens in `sort_library_lists` once the
+                        // groups exist; sorting the raw names here would be
+                        // byte order and would be overwritten anyway.
                         // Every entry shares this page's artist, so grouping
                         // here only does multi-disc collapsing (no
                         // cross-artist ambiguity is possible on this page).
@@ -1196,6 +1231,7 @@ impl App {
             }
             Message::GenreAlbumsLoaded(genre, albums) => {
                 self.genre_albums.insert(genre, albums);
+                self.sort_library_lists();
                 Task::none()
             }
             Message::ArtistAlbumsLoaded(artist, albums) => {
@@ -1210,6 +1246,7 @@ impl App {
                 // as the tag to look a track up by.
                 let targets = Self::album_art_targets(&albums);
                 self.artist_albums.insert(artist, albums);
+                self.sort_library_lists();
                 self.enqueue_album_art(targets)
             }
             Message::AlbumSongsLoaded(album, songs) => {
@@ -1228,10 +1265,46 @@ impl App {
             // =================================================================
             // Recently Added / Recently Played history
             // =================================================================
-            Message::RecentlyAddedLoaded(mut songs) => {
-                // Newest-modified first; unknown last_modified sinks to the
-                // bottom rather than the top.
+            Message::RecentlyAddedLoaded(result) => {
+                let (mut songs, rung) = match result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // Previously `.unwrap_or_default()`, which rendered a
+                        // failed query as an empty library section — visually
+                        // identical to "nothing was added".
+                        self.toast_error(format!("Recently Added failed: {e}"));
+                        return Task::none();
+                    }
+                };
+
+                // Newest first; unknown last_modified sinks to the bottom
+                // rather than the top. Redundant on a server-sorted rung and
+                // kept anyway: it's the only ordering the unsorted rung gets,
+                // and it costs nothing on a list already in order.
                 songs.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+
+                // Hitting the limit exactly means older additions were cut.
+                // Without this the truncated list is indistinguishable from a
+                // complete one, which is exactly how the old query's silent
+                // truncation went unnoticed.
+                if songs.len() as u32 >= RECENTLY_ADDED_LIMIT {
+                    let oldest = songs
+                        .last()
+                        .and_then(|s| s.last_modified.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    tracing::info!(
+                        "Recently Added hit its {RECENTLY_ADDED_LIMIT}-song limit \
+                         (oldest shown: {oldest}); older additions are not listed"
+                    );
+                }
+                if !rung.is_server_sorted() {
+                    tracing::warn!(
+                        "This MPD server has no `sort` clause, so Recently Added shows an \
+                         arbitrary {RECENTLY_ADDED_LIMIT} of the matching songs rather than \
+                         the newest"
+                    );
+                }
+
                 let pairs: Vec<(String, String)> = songs
                     .iter()
                     .map(|s| (s.display_album_artist().to_string(), s.display_album().to_string()))
@@ -1256,6 +1329,63 @@ impl App {
                     },
                     |_| Message::Noop,
                 )
+            }
+            Message::ToggleSortDirection => {
+                self.config.sort_desc = !self.config.sort_desc;
+                self.config.save_and_log("list sort direction");
+                self.sort_library_lists();
+                Task::none()
+            }
+            Message::SetSortKey(key) => {
+                self.config.sort_key = key;
+                self.config.save_and_log("list sort key");
+                self.sort_library_lists();
+                // Add-times are the one key whose data isn't already in
+                // hand, and the walk is expensive enough that it must not
+                // happen until something actually asks for it.
+                if key == SortKey::Added && self.album_added.is_empty() && !self.album_added_loading
+                {
+                    self.toast_info("Reading add times from the server…");
+                    return self.load_album_added(0);
+                }
+                Task::none()
+            }
+            Message::AlbumAddedPage(page, result) => {
+                let pairs = match result {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.album_added_loading = false;
+                        self.toast_error(format!("Couldn't read add times: {e}"));
+                        // Keep whatever pages did land: a partial index still
+                        // orders most of the list, and every album it missed
+                        // sorts into the unknown bucket rather than a wrong
+                        // position.
+                        self.sort_library_lists();
+                        return Task::none();
+                    }
+                };
+
+                // A short page means the end of the library. `file` is one
+                // key per song, so counting it is the song count without
+                // parsing anything.
+                let songs = pairs.iter().filter(|(k, _)| k == "file").count() as u32;
+                fold_album_added(&pairs, &mut self.album_added);
+
+                let more = songs >= ADDED_PAGE && page + 1 < ADDED_MAX_PAGES;
+                if more {
+                    return self.load_album_added(page + 1);
+                }
+
+                self.album_added_loading = false;
+                if page + 1 >= ADDED_MAX_PAGES {
+                    tracing::warn!(
+                        "Add-time walk stopped at {ADDED_MAX_PAGES} pages; \
+                         older albums will sort as unknown"
+                    );
+                }
+                tracing::info!("Loaded add times for {} albums", self.album_added.len());
+                self.sort_library_lists();
+                Task::none()
             }
             Message::ToggleAlbumGridView => {
                 self.config.album_grid_view = !self.config.album_grid_view;
@@ -1340,6 +1470,7 @@ impl App {
             // =================================================================
             Message::PlaylistsLoaded(list) => {
                 self.playlists = list;
+                self.sort_library_lists();
                 Task::none()
             }
             Message::PlaylistSelected(name) => {
@@ -2285,6 +2416,11 @@ impl App {
                 Task::none()
             }
             Message::SwitchServer(name) => {
+                // Indexes the *previous* server's library; keeping it would
+                // silently order the new server's albums by another
+                // machine's dates.
+                self.album_added.clear();
+                self.album_added_loading = false;
                 if name == self.active_server {
                     return Task::none();
                 }
@@ -2599,6 +2735,75 @@ impl App {
         });
     }
 
+    /// Re-sort every name-sorted library list to the current direction.
+    ///
+    /// Called from both entry points — each `*Loaded` handler and
+    /// `ToggleSortDirection` — so the two can't drift onto different
+    /// comparators. Sorting lives here rather than in `view()` because views
+    /// take `&'a [T]` and would have to allocate a reordered copy every
+    /// frame.
+    ///
+    /// **The recency lists are deliberately absent.** `recently_added_albums`
+    /// and `recently_played` are ordered by time, which is the only thing
+    /// they are for; alphabetising them would defeat the feature. Anything
+    /// added here later should be checked against that.
+    fn sort_library_lists(&mut self) {
+        let desc = self.config.sort_desc;
+        let key = self.config.sort_key;
+
+        // Name-only lists ignore `sort_key` — an artist has no add-time.
+        self.artists.sort_by(|a, b| name_cmp_dir(a, b, desc));
+        self.genres.sort_by(|a, b| name_cmp_dir(a, b, desc));
+        self.playlists
+            .sort_by(|a, b| name_cmp_dir(&a.name, &b.name, desc));
+
+        let added = &self.album_added;
+        let sort_albums = |albums: &mut Vec<AlbumGroup>| {
+            albums.sort_by(|a, b| {
+                let ka = album_scoped_key(Some(&a.artist), &a.base);
+                let kb = album_scoped_key(Some(&b.artist), &b.base);
+                album_cmp(
+                    a,
+                    added.get(&ka).map(String::as_str),
+                    b,
+                    added.get(&kb).map(String::as_str),
+                    key,
+                    desc,
+                )
+            });
+        };
+
+        sort_albums(&mut self.albums);
+        for albums in self.artist_albums.values_mut() {
+            sort_albums(albums);
+        }
+        for albums in self.genre_albums.values_mut() {
+            sort_albums(albums);
+        }
+    }
+
+    /// Walk the library newest-added first, one page at a time, folding each
+    /// page into `album_added`.
+    ///
+    /// Paged rather than one `find`: the whole library's metadata in a single
+    /// response is the hazard `RECENTLY_ADDED_LIMIT` already exists to avoid,
+    /// and here only three fields per song survive the fold, so holding the
+    /// rest is pure waste. `ADDED_PAGE` bounds peak memory; `ADDED_MAX_PAGES`
+    /// bounds the whole walk so a pathological library can't loop forever.
+    fn load_album_added(&mut self, page: u32) -> Task<Message> {
+        self.album_added_loading = true;
+        let client = self.client.clone();
+        Task::perform(
+            async move {
+                client
+                    .added_page(page * ADDED_PAGE, ADDED_PAGE)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            move |r| Message::AlbumAddedPage(page, r),
+        )
+    }
+
     /// Show a transient progress/status note.
     fn toast_info(&mut self, text: impl Into<String>) {
         let text = text.into();
@@ -2677,30 +2882,35 @@ impl App {
             }
             View::Library => {
                 // Redirect to Artists if someone navigates here
-                views::artists_list::view(&self.artists)
+                views::artists_list::view(&self.artists, self.config.sort_desc)
             }
             View::Artists => {
-                views::artists_list::view(&self.artists)
+                views::artists_list::view(&self.artists, self.config.sort_desc)
             }
             View::Albums => {
                 views::albums_list::view(
                     &self.albums,
                     "Albums",
+                    None,
                     &self.art_handles,
                     self.config.album_grid_view,
                     self.current_song.as_ref(),
+                    Some((self.config.sort_key, self.config.sort_desc)),
                 )
             }
             View::Genres => {
-                views::genres_list::view(&self.genres)
+                views::genres_list::view(&self.genres, self.config.sort_desc)
             }
             View::RecentlyAdded => {
                 views::albums_list::view(
                     &self.recently_added_albums,
                     "Recently Added",
+                    Some(format!("· last {RECENTLY_ADDED_DAYS} days")),
                     &self.art_handles,
                     self.config.album_grid_view,
                     self.current_song.as_ref(),
+                    // Ordered by time, not by name — see `sort_library_lists`.
+                    None,
                 )
             }
             View::RecentlyPlayed => views::recently_played::view(
@@ -2725,6 +2935,7 @@ impl App {
                     bio,
                     self.show_artist_bio,
                     self.current_song.as_ref(),
+                    (self.config.sort_key, self.config.sort_desc),
                 )
             }
             View::AlbumDetail(name, artist) => {
@@ -2755,7 +2966,12 @@ impl App {
                     .get(name)
                     .map(|a| a.as_slice())
                     .unwrap_or(&[]);
-                views::genre_detail::view(name, albums, self.current_song.as_ref())
+                views::genre_detail::view(
+                    name,
+                    albums,
+                    self.current_song.as_ref(),
+                    (self.config.sort_key, self.config.sort_desc),
+                )
             }
             View::Browser => {
                 views::browser::view(
@@ -2812,6 +3028,7 @@ impl App {
                 self.playlist_renaming.as_deref(),
                 &self.playlist_rename_input,
                 self.queue.is_empty(),
+                self.config.sort_desc,
             ),
             View::PlaylistDetail(name) => {
                 let songs = self
@@ -3484,7 +3701,9 @@ impl App {
                                 artists.push(a);
                             }
                         }
-                        artists.sort();
+                        // Ordering is `sort_library_lists`' job — a byte-order
+                        // `sort()` here would file every lowercase initial
+                        // past Z, and would ignore the A-Z/Z-A direction.
                         artists
                     },
                     Message::ArtistsLoaded,
@@ -3559,7 +3778,9 @@ impl App {
                                 artists.push(a);
                             }
                         }
-                        artists.sort();
+                        // Ordering is `sort_library_lists`' job — a byte-order
+                        // `sort()` here would file every lowercase initial
+                        // past Z, and would ignore the A-Z/Z-A direction.
                         artists
                     },
                     Message::ArtistsLoaded,
@@ -3593,13 +3814,14 @@ impl App {
                 let client = self.client.clone();
                 Task::perform(
                     async move {
-                        let since = (chrono::Utc::now() - chrono::Duration::days(30))
-                            .format("%Y-%m-%dT%H:%M:%SZ")
-                            .to_string();
+                        let since = (chrono::Utc::now()
+                            - chrono::Duration::days(RECENTLY_ADDED_DAYS))
+                        .format("%Y-%m-%dT%H:%M:%SZ")
+                        .to_string();
                         client
-                            .find_recently_added(&since, 2000)
+                            .find_recently_added(&since, RECENTLY_ADDED_LIMIT)
                             .await
-                            .unwrap_or_default()
+                            .map_err(|e| e.to_string())
                     },
                     Message::RecentlyAddedLoaded,
                 )

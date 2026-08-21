@@ -21,6 +21,17 @@ const TRANSPORT_MIN_SLACK: f32 = 3.0;
 /// iced's default line height is 1.3x the text size.
 const LINE_HEIGHT_FACTOR: f32 = 1.3;
 
+/// Width of the bottom-left song-info slot. The clip container and the
+/// column inside it must agree on this or the truncation lands in the wrong
+/// place.
+///
+/// Bounded on both sides below, at compile time rather than in a test: below
+/// ~200px two 12px links plus a separator can't show a plausible
+/// "Artist – Album" at all, and above ~320 the slot crowds the transport
+/// controls at `min_size`'s 1000px width.
+const SONG_INFO_WIDTH: u16 = 250;
+const _: () = assert!(SONG_INFO_WIDTH >= 200 && SONG_INFO_WIDTH <= 320);
+
 /// MPD's four replay-gain modes (protocol: `replay_gain_mode {MODE}`).
 const REPLAY_GAIN_MODES: [&str; 4] = ["off", "track", "album", "auto"];
 
@@ -34,22 +45,42 @@ pub fn view<'a>(
             text(song.display_title())
                 .size(14)
                 .color(AppColors::text_primary()),
-            text(format!(
-                "{} - {}",
-                song.display_artist(),
-                song.display_album()
-            ))
-            .size(12)
-            .color(AppColors::text_secondary()),
+            // The separator is its own widget because a link is a `button`
+            // and can't share a `text` with the name beside it — the same
+            // reason icon and label are always separate widgets.
+            //
+            // `album_link` gets the *album* artist, matching
+            // `now_playing.rs`, so it opens the same page the cover tile
+            // does. Both helpers degrade the missing-tag placeholders to
+            // inert text on their own.
+            row![
+                link::artist_link(song.display_artist(), 12),
+                text(" – ").size(12).color(AppColors::text_muted()),
+                link::album_link(
+                    song.display_album(),
+                    Some(song.display_album_artist()),
+                    12,
+                ),
+            ]
+            .align_y(Alignment::Center),
         ]
-        .width(250)
+        .width(SONG_INFO_WIDTH)
         .into(),
         None => text("No song playing")
             .size(14)
             .color(AppColors::text_muted())
-            .width(250)
+            .width(SONG_INFO_WIDTH)
             .into(),
     };
+
+    // Clipped, and that is load-bearing. As one `text` the pair word-wrapped
+    // to a second line, which silently grew the whole bar (it has no fixed
+    // height) whenever a track had long names. Three siblings in a `row`
+    // can't wrap — a row overflows, and iced widgets don't clip to their
+    // parent, so a long pair would draw straight over the Previous button.
+    // Clipping truncates at the slot edge instead and keeps the bar's height
+    // constant across track changes.
+    let song_info = container(song_info).width(SONG_INFO_WIDTH).clip(true);
 
     let elapsed = status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let duration = status

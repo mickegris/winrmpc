@@ -95,13 +95,28 @@ pub enum Message {
     AlbumSongsLoaded(String, Vec<Song>),
 
     // === Recently Added / Recently Played history ===
-    RecentlyAddedLoaded(Vec<Song>),
+    /// The Recently Added query's result, plus the rung that answered it —
+    /// the handler needs the rung to know whether the songs arrived ordered
+    /// or have to be sorted client-side. `Err` carries the MPD error so a
+    /// failure toasts instead of rendering an empty list.
+    RecentlyAddedLoaded(Result<(Vec<Song>, RecentlyAddedRung), String>),
     RecentlyPlayedLoaded(Vec<RecentlyPlayedEntry>),
     ClearRecentlyPlayed,
     ToggleRecentlyPlayedMode,
     /// Switch Albums / Recently Added / Recently Played between the cover
     /// grid and the compact list. Shared by all three; persisted.
     ToggleAlbumGridView,
+    /// Choose what the album lists are ordered by. Name-only lists (Artists,
+    /// Genres, Playlists) ignore it.
+    SetSortKey(crate::mpd::types::SortKey),
+    /// One page of the add-time walk, or the error that ended it. The `u32`
+    /// is the page index, so the handler knows which page to ask for next.
+    AlbumAddedPage(u32, Result<Vec<(String, String)>, String>),
+    /// Flip every name-sorted library list between A-Z and Z-A. Re-sorts
+    /// what is already loaded rather than refetching — the data is in hand,
+    /// and a round trip to reverse a list the user is looking at would show
+    /// as a flicker.
+    ToggleSortDirection,
 
     // === Editing an existing server (Settings) ===
     /// Opens the inline editor for a server's connection details. Adding a

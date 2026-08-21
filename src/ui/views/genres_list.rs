@@ -4,7 +4,7 @@ use crate::ui::theme::AppColors;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
-pub fn view<'a>(genres: &'a [String]) -> Element<'a, Message> {
+pub fn view<'a>(genres: &'a [String], sort_desc: bool) -> Element<'a, Message> {
     let mut list = column![].spacing(0);
     for (i, genre) in genres.iter().enumerate() {
         let bg = if i % 2 == 0 {
@@ -41,6 +41,8 @@ pub fn view<'a>(genres: &'a [String]) -> Element<'a, Message> {
                 text(format!("{} genres", genres.len()))
                     .size(14)
                     .color(AppColors::text_muted()),
+                Space::with_width(Length::Fill),
+                link::sort_toggle(sort_desc),
             ]
             .align_y(Alignment::Center)
             .padding([12, 12]),

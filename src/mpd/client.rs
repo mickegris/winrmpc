@@ -5,6 +5,7 @@ use crate::mpd::commands;
 use crate::mpd::error::{MpdError, MpdResult};
 use crate::mpd::protocol::MpdConnection;
 use crate::mpd::types::*;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -13,6 +14,11 @@ use tokio::sync::Mutex;
 pub struct MpdClient {
     conn: Arc<Mutex<Option<MpdConnection>>>,
     addr: String,
+    /// Which `find` form this server accepts for Recently Added, probed once
+    /// and remembered. `0` is "not probed yet"; every other value is a
+    /// `RecentlyAddedRung` discriminant. Shared across clones like `conn`,
+    /// so a legacy server is not re-probed on every view entry.
+    recently_added_rung: Arc<AtomicU8>,
 }
 
 impl Clone for MpdClient {
@@ -20,6 +26,7 @@ impl Clone for MpdClient {
         Self {
             conn: Arc::clone(&self.conn),
             addr: self.addr.clone(),
+            recently_added_rung: Arc::clone(&self.recently_added_rung),
         }
     }
 }
@@ -29,6 +36,7 @@ impl MpdClient {
         Self {
             conn: Arc::new(Mutex::new(None)),
             addr: addr.to_string(),
+            recently_added_rung: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -39,6 +47,12 @@ impl MpdClient {
             connection.protocol_version,
             self.addr
         );
+        // Re-probe the Recently Added ladder on a fresh connection. The
+        // server behind this address may have been upgraded or replaced
+        // since the last one, and a stale rung would silently keep the app
+        // on file mtimes when real add-times became available. Costs at most
+        // two ACKs per successful connect.
+        self.recently_added_rung.store(0, Ordering::Relaxed);
         *self.conn.lock().await = Some(connection);
         Ok(())
     }
@@ -375,6 +389,45 @@ impl MpdClient {
         }
     }
 
+    /// One page of the library ordered newest-added first.
+    ///
+    /// **This is the expensive query in the app**, and the paging is what
+    /// makes it survivable. There is no `list`-style shortcut: `Added` is not
+    /// a tag, so the only way to learn when an album was added is to look at
+    /// its songs. `find` with no window would hold the whole library's
+    /// metadata in memory at once — the same hazard the Recently Added limit
+    /// exists for — so callers walk it a page at a time and keep only what
+    /// they need from each.
+    ///
+    /// Returns the raw pairs so the caller can extract just
+    /// `(album artist, album, added)` without ever building `Song`s; a
+    /// full-library `parse_songs` is most of the cost and all of it wasted
+    /// here.
+    pub async fn added_page(&self, offset: u32, count: u32) -> MpdResult<Vec<(String, String)>> {
+        let rung = self.cached_recently_added_rung();
+        // Epoch: everything. The filter is only there because MPD's `find`
+        // requires an expression; the ordering is what this call is for.
+        let since = "1970-01-01T00:00:00Z";
+        let end = offset.saturating_add(count);
+        let mut last_err = None;
+        for rung in RecentlyAddedRung::from(rung) {
+            let base = rung.query(since, 0);
+            // Rewrite the rung's `window 0:0` tail into the page we want.
+            let Some(head) = base.split(" window ").next() else {
+                continue;
+            };
+            match self.cmd(&format!("{head} window {offset}:{end}")).await {
+                Ok(pairs) => {
+                    self.cache_recently_added_rung(rung);
+                    return Ok(pairs);
+                }
+                Err(e @ MpdError::Server { .. }) => last_err = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or(MpdError::NotConnected))
+    }
+
     /// `list Album {filter_tag} "{val}" group AlbumArtist` — the filtered
     /// counterpart of [`Self::list_albums_by_artist`].
     ///
@@ -429,14 +482,43 @@ impl MpdClient {
     /// `YYYY-MM-DDTHH:MM:SSZ`), bounded to `limit` results. Unbounded
     /// `modified-since` queries can outrun the socket's read timeout on a
     /// large library, so this always uses a `window`.
-    pub async fn find_recently_added(&self, since: &str, limit: u32) -> MpdResult<Vec<Song>> {
-        let pairs = self
-            .cmd(&format!(
-                "find \"(modified-since '{}')\" window 0:{limit}",
-                Self::escape(since)
-            ))
-            .await?;
-        Ok(commands::parse_songs(&pairs))
+    pub async fn find_recently_added(
+        &self,
+        since: &str,
+        limit: u32,
+    ) -> MpdResult<(Vec<Song>, RecentlyAddedRung)> {
+        let start = self.cached_recently_added_rung();
+        let mut last_err = None;
+
+        for rung in RecentlyAddedRung::from(start) {
+            match self.cmd(&rung.query(&Self::escape(since), limit)).await {
+                Ok(pairs) => {
+                    self.cache_recently_added_rung(rung);
+                    return Ok((commands::parse_songs(&pairs), rung));
+                }
+                // An ACK is the server saying it doesn't know this filter or
+                // sort name — that, and only that, means "try the rung
+                // below". A connection error must propagate instead: walking
+                // the whole ladder on a dead socket would cache a rung the
+                // server never actually rejected.
+                Err(e @ MpdError::Server { .. }) => {
+                    tracing::debug!("recently-added rung {rung:?} unsupported: {e}");
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(last_err.unwrap_or(MpdError::NotConnected))
+    }
+
+    fn cached_recently_added_rung(&self) -> RecentlyAddedRung {
+        RecentlyAddedRung::from_repr(self.recently_added_rung.load(Ordering::Relaxed))
+            .unwrap_or(RecentlyAddedRung::TOP)
+    }
+
+    fn cache_recently_added_rung(&self, rung: RecentlyAddedRung) {
+        self.recently_added_rung.store(rung as u8, Ordering::Relaxed);
     }
 
     pub async fn search(&self, tag: &str, value: &str) -> MpdResult<Vec<Song>> {
