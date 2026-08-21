@@ -21,6 +21,11 @@ const TRANSPORT_MIN_SLACK: f32 = 3.0;
 /// iced's default line height is 1.3x the text size.
 const LINE_HEIGHT_FACTOR: f32 = 1.3;
 
+/// Width of the bottom-left song-info slot. The clip container and the
+/// column inside it must agree on this or the truncation lands in the wrong
+/// place.
+const SONG_INFO_WIDTH: u16 = 250;
+
 /// MPD's four replay-gain modes (protocol: `replay_gain_mode {MODE}`).
 const REPLAY_GAIN_MODES: [&str; 4] = ["off", "track", "album", "auto"];
 
@@ -34,22 +39,42 @@ pub fn view<'a>(
             text(song.display_title())
                 .size(14)
                 .color(AppColors::text_primary()),
-            text(format!(
-                "{} - {}",
-                song.display_artist(),
-                song.display_album()
-            ))
-            .size(12)
-            .color(AppColors::text_secondary()),
+            // The separator is its own widget because a link is a `button`
+            // and can't share a `text` with the name beside it — the same
+            // reason icon and label are always separate widgets.
+            //
+            // `album_link` gets the *album* artist, matching
+            // `now_playing.rs`, so it opens the same page the cover tile
+            // does. Both helpers degrade the missing-tag placeholders to
+            // inert text on their own.
+            row![
+                link::artist_link(song.display_artist(), 12),
+                text(" – ").size(12).color(AppColors::text_muted()),
+                link::album_link(
+                    song.display_album(),
+                    Some(song.display_album_artist()),
+                    12,
+                ),
+            ]
+            .align_y(Alignment::Center),
         ]
-        .width(250)
+        .width(SONG_INFO_WIDTH)
         .into(),
         None => text("No song playing")
             .size(14)
             .color(AppColors::text_muted())
-            .width(250)
+            .width(SONG_INFO_WIDTH)
             .into(),
     };
+
+    // Clipped, and that is load-bearing. As one `text` the pair word-wrapped
+    // to a second line, which silently grew the whole bar (it has no fixed
+    // height) whenever a track had long names. Three siblings in a `row`
+    // can't wrap — a row overflows, and iced widgets don't clip to their
+    // parent, so a long pair would draw straight over the Previous button.
+    // Clipping truncates at the slot edge instead and keeps the bar's height
+    // constant across track changes.
+    let song_info = container(song_info).width(SONG_INFO_WIDTH).clip(true);
 
     let elapsed = status.elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let duration = status
@@ -374,6 +399,24 @@ fn small_btn(label: &str, msg: Message) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The song-info column and the clip container around it are set from the
+    /// same constant. If they ever drift apart the clip lands somewhere other
+    /// than the slot edge — either truncating names that would have fitted,
+    /// or letting a long pair spill over the transport buttons, which is the
+    /// bug the clip exists to prevent.
+    #[test]
+    fn the_song_info_slot_is_wide_enough_for_a_name_pair() {
+        // Two 12px links plus a separator. At iced's ~0.5em average advance
+        // that is roughly 30 characters, which is a plausible
+        // "Artist – Album" and the reason the slot is clipped rather than
+        // sized to fit: it can't be.
+        assert!(SONG_INFO_WIDTH >= 200, "too narrow to show a name pair at all");
+        assert!(
+            SONG_INFO_WIDTH <= 320,
+            "wide enough to crowd the transport controls at the minimum window width"
+        );
+    }
 
     /// The glyph should also *look* like the button's main content rather than a
     /// speck in a wide box — 16px in a 52x28 button read as mostly air.

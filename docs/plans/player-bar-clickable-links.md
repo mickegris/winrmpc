@@ -1,6 +1,6 @@
 # Plan: the player bar's artist and album are links
 
-Status: **planned** (targeting 0.4.4). Finishes
+Status: **implemented** (0.4.4). Finishes
 [`clickable-artist-album-links.md`](clickable-artist-album-links.md), whose
 rule is stated in CLAUDE.md as *"Every artist and album name the app renders
 is a link to that artist or album"* — and which the bottom-left of the window
@@ -86,10 +86,10 @@ The player bar has no view-level test harness (no view module does — they're
 
 - `link::album_message` already has coverage for the placeholder rule; nothing
   new needed there.
-- Add a `player_bar` unit test that the song-info slot's fixed width is still
-  the constant the clip container uses, once `250` becomes a named
-  `SONG_INFO_WIDTH` — the clip and the width have to agree or the truncation
-  lands in the wrong place.
+- `the_song_info_slot_is_wide_enough_for_a_name_pair` — `250` is now
+  `SONG_INFO_WIDTH`, set on both the column and the clip container, and
+  bounded on both sides: too narrow and the pair is always truncated, too wide
+  and it crowds the transport controls at the minimum window width.
 
 Verification is manual, and specific: play a track with a long artist and a
 long album title and confirm the pair truncates rather than colliding with the
