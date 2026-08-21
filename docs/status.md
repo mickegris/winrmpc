@@ -13,7 +13,7 @@ Last updated: 2026-08-21. **Working on 0.4.4**, on branch
 |---|---|
 | **Recently Added truncated the wrong end** — the reported bug | [recents-limits](plans/recents-limits.md) |
 | Player bar's artist/album are links | [player-bar-clickable-links](plans/player-bar-clickable-links.md) |
-| Sorting: A–Z/Z–A everywhere, plus Year and Added on the album lists | [list-sorting](plans/list-sorting.md) |
+| Sorting: A–Z/Z–A everywhere, plus Added on the album lists | [list-sorting](plans/list-sorting.md) |
 
 The Recently Added fix is the one worth remembering: `find "(modified-since
 …)" window 0:2000` sliced MPD's database order and the client sorted the
@@ -28,7 +28,7 @@ Two bugs came out of the work rather than the report:
   that kept it inside its 250px slot; without a clip container it would draw
   over the transport buttons.
 
-**276 offline tests (was 246), 19 live.** Clippy is clean on the changed
+**268 offline tests (was 246), 18 live.** Clippy is clean on the changed
 code — note the repo has 15 pre-existing warnings under a newer clippy than
 CI pins, and `cargo fmt --check` was already dirty before this branch.
 
@@ -39,12 +39,14 @@ CI pins, and `cargo fmt --check` was already dirty before this branch.
   `live_recently_added_reports_which_rung_the_server_answers_on`) are the
   acceptance check and need `WINRMPC_TEST_MPD=10.0.1.3:6600 cargo test --
   --ignored --test-threads=1`. The first is designed to fail on the old query.
-- **`list Date group AlbumArtist group Album` is a guess about MPD's nesting.**
-  `live_album_years_attach_to_the_right_albums` is the check: a swapped
-  nesting would attach every year to the wrong album, silently.
-  `live_album_added_walk_covers_the_library` is the other one to run — it
-  prints how long the walk takes and how many pages it needs, which is what
-  decides whether `ADDED_PAGE` (10 000) is set sensibly.
+- **The add-time walk has never been timed against a real library.**
+  `live_album_added_walk_covers_the_library` prints its duration and page
+  count — that is what decides whether `ADDED_PAGE` (10 000) is set sensibly,
+  and whether the Added sort is usable or merely present.
+- **Sorting by release year was built and removed** before release: it rested
+  on an unconfirmed assumption about MPD's two-level `group` nesting. See
+  [list-sorting](plans/list-sorting.md); re-adding means confirming the
+  nesting against a real server first.
 - **No manual UI pass.** Specifically worth eyeballing: a track with a long
   artist *and* long album, to confirm the player bar truncates rather than
   colliding with Previous and that the bar's height stops changing between
