@@ -1070,3 +1070,187 @@ async fn live_recently_added_reports_which_rung_the_server_answers_on() {
         .expect("second call");
     assert_eq!(chosen, again, "the probed rung was not cached");
 }
+
+/// A mock MPD server that answers `find` only when the command contains none
+/// of `reject`, and ACKs otherwise. Records every command it was sent.
+///
+/// This is how the pre-0.24 / pre-0.22 fallbacks get tested at all: they can
+/// only be exercised against a server that *lacks* the newer syntax, and the
+/// one real server available runs 0.24. A mock is the difference between
+/// "the fallback is written" and "the fallback works".
+#[cfg(test)]
+async fn mock_mpd_rejecting(
+    version: &'static str,
+    reject: &'static [&'static str],
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+
+    let recorder = std::sync::Arc::clone(&seen);
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            let recorder = std::sync::Arc::clone(&recorder);
+            tokio::spawn(async move {
+                let (rh, mut wh) = tokio::io::split(stream);
+                let mut reader = BufReader::new(rh);
+                let _ = wh.write_all(format!("OK MPD {version}\n").as_bytes()).await;
+                let _ = wh.flush().await;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let cmd = line.trim_end().to_string();
+                    recorder.lock().unwrap().push(cmd.clone());
+
+                    let reply = if reject.iter().any(|r| cmd.contains(r)) {
+                        // What a real MPD says when it doesn't know a filter
+                        // or sort name.
+                        "ACK [2@0] {find} Unknown filter type\n".to_string()
+                    } else {
+                        "file: a/b.flac\nLast-Modified: 2026-08-01T00:00:00Z\nOK\n".to_string()
+                    };
+                    let _ = wh.write_all(reply.as_bytes()).await;
+                    let _ = wh.flush().await;
+                }
+            });
+        }
+    });
+
+    (addr, seen)
+}
+
+/// MPD 0.23: no `added-since`, but `sort` works. Must land on the middle
+/// rung — mtime, still sorted server-side, so the window still keeps the
+/// newest end.
+#[tokio::test]
+async fn recently_added_falls_back_to_modified_since_on_a_pre_0_24_server() {
+    let (addr, seen) = mock_mpd_rejecting("0.23.5", &["added-since"]).await;
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    let (songs, rung) = client
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect("must degrade rather than fail");
+
+    assert_eq!(rung, RecentlyAddedRung::ModifiedSinceSorted);
+    assert!(rung.is_server_sorted(), "0.23 has sort; don't give it up too");
+    assert_eq!(songs.len(), 1, "the fallback query's result must be parsed");
+
+    let sent = seen.lock().unwrap().clone();
+    assert!(sent.iter().any(|c| c.contains("added-since")), "never probed");
+    assert!(sent.iter().any(|c| c.contains("sort -Last-Modified")));
+    assert!(
+        !sent.iter().any(|c| c.contains("sort -Added")
+            && !c.contains("added-since")),
+        "the `Added` sort name must not leak onto the mtime query"
+    );
+}
+
+/// MPD 0.21: neither `added-since` nor `sort`. Must reach the bottom rung and
+/// report itself as unsorted, which is what makes the app warn that the list
+/// is an arbitrary slice rather than the newest additions.
+#[tokio::test]
+async fn recently_added_falls_back_to_the_legacy_query_on_a_pre_0_22_server() {
+    let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    let (songs, rung) = client
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect("an ancient server must still show something");
+
+    assert_eq!(rung, RecentlyAddedRung::ModifiedSinceUnsorted);
+    assert!(!rung.is_server_sorted());
+    assert_eq!(songs.len(), 1);
+
+    let sent = seen.lock().unwrap().clone();
+    assert_eq!(sent.len(), 3, "all three rungs should have been tried once");
+}
+
+/// The probe must happen once, not on every view entry. Three ACKs per visit
+/// to Recently Added is three wasted round trips on exactly the servers least
+/// able to spare them.
+#[tokio::test]
+async fn the_recently_added_rung_is_probed_once_and_then_remembered() {
+    let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    for _ in 0..3 {
+        client
+            .find_recently_added("2026-01-01T00:00:00Z", 10)
+            .await
+            .expect("query");
+    }
+
+    let sent = seen.lock().unwrap().clone();
+    // 3 for the first call's descent, then 1 each for the two after it.
+    assert_eq!(sent.len(), 5, "sent: {sent:#?}");
+    assert_eq!(
+        sent.iter().filter(|c| c.contains("added-since")).count(),
+        1,
+        "the top rung must not be re-probed"
+    );
+}
+
+/// A clone shares the cache — `App` clones the client into every task, so a
+/// per-clone cache would mean re-probing on essentially every call.
+#[tokio::test]
+async fn a_cloned_client_shares_the_probed_rung() {
+    let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+    client
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect("first");
+
+    let cloned = client.clone();
+    let (_, rung) = cloned
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect("clone");
+
+    assert_eq!(rung, RecentlyAddedRung::ModifiedSinceUnsorted);
+    assert_eq!(seen.lock().unwrap().len(), 4, "the clone re-probed");
+}
+
+/// A dead socket must not be read as "the server doesn't support this rung".
+/// Walking the ladder on a connection error would cache a weaker rung the
+/// server never rejected, permanently downgrading Recently Added for the rest
+/// of the session — and it would do it silently.
+#[tokio::test]
+async fn a_connection_error_does_not_walk_the_ladder() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    tokio::spawn(async move {
+        // Greet, then hang up on the first command.
+        let Ok((stream, _)) = listener.accept().await else { return };
+        let (_rh, mut wh) = tokio::io::split(stream);
+        use tokio::io::AsyncWriteExt;
+        let _ = wh.write_all(b"OK MPD 0.24.0\n").await;
+        let _ = wh.flush().await;
+    });
+
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+    let err = client
+        .find_recently_added("2026-01-01T00:00:00Z", 10)
+        .await
+        .expect_err("a dropped socket must surface as an error");
+    assert!(
+        err.is_connection_fatal(),
+        "must propagate the connection error, not degrade: {err}"
+    );
+}

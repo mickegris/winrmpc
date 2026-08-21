@@ -47,6 +47,12 @@ impl MpdClient {
             connection.protocol_version,
             self.addr
         );
+        // Re-probe the Recently Added ladder on a fresh connection. The
+        // server behind this address may have been upgraded or replaced
+        // since the last one, and a stale rung would silently keep the app
+        // on file mtimes when real add-times became available. Costs at most
+        // two ACKs per successful connect.
+        self.recently_added_rung.store(0, Ordering::Relaxed);
         *self.conn.lock().await = Some(connection);
         Ok(())
     }

@@ -148,6 +148,14 @@ an album out entirely.
   assert it surfaces nothing newer. That second half is what actually
   distinguishes "sorted" from "an arbitrary slice that happened to come back
   in order".
+- **Offline, against a mock MPD** (`mock_mpd_rejecting`): the pre-0.24 and
+  pre-0.22 fallbacks can only be exercised against a server that *lacks* the
+  newer syntax, and the one real server available runs 0.24 — so a mock is the
+  difference between "the fallback is written" and "the fallback works". Five
+  tests: 0.23 lands on the middle rung and keeps its `sort`; 0.21 reaches the
+  bottom rung and reports itself unsorted; the probe happens once, not per
+  call; a clone shares the cached rung; and a dropped socket propagates
+  instead of walking the ladder.
 - **Live**: `live_recently_added_reports_which_rung_the_server_answers_on` —
   prints the highest supported rung and asserts it is cached rather than
   re-probed, so A3's ladder isn't guesswork.
@@ -157,7 +165,7 @@ an album out entirely.
 | | |
 |---|---|
 | `src/mpd/types.rs` | `RecentlyAddedRung` — the three query forms, the ladder, `is_server_sorted()` |
-| `src/mpd/client.rs` | `find_recently_added` returns `(Vec<Song>, RecentlyAddedRung)`; `recently_added_rung: Arc<AtomicU8>` caches the probe across clones |
+| `src/mpd/client.rs` | `find_recently_added` returns `(Vec<Song>, RecentlyAddedRung)`; `recently_added_rung: Arc<AtomicU8>` caches the probe across clones, and `connect()` clears it so an upgraded server isn't stuck on the old rung |
 | `src/ui/app.rs` | `RECENTLY_ADDED_DAYS` (90) / `RECENTLY_ADDED_LIMIT` (5000); handler toasts on error, logs on truncation, warns on an unsorted rung |
 | `src/ui/views/albums_list.rs` | optional `subtitle` — "· last 90 days" |
 
