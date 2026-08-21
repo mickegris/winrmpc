@@ -86,6 +86,11 @@ developer* — wording that reads like a corrupt download, not a policy decision
 The workarounds are right-click → Open (then confirm), or
 `xattr -dr com.apple.quarantine /Applications/winrmpc.app`.
 
+> **Superseded as of 0.4.5 planning**: a paid account now exists, and signing
+> is planned in
+> [`macos-signing-and-notarization.md`](macos-signing-and-notarization.md).
+> The quarantine instruction below is what that plan removes.
+
 Signing and notarising properly needs a **paid Apple Developer account ($99/yr)**,
 a Developer ID certificate, and a notarisation step in CI with credentials in
 repository secrets. That is a real cost and a real decision, and it is **not
@@ -121,7 +126,9 @@ concludes the download is broken.
 
 ## Explicitly not doing
 
-- **Signing or notarisation.** Needs a paid account; revisit if one exists.
+- ~~**Signing or notarisation.** Needs a paid account; revisit if one exists.~~
+  One exists — planned in
+  [`macos-signing-and-notarization.md`](macos-signing-and-notarization.md).
 - **A Homebrew cask.** Wants a stable release cadence and a signed app first.
 - **App Store distribution.** Sandboxing an MPD client that talks to arbitrary
   hosts on the LAN is its own project.

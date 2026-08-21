@@ -4,10 +4,27 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-21. **Working on 0.4.4**, on branch
-`improve/recents-and-player-bar-links-0.4.4`. Not released, not merged.
+Last updated: 2026-08-21. **v0.4.4 released** — merged via PR #27, tagged, and
+CI attached all three binaries (Linux tarball, Windows `.exe`, macOS `.app`
+zip). All seven jobs green.
 
-## 0.4.4 — on the branch
+## Pending for 0.4.5 — mention in the release notes
+
+**The macOS app should be signed and notarised by then.** A paid Apple
+Developer account now exists, which was the only blocker
+([`macos-signing-and-notarization.md`](plans/macos-signing-and-notarization.md)).
+Once it lands, the notes should say plainly that the app now opens by
+double-click and that the `xattr -dr com.apple.quarantine` step is no longer
+needed — anyone who has been running that command deserves to be told to stop.
+Four places still document it (README, `bundle.sh`, the app-bundle plan, and
+the release skill's notes template) and all four have to change in the same
+commit, or the instruction outlives the problem.
+
+The account work is on the user, not in the repo: a *Developer ID Application*
+certificate exported as a password-protected `.p12`, an App Store Connect API
+key, and five GitHub secrets. The plan lists them.
+
+## 0.4.4 — what shipped
 
 | | Plan |
 |---|---|
@@ -57,8 +74,9 @@ CI pins, and `cargo fmt --check` was already dirty before this branch.
 
 ### Suggested next
 
-1. Run the live suite against 10.0.1.3, then the manual UI pass.
-2. Version bump + release via the `release` skill.
+1. Run the live suite against 10.0.1.3, then the manual UI pass — 0.4.4 was
+   released without either.
+2. macOS signing (see the pending section at the top).
 
 ## 0.4.3 — what shipped
 
@@ -90,26 +108,15 @@ earlier runs got 14/14 — the TLS check in the same run got **HTTP 503** from
 MusicBrainz, so that is near-certainly the service, not the matching code.
 Re-run before treating it as a regression.
 
-## Pending for 0.4.4 — mention in the release notes
+## Pending for 0.4.4 — done
 
-**`install.sh` in the v0.4.3 Linux tarball does not install the binary.** It
-only knew the git-checkout layout (`target/release/winrmpc`), while the tarball
-puts the binary in the script's *parent* directory with no `target/` at all —
-so it printed "run `cargo build --release` first" to someone who had just
-downloaded a prebuilt binary, and installed a `.desktop` entry pointing at an
-executable that was never put on PATH. The icon appears; clicking it does
-nothing.
-
-Fixed on `main` (PR #25) and verified against the actual released tarball, but
-**the published v0.4.3 asset still carries the broken script**. Anyone
-installing from that download needs to copy the binary onto their PATH by hand:
-
-```bash
-cp winrmpc-v0.4.3-linux-x86_64/winrmpc ~/.local/bin/
-```
-
-The 0.4.4 notes should say the Linux installer is fixed, so anyone who hit it
-knows to re-run it.
+The v0.4.3 `install.sh` defect (tarball layout not recognised, so the launcher
+pointed at a binary that was never installed) was fixed in PR #25 and **is
+called out in the v0.4.4 release notes**, with the instruction to re-run
+`install.sh` from the new tarball. It was nearly missed — the first draft of
+those notes didn't mention it, which is the failure this section exists to
+prevent, so it only works if the notes are checked against it before
+publishing.
 
 ### Still not verified
 
