@@ -98,22 +98,40 @@ its header.
 - Recently Added's order survives a `ToggleSortDirection` — the guard against
   a future refactor quietly folding it into the shared re-sort.
 
-## Resolved: what Z–A means for the album lists
+## Revised after review: albums sort by album name, and by more than name
 
-Reversing flips **both** keys — last artist first, and that artist's albums
-also reversed. It's what a single reversed comparator gives, and what a
-reversed list looks like everywhere else in the app.
+The first cut sorted albums artist-then-title, which reads as unsorted to
+anyone scanning the column of titles. Albums now sort on the **title**, with
+the artist as the tiebreak.
+
+Two more keys landed with it — **Year** and **Added** — as a Name/Year/Added
+picker beside the direction button, whose wording follows the key ("A–Z"/"Z–A"
+for names, "Oldest"/"Newest" for dates). A missing year or add-time sorts
+**last in both directions**: the unknown check sits outside the reversal,
+because an undated album heading a "Newest" list would read as data rather
+than as a gap.
+
+The cost asymmetry between the two is the design:
+
+- **Years** come from `list Date group AlbumArtist group Album` once on
+  connect. `list` returns one line per distinct value, so a whole library is a
+  few thousand lines.
+- **Add-times** have no `list` equivalent — `Added` is not a tag — so they
+  need a paged walk of every song, done only when the Added sort is selected
+  and folded down to three fields per song without building a `Song`.
 
 ## What landed
 
 | | |
 |---|---|
-| `src/mpd/types.rs` | `name_cmp` / `name_cmp_dir` / `album_group_cmp_dir` |
+| `src/mpd/types.rs` | `name_cmp` / `name_cmp_dir` / `SortKey` / `album_cmp` / `parse_year` / `album_year_index` / `fold_album_added` |
+| `src/mpd/commands.rs` | `parse_grouped_values2` — two nested `group` levels, clearing the inner one when the outer changes |
+| `src/mpd/client.rs` | `list_album_years`, `added_page` |
 | `src/config/settings.rs` | `sort_desc: bool`, `#[serde(default)]` |
-| `src/ui/app.rs` | `App::sort_library_lists()`, called from `ToggleSortDirection` and every `*Loaded` handler; the two byte-order `.sort()` calls removed |
-| `src/ui/widgets/link.rs` | `sort_toggle(desc)` — the `A–Z`/`Z–A` button |
+| `src/ui/app.rs` | `App::sort_library_lists()` + `load_album_added()`; `album_years` / `album_added` state, cleared on `SwitchServer` |
+| `src/ui/widgets/link.rs` | `sort_toggle(desc)` for name-only lists, `album_sort_controls(key, desc)` for the album lists |
 | six view headers | `artists_list`, `genres_list`, `playlists_list`, `albums_list` (as `Option<bool>`), `artist`, `genre_detail` |
 
-`albums_list::view` takes `sort_desc: Option<bool>` rather than a `bool`
+`albums_list::view` takes `Option<(SortKey, bool)>` rather than a plain pair
 precisely because Recently Added shares it: `None` there means the control is
 **absent**, not present and doing nothing.

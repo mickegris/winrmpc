@@ -106,6 +106,14 @@ pub enum Message {
     /// Switch Albums / Recently Added / Recently Played between the cover
     /// grid and the compact list. Shared by all three; persisted.
     ToggleAlbumGridView,
+    /// Choose what the album lists are ordered by. Name-only lists (Artists,
+    /// Genres, Playlists) ignore it.
+    SetSortKey(crate::mpd::types::SortKey),
+    /// One page of the add-time walk, or the error that ended it. The `u32`
+    /// is the page index, so the handler knows which page to ask for next.
+    AlbumAddedPage(u32, Result<Vec<(String, String)>, String>),
+    /// Every album's release year, from the cheap `list Date …` on connect.
+    AlbumYearsLoaded(Vec<(String, String, String)>),
     /// Flip every name-sorted library list between A-Z and Z-A. Re-sorts
     /// what is already loaded rather than refetching — the data is in hand,
     /// and a round trip to reverse a list the user is looking at would show

@@ -1,4 +1,4 @@
-use crate::mpd::types::{AlbumGroup, Song};
+use crate::mpd::types::{AlbumGroup, Song, SortKey};
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::album_grid;
@@ -18,10 +18,11 @@ pub fn view<'a>(
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     grid_view: bool,
     current_song: Option<&'a Song>,
-    // `None` where the list isn't name-sorted (Recently Added), which is why
-    // this is an Option rather than a bool: the control must be absent
-    // there, not present and doing nothing.
-    sort_desc: Option<bool>,
+    // `None` where the list isn't sorted by name/year/added at all (Recently
+    // Added, which is ordered by time and only by time). An Option rather
+    // than a plain pair because the control must be *absent* there, not
+    // present and doing nothing.
+    sort: Option<(SortKey, bool)>,
 ) -> Element<'a, Message> {
     let body: Element<'a, Message> = if grid_view {
         let tiles: Vec<Element<'a, Message>> = albums
@@ -31,8 +32,7 @@ pub fn view<'a>(
                     album_grid::art_for(art_handles, &group.artist, &group.base),
                     group.base.clone(),
                     group.artist.clone(),
-                    (group.variants.len() > 1)
-                        .then(|| format!("{} discs", group.variants.len())),
+                    album_caption(group),
                     song_row::is_current_album(&group.artist, &group.base, current_song),
                 )
             })
@@ -87,6 +87,15 @@ pub fn view<'a>(
             if !group.artist.is_empty() {
                 label = label.push(link::artist_link(&group.artist, 12));
             }
+            // Shown because it's sortable: ordering a list by a column that
+            // isn't on screen leaves the user unable to tell the sort worked.
+            if let Some(year) = group.year {
+                label = label.push(
+                    text(year.to_string())
+                        .size(11)
+                        .color(AppColors::text_muted()),
+                );
+            }
             if group.variants.len() > 1 {
                 label = label.push(
                     text(format!("{} discs", group.variants.len()))
@@ -126,8 +135,8 @@ pub fn view<'a>(
                 // `None` on the recency lists: Recently Added is ordered by
                 // time, which is the only thing it's for, so the control is
                 // absent rather than present-and-ignored.
-                match sort_desc {
-                    Some(desc) => link::sort_toggle(desc),
+                match sort {
+                    Some((key, desc)) => link::album_sort_controls(key, desc),
                     None => Space::with_width(0).into(),
                 },
                 Space::with_width(8),
@@ -142,6 +151,19 @@ pub fn view<'a>(
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+/// The tile's caption line: the release year and the disc count, whichever
+/// of them there is. One slot for both, because a tile has room for one line
+/// under the artist and the year has to be visible somewhere for the Year
+/// sort to be legible.
+fn album_caption(group: &AlbumGroup) -> Option<String> {
+    let discs = (group.variants.len() > 1).then(|| format!("{} discs", group.variants.len()));
+    match (group.year, discs) {
+        (Some(y), Some(d)) => Some(format!("{y} \u{b7} {d}")),
+        (Some(y), None) => Some(y.to_string()),
+        (None, d) => d,
+    }
 }
 
 /// `AlbumGroup::artist` is empty when the server couldn't group by

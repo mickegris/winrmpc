@@ -3,7 +3,8 @@
 use crate::ui::message::Message;
 use crate::ui::theme::AppColors;
 use crate::ui::widgets::icon;
-use iced::widget::{button, container, row, text, tooltip};
+use crate::mpd::types::SortKey;
+use iced::widget::{button, container, pick_list, row, text, tooltip};
 use iced::Element;
 
 /// Build a link-styled button: no background, secondary text that brightens to
@@ -171,8 +172,7 @@ pub fn album_message(album: &str, artist: Option<&str>) -> Message {
     )
 }
 
-/// The A-Z / Z-A control for a library list. Shows the direction the list is
-/// **currently** in, matching `album_grid::layout_toggle`'s neighbour.
+/// The A-Z / Z-A control for a name-only list (Artists, Genres, Playlists).
 ///
 /// Deliberately text, not a glyph. The obvious reuse is barred anyway —
 /// `icon::MOVE_UP`/`MOVE_DOWN` already *are* `arrow_upward`/`arrow_downward`,
@@ -181,13 +181,32 @@ pub fn album_message(album: &str, artist: Option<&str>) -> Message {
 /// "A-Z" does. Same argument as the player bar's Single and Consume keeping
 /// their words.
 pub fn sort_toggle<'a>(desc: bool) -> Element<'a, Message> {
-    let label = if desc { "Z\u{2013}A" } else { "A\u{2013}Z" };
+    direction_button(SortKey::Name, desc)
+}
+
+/// The album lists' sort controls: what to order by, then which way.
+///
+/// The direction button's wording follows the key — "A-Z" is meaningless for
+/// a date and "Oldest" is meaningless for a title — which is why it comes
+/// from `SortKey::direction_label` rather than being fixed text.
+pub fn album_sort_controls<'a>(key: SortKey, desc: bool) -> Element<'a, Message> {
+    row![
+        text("Sort").size(12).color(AppColors::text_muted()),
+        pick_list(SortKey::ALL, Some(key), Message::SetSortKey).text_size(12),
+        direction_button(key, desc),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
+fn direction_button<'a>(key: SortKey, desc: bool) -> Element<'a, Message> {
     with_tip(
-        button(text(label).size(12))
+        button(text(key.direction_label(desc)).size(12))
             .on_press(Message::ToggleSortDirection)
             .padding([4, 12])
             .into(),
-        if desc { "Sort A to Z" } else { "Sort Z to A" },
+        "Reverse the order",
     )
 }
 

@@ -90,6 +90,10 @@ pub struct AppConfig {
     /// Recently Played — are not name-sorted and ignore it entirely.
     #[serde(default)]
     pub sort_desc: bool,
+    /// What the album lists are ordered by. Name-only lists (Artists,
+    /// Genres, Playlists) ignore it.
+    #[serde(default)]
+    pub sort_key: crate::mpd::types::SortKey,
 
     // Multi-server
     /// Window geometry, restored at launch. See [`WindowConfig`].
@@ -237,6 +241,7 @@ impl Default for AppConfig {
             recent_albums: Vec::new(),
             album_grid_view: false,
             sort_desc: false,
+            sort_key: crate::mpd::types::SortKey::default(),
             window: WindowConfig::default(),
             servers: vec![server],
             default_server: Some("Default".into()),

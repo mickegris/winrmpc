@@ -1254,3 +1254,124 @@ async fn a_connection_error_does_not_walk_the_ladder() {
         "must propagate the connection error, not degrade: {err}"
     );
 }
+
+/// `list Date group AlbumArtist group Album` is a guess about MPD's nesting
+/// until a real server answers it. If the two group levels come back the
+/// other way round — or nested grouping isn't supported at all — every year
+/// is silently attached to the wrong album, which is precisely the kind of
+/// wrong-but-plausible data that survives a code review.
+#[tokio::test]
+#[ignore]
+async fn live_album_years_attach_to_the_right_albums() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    let triples = client.list_album_years().await.expect("list Date");
+    assert!(
+        !triples.is_empty(),
+        "no (artist, album, date) triples — either the library has no Date \
+         tags or the nested `group` isn't parsing"
+    );
+
+    let index = album_year_index(&triples);
+    eprintln!("{} albums carry a year, from {} triples", index.len(), triples.len());
+    assert!(!index.is_empty(), "no triple yielded a parseable year");
+
+    // The album names must be real albums, not artist names in the wrong
+    // slot — which is exactly what a swapped nesting would produce.
+    let albums = client
+        .list_albums_by_artist()
+        .await
+        .expect("album list to check against");
+    let known: std::collections::HashSet<String> = albums
+        .iter()
+        .map(|(artist, album)| {
+            album_scoped_key(Some(artist), &album_base_and_disc(album).0)
+        })
+        .collect();
+    let matched = index.keys().filter(|k| known.contains(*k)).count();
+    eprintln!("{matched} of {} year keys match a real album row", index.len());
+    assert!(
+        matched * 2 > index.len(),
+        "fewer than half the year keys match an album in the library — the \
+         group nesting is probably the other way round"
+    );
+
+    // Years must be plausible; a catalogue number read as a year would show
+    // up here.
+    for (_, y) in index.iter().take(200) {
+        assert!((1900..=2100).contains(y), "implausible year {y}");
+    }
+}
+
+/// The add-time walk against a real library: paging must terminate, cover
+/// most albums, and produce timestamps that actually sort.
+///
+/// This is the expensive query in the app, so the test also prints how long
+/// it took and how many pages it needed — the numbers that decide whether
+/// `ADDED_PAGE` is set sensibly.
+#[tokio::test]
+#[ignore]
+async fn live_album_added_walk_covers_the_library() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    const PAGE: u32 = 10_000;
+    let started = std::time::Instant::now();
+    let mut index = std::collections::HashMap::new();
+    let mut pages = 0u32;
+    loop {
+        let pairs = client
+            .added_page(pages * PAGE, PAGE)
+            .await
+            .expect("added page");
+        let songs = pairs.iter().filter(|(k, _)| k == "file").count() as u32;
+        fold_album_added(&pairs, &mut index);
+        pages += 1;
+        if songs < PAGE || pages >= 40 {
+            break;
+        }
+    }
+    eprintln!(
+        "{} albums in {pages} page(s), {:?}",
+        index.len(),
+        started.elapsed()
+    );
+
+    assert!(!index.is_empty(), "the walk found no albums at all");
+
+    // Most album rows should have an add-time; a large shortfall means the
+    // fold's key doesn't match the one the list looks up.
+    let albums = client.list_albums_by_artist().await.expect("album list");
+    let rows: std::collections::HashSet<String> = albums
+        .iter()
+        .map(|(artist, album)| {
+            album_scoped_key(Some(artist), &album_base_and_disc(album).0)
+        })
+        .collect();
+    let covered = rows.iter().filter(|k| index.contains_key(*k)).count();
+    eprintln!("{covered} of {} album rows have an add-time", rows.len());
+    assert!(
+        covered * 10 >= rows.len() * 9,
+        "under 90% coverage — the fold's key probably disagrees with the \
+         album list's key"
+    );
+
+    // And the timestamps must be lexicographically comparable, which is what
+    // the sort relies on.
+    let mut stamps: Vec<&String> = index.values().collect();
+    stamps.sort();
+    assert!(
+        stamps.first().unwrap() <= stamps.last().unwrap(),
+        "timestamps don't order"
+    );
+    eprintln!("oldest: {}, newest: {}", stamps.first().unwrap(), stamps.last().unwrap());
+}

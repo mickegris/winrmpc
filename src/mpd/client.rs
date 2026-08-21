@@ -389,6 +389,73 @@ impl MpdClient {
         }
     }
 
+    /// `list Date group AlbumArtist group Album` — every album's release
+    /// year(s), for the Year sort.
+    ///
+    /// Cheap enough to run unconditionally on connect: `list` returns one
+    /// line per *distinct* value, so an 800-album library is a few thousand
+    /// lines, not one per song. It deliberately does **not** replace
+    /// `list_albums_by_artist` — an album with no `Date` tag contributes
+    /// nothing here, so this can only ever be a lookup layered onto the real
+    /// album list.
+    ///
+    /// Returns `(album_artist, album, date)` triples; the caller folds them
+    /// into years. An ACK (pre-0.21 `group`, or a server without nested
+    /// grouping) degrades to an empty list, which just means no years — the
+    /// Year sort then puts everything in the unknown bucket rather than
+    /// failing.
+    pub async fn list_album_years(&self) -> MpdResult<Vec<(String, String, String)>> {
+        match self.cmd("list Date group AlbumArtist group Album").await {
+            Ok(pairs) => Ok(commands::parse_grouped_values2(
+                &pairs,
+                "AlbumArtist",
+                "Album",
+                "Date",
+            )),
+            Err(MpdError::Server { .. }) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One page of the library ordered newest-added first.
+    ///
+    /// **This is the expensive query in the app**, and the paging is what
+    /// makes it survivable. There is no `list`-style shortcut: `Added` is not
+    /// a tag, so the only way to learn when an album was added is to look at
+    /// its songs. `find` with no window would hold the whole library's
+    /// metadata in memory at once — the same hazard the Recently Added limit
+    /// exists for — so callers walk it a page at a time and keep only what
+    /// they need from each.
+    ///
+    /// Returns the raw pairs so the caller can extract just
+    /// `(album artist, album, added)` without ever building `Song`s; a
+    /// full-library `parse_songs` is most of the cost and all of it wasted
+    /// here.
+    pub async fn added_page(&self, offset: u32, count: u32) -> MpdResult<Vec<(String, String)>> {
+        let rung = self.cached_recently_added_rung();
+        // Epoch: everything. The filter is only there because MPD's `find`
+        // requires an expression; the ordering is what this call is for.
+        let since = "1970-01-01T00:00:00Z";
+        let end = offset.saturating_add(count);
+        let mut last_err = None;
+        for rung in RecentlyAddedRung::from(rung) {
+            let base = rung.query(since, 0);
+            // Rewrite the rung's `window 0:0` tail into the page we want.
+            let Some(head) = base.split(" window ").next() else {
+                continue;
+            };
+            match self.cmd(&format!("{head} window {offset}:{end}")).await {
+                Ok(pairs) => {
+                    self.cache_recently_added_rung(rung);
+                    return Ok(pairs);
+                }
+                Err(e @ MpdError::Server { .. }) => last_err = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or(MpdError::NotConnected))
+    }
+
     /// `list Album {filter_tag} "{val}" group AlbumArtist` — the filtered
     /// counterpart of [`Self::list_albums_by_artist`].
     ///

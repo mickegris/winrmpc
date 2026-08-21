@@ -69,6 +69,15 @@ const RECENTLY_ADDED_DAYS: i64 = 90;
 /// albums, so 5000 songs is roughly 350 rows.
 const RECENTLY_ADDED_LIMIT: u32 = 5000;
 
+/// Songs per page of the add-time walk. Small enough that one response is a
+/// bounded allocation, large enough that a big library is a handful of round
+/// trips rather than hundreds.
+const ADDED_PAGE: u32 = 10_000;
+
+/// Hard stop for the add-time walk, so a library larger than anything
+/// expected degrades to partial data instead of looping.
+const ADDED_MAX_PAGES: u32 = 40;
+
 /// A transient message shown over the main content.
 #[derive(Debug, Clone)]
 pub struct Toast {
@@ -114,6 +123,16 @@ pub struct App {
     genres: Vec<String>,
     artist_albums: HashMap<String, Vec<AlbumGroup>>,
     genre_albums: HashMap<String, Vec<AlbumGroup>>,
+    /// `album_scoped_key` -> release year, from one cheap `list Date …` on
+    /// connect. Stamped onto every `AlbumGroup` in `sort_library_lists`, so a
+    /// list loaded before this arrives picks the years up on the next sort.
+    album_years: HashMap<String, i32>,
+    /// `album_scoped_key` -> newest add-time. Loaded **lazily**, only when
+    /// the Added sort is actually selected: unlike the years, this needs a
+    /// paged walk of every song in the library.
+    album_added: HashMap<String, String>,
+    /// Guards against starting a second add-time walk while one is running.
+    album_added_loading: bool,
     album_songs: HashMap<String, Vec<Song>>,
     selected_artist: Option<String>,
     selected_album: Option<String>,
@@ -361,6 +380,9 @@ impl App {
             genres: Vec::new(),
             artist_albums: HashMap::new(),
             genre_albums: HashMap::new(),
+            album_years: HashMap::new(),
+            album_added: HashMap::new(),
+            album_added_loading: false,
             album_songs: HashMap::new(),
             selected_artist: None,
             selected_album: None,
@@ -1316,6 +1338,63 @@ impl App {
             Message::ToggleSortDirection => {
                 self.config.sort_desc = !self.config.sort_desc;
                 self.config.save_and_log("list sort direction");
+                self.sort_library_lists();
+                Task::none()
+            }
+            Message::SetSortKey(key) => {
+                self.config.sort_key = key;
+                self.config.save_and_log("list sort key");
+                self.sort_library_lists();
+                // Add-times are the one key whose data isn't already in
+                // hand, and the walk is expensive enough that it must not
+                // happen until something actually asks for it.
+                if key == SortKey::Added && self.album_added.is_empty() && !self.album_added_loading
+                {
+                    self.toast_info("Reading add times from the server…");
+                    return self.load_album_added(0);
+                }
+                Task::none()
+            }
+            Message::AlbumYearsLoaded(triples) => {
+                self.album_years = album_year_index(&triples);
+                tracing::info!("Loaded release years for {} albums", self.album_years.len());
+                self.sort_library_lists();
+                Task::none()
+            }
+            Message::AlbumAddedPage(page, result) => {
+                let pairs = match result {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.album_added_loading = false;
+                        self.toast_error(format!("Couldn't read add times: {e}"));
+                        // Keep whatever pages did land: a partial index still
+                        // orders most of the list, and every album it missed
+                        // sorts into the unknown bucket rather than a wrong
+                        // position.
+                        self.sort_library_lists();
+                        return Task::none();
+                    }
+                };
+
+                // A short page means the end of the library. `file` is one
+                // key per song, so counting it is the song count without
+                // parsing anything.
+                let songs = pairs.iter().filter(|(k, _)| k == "file").count() as u32;
+                fold_album_added(&pairs, &mut self.album_added);
+
+                let more = songs >= ADDED_PAGE && page + 1 < ADDED_MAX_PAGES;
+                if more {
+                    return self.load_album_added(page + 1);
+                }
+
+                self.album_added_loading = false;
+                if page + 1 >= ADDED_MAX_PAGES {
+                    tracing::warn!(
+                        "Add-time walk stopped at {ADDED_MAX_PAGES} pages; \
+                         older albums will sort as unknown"
+                    );
+                }
+                tracing::info!("Loaded add times for {} albums", self.album_added.len());
                 self.sort_library_lists();
                 Task::none()
             }
@@ -2348,6 +2427,12 @@ impl App {
                 Task::none()
             }
             Message::SwitchServer(name) => {
+                // Both index the *previous* server's library; keeping them
+                // would silently order the new server's albums by another
+                // machine's dates.
+                self.album_years.clear();
+                self.album_added.clear();
+                self.album_added_loading = false;
                 if name == self.active_server {
                     return Task::none();
                 }
@@ -2676,17 +2761,65 @@ impl App {
     /// added here later should be checked against that.
     fn sort_library_lists(&mut self) {
         let desc = self.config.sort_desc;
+        let key = self.config.sort_key;
+
+        // Name-only lists ignore `sort_key` — an artist has no year.
         self.artists.sort_by(|a, b| name_cmp_dir(a, b, desc));
         self.genres.sort_by(|a, b| name_cmp_dir(a, b, desc));
         self.playlists
             .sort_by(|a, b| name_cmp_dir(&a.name, &b.name, desc));
-        self.albums.sort_by(|a, b| album_group_cmp_dir(a, b, desc));
+
+        let years = &self.album_years;
+        let added = &self.album_added;
+        let sort_albums = |albums: &mut Vec<AlbumGroup>| {
+            // Stamp the years on first, so a list that loaded before the
+            // year query landed still sorts by them.
+            for g in albums.iter_mut() {
+                g.year = years.get(&album_scoped_key(Some(&g.artist), &g.base)).copied();
+            }
+            albums.sort_by(|a, b| {
+                let ka = album_scoped_key(Some(&a.artist), &a.base);
+                let kb = album_scoped_key(Some(&b.artist), &b.base);
+                album_cmp(
+                    a,
+                    added.get(&ka).map(String::as_str),
+                    b,
+                    added.get(&kb).map(String::as_str),
+                    key,
+                    desc,
+                )
+            });
+        };
+
+        sort_albums(&mut self.albums);
         for albums in self.artist_albums.values_mut() {
-            albums.sort_by(|a, b| album_group_cmp_dir(a, b, desc));
+            sort_albums(albums);
         }
         for albums in self.genre_albums.values_mut() {
-            albums.sort_by(|a, b| album_group_cmp_dir(a, b, desc));
+            sort_albums(albums);
         }
+    }
+
+    /// Walk the library newest-added first, one page at a time, folding each
+    /// page into `album_added`.
+    ///
+    /// Paged rather than one `find`: the whole library's metadata in a single
+    /// response is the hazard `RECENTLY_ADDED_LIMIT` already exists to avoid,
+    /// and here only three fields per song survive the fold, so holding the
+    /// rest is pure waste. `ADDED_PAGE` bounds peak memory; `ADDED_MAX_PAGES`
+    /// bounds the whole walk so a pathological library can't loop forever.
+    fn load_album_added(&mut self, page: u32) -> Task<Message> {
+        self.album_added_loading = true;
+        let client = self.client.clone();
+        Task::perform(
+            async move {
+                client
+                    .added_page(page * ADDED_PAGE, ADDED_PAGE)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            move |r| Message::AlbumAddedPage(page, r),
+        )
     }
 
     /// Show a transient progress/status note.
@@ -2780,7 +2913,7 @@ impl App {
                     &self.art_handles,
                     self.config.album_grid_view,
                     self.current_song.as_ref(),
-                    Some(self.config.sort_desc),
+                    Some((self.config.sort_key, self.config.sort_desc)),
                 )
             }
             View::Genres => {
@@ -2820,7 +2953,7 @@ impl App {
                     bio,
                     self.show_artist_bio,
                     self.current_song.as_ref(),
-                    self.config.sort_desc,
+                    (self.config.sort_key, self.config.sort_desc),
                 )
             }
             View::AlbumDetail(name, artist) => {
@@ -2855,7 +2988,7 @@ impl App {
                     name,
                     albums,
                     self.current_song.as_ref(),
-                    self.config.sort_desc,
+                    (self.config.sort_key, self.config.sort_desc),
                 )
             }
             View::Browser => {
@@ -3018,6 +3151,7 @@ impl App {
         let c4 = self.client.clone();
         let c5 = self.client.clone();
         let c6 = self.client.clone();
+        let c7 = self.client.clone();
 
         let status_task = Task::perform(
             async move { c1.status().await.ok().map(Box::new) },
@@ -3059,6 +3193,15 @@ impl App {
             },
         );
 
+        // Cheap enough to fetch unconditionally: `list` returns one line
+        // per *distinct* value, so this is a few thousand lines for a whole
+        // library rather than one per song. The add-times are the opposite,
+        // which is why they're loaded only on demand.
+        let years_task = Task::perform(
+            async move { c7.list_album_years().await.unwrap_or_default() },
+            Message::AlbumYearsLoaded,
+        );
+
         Task::batch([
             status_task,
             song_task,
@@ -3066,6 +3209,7 @@ impl App {
             outputs_task,
             partitions_task,
             replay_gain_task,
+            years_task,
         ])
     }
 

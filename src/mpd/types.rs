@@ -301,6 +301,15 @@ pub struct AlbumGroup {
     pub artist: String,
     pub base: String,
     pub variants: Vec<String>,
+    /// Earliest `Date` tag seen across the group, or `None` when the album
+    /// carries no date. Earliest rather than latest because a reissue's
+    /// tracks often carry the reissue year while one or two keep the
+    /// original — the original is what "release year" means on a row.
+    ///
+    /// Filled by `apply_album_years` from a separate `list Date …` query, so
+    /// it is `None` until that lands (and stays `None` on a server where the
+    /// query fails).
+    pub year: Option<i32>,
 }
 
 /// Groups `(album_artist, album)` pairs (as returned by
@@ -334,6 +343,7 @@ pub fn group_albums_by_artist(pairs: &[(String, String)]) -> Vec<AlbumGroup> {
                     artist: artist.clone(),
                     base,
                     variants: vec![album.clone()],
+                    year: None,
                 });
             }
         }
@@ -792,17 +802,195 @@ pub fn name_cmp_dir(a: &str, b: &str, desc: bool) -> std::cmp::Ordering {
     }
 }
 
-/// Orders albums by artist, then by album title.
+/// The year out of a `Date` tag, which is not reliably a year: real tags hold
+/// `1990`, `1990-05-01`, `1990/2003` and worse. Takes the first four-digit
+/// run in a plausible range and ignores the rest.
+pub fn parse_year(date: &str) -> Option<i32> {
+    let b = date.as_bytes();
+    for i in 0..b.len().saturating_sub(3) {
+        if b[i..i + 4].iter().all(|c| c.is_ascii_digit()) {
+            // A four-digit run may still be a catalogue number; the range
+            // check is what keeps `VICP-6085` out.
+            let y: i32 = date[i..i + 4].parse().ok()?;
+            if (1000..=2999).contains(&y) {
+                return Some(y);
+            }
+        }
+    }
+    None
+}
+
+/// Folds `list Date group AlbumArtist group Album` triples into one year per
+/// album, keyed like [`album_scoped_key`] and **disc-collapsed** so a set's
+/// discs share the entry their single collapsed row will look up.
 ///
-/// Reversing flips **both** keys, so Z-A gives the last artist first with
-/// that artist's albums also reversed. That is what a single reversed
-/// comparator gives, and what a reversed list looks like everywhere else in
-/// the app.
-pub fn album_group_cmp_dir(a: &AlbumGroup, b: &AlbumGroup, desc: bool) -> std::cmp::Ordering {
-    name_cmp(&a.artist, &b.artist)
-        .then_with(|| name_cmp(&a.base, &b.base))
-        .then_with(|| a.artist.cmp(&b.artist).then_with(|| a.base.cmp(&b.base)))
-        .pipe_reverse(desc)
+/// Keeps the **earliest** year: a reissue's tracks often carry the reissue
+/// date while one or two keep the original, and the original is what a
+/// "release year" column means.
+pub fn album_year_index(triples: &[(String, String, String)]) -> HashMap<String, i32> {
+    let mut out: HashMap<String, i32> = HashMap::new();
+    for (artist, album, date) in triples {
+        let Some(year) = parse_year(date) else { continue };
+        let base = album_base_and_disc(album).0;
+        let key = album_scoped_key(Some(artist), &base);
+        out.entry(key)
+            .and_modify(|y| *y = (*y).min(year))
+            .or_insert(year);
+    }
+    out
+}
+
+/// Accumulates each album's **newest** add-time from one page of raw `find`
+/// pairs, without ever building a `Song`.
+///
+/// Deliberately not `parse_songs` + a fold: a full-library scan is the one
+/// place where allocating a `Song` per track is most of the cost, and every
+/// field but three is thrown away immediately.
+///
+/// Keyed on the raw `AlbumArtist` tag (empty when absent) rather than
+/// `display_album_artist()`, because that is what `list Album group
+/// AlbumArtist` keys the album list itself on — a fallback here would build
+/// keys the album rows never look up.
+pub fn fold_album_added(pairs: &[(String, String)], out: &mut HashMap<String, String>) {
+    let mut album_artist = String::new();
+    let mut album = String::new();
+    let mut added = String::new();
+
+    let mut flush = |album_artist: &mut String, album: &mut String, added: &mut String| {
+        if !album.is_empty() && !added.is_empty() {
+            let base = album_base_and_disc(album).0;
+            let key = album_scoped_key(Some(album_artist), &base);
+            out.entry(key)
+                .and_modify(|cur| {
+                    if *added > *cur {
+                        cur.clone_from(added);
+                    }
+                })
+                .or_insert_with(|| added.clone());
+        }
+        album_artist.clear();
+        album.clear();
+        added.clear();
+    };
+
+    for (k, v) in pairs {
+        match k.as_str() {
+            // `file` opens a new song record, so it closes the previous one.
+            "file" => flush(&mut album_artist, &mut album, &mut added),
+            "AlbumArtist" => album_artist.clone_from(v),
+            "Album" => album.clone_from(v),
+            // Whichever the rung produced. `Added` wins if both are present.
+            "Added" => added.clone_from(v),
+            "Last-Modified" if added.is_empty() => added.clone_from(v),
+            _ => {}
+        }
+    }
+    flush(&mut album_artist, &mut album, &mut added);
+}
+
+/// What an album list is ordered by.
+///
+/// Only the album lists offer a choice — Artists, Genres and Playlists have
+/// nothing but a name, so they always use [`name_cmp`] and show only the
+/// direction control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SortKey {
+    #[default]
+    /// Album title. Deliberately **not** artist-then-title: an A-Z album list
+    /// is expected to run A-Z by the name on the row, and sorting by artist
+    /// first makes it look unsorted to anyone reading the titles.
+    Name,
+    /// Release year, from the `Date` tag.
+    Year,
+    /// When the file entered MPD's database (0.24's `Added`, else mtime).
+    Added,
+}
+
+impl SortKey {
+    pub const ALL: [SortKey; 3] = [SortKey::Name, SortKey::Year, SortKey::Added];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortKey::Name => "Name",
+            SortKey::Year => "Year",
+            SortKey::Added => "Added",
+        }
+    }
+
+    /// What the direction control should read for this key. "A-Z" is
+    /// meaningless for a date and "Oldest" is meaningless for a title, so the
+    /// button's wording follows the key rather than being fixed.
+    pub fn direction_label(self, desc: bool) -> &'static str {
+        match (self, desc) {
+            (SortKey::Name, false) => "A\u{2013}Z",
+            (SortKey::Name, true) => "Z\u{2013}A",
+            (_, false) => "Oldest",
+            (_, true) => "Newest",
+        }
+    }
+}
+
+impl std::fmt::Display for SortKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Orders two albums for a list.
+///
+/// `a_added` / `b_added` are the albums' add-times, which don't live on
+/// `AlbumGroup` because they arrive from a completely different (and much
+/// more expensive) query than the album list itself — see
+/// `App::album_added`. Passing them in keeps this a pure function.
+///
+/// **A missing year or add-time sorts last in *both* directions.** The
+/// unknown-ness is checked outside the reversal on purpose: an album with no
+/// `Date` tag jumping to the top of a "newest first" list would read as data,
+/// and the same rule already governs `last_modified` in Recently Added.
+///
+/// The name is always the final tiebreak, so the order stays total and
+/// flipping the direction twice restores the list rather than shuffling
+/// albums that share a year.
+pub fn album_cmp(
+    a: &AlbumGroup,
+    a_added: Option<&str>,
+    b: &AlbumGroup,
+    b_added: Option<&str>,
+    key: SortKey,
+    desc: bool,
+) -> std::cmp::Ordering {
+    let by_name = || {
+        name_cmp(&a.base, &b.base)
+            .then_with(|| name_cmp(&a.artist, &b.artist))
+            .then_with(|| a.base.cmp(&b.base))
+            .then_with(|| a.artist.cmp(&b.artist))
+    };
+
+    match key {
+        SortKey::Name => by_name().pipe_reverse(desc),
+        SortKey::Year => unknown_last(a.year, b.year, |x, y| x.cmp(&y), desc, by_name),
+        SortKey::Added => unknown_last(a_added, b_added, |x, y| x.cmp(y), desc, by_name),
+    }
+}
+
+/// Compares two optional keys with `Some` always ahead of `None`, reversing
+/// only the comparison between two `Some`s. Ties fall through to `tiebreak`,
+/// which is **not** reversed either — a group of same-year albums stays A-Z
+/// whichever way the years run.
+fn unknown_last<T>(
+    a: Option<T>,
+    b: Option<T>,
+    cmp: impl Fn(T, T) -> std::cmp::Ordering,
+    desc: bool,
+    tiebreak: impl Fn() -> std::cmp::Ordering,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(x), Some(y)) => cmp(x, y).pipe_reverse(desc).then_with(tiebreak),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => tiebreak(),
+    }
 }
 
 /// Small helper so the `.then_with` chains above read in one direction.
@@ -1637,64 +1825,280 @@ mod tests {
         assert_eq!(asc, back, "A-Z and reversed Z-A must agree");
     }
 
-    #[test]
-    fn album_groups_sort_by_artist_then_album_and_keep_an_artist_together() {
-        let g = |artist: &str, base: &str| AlbumGroup {
+    fn ag(artist: &str, base: &str, year: Option<i32>) -> AlbumGroup {
+        AlbumGroup {
             artist: artist.into(),
             base: base.into(),
             variants: vec![base.into()],
-        };
-        let mut v = [
-            g("Slayer", "Reign in Blood"),
-            g("abba", "Arrival"),
-            g("Slayer", "Hell Awaits"),
-            g("ABBA", "Waterloo"),
+            year,
+        }
+    }
+
+    fn sorted(src: &[AlbumGroup], key: SortKey, desc: bool) -> Vec<String> {
+        sorted_with(src, key, desc, &HashMap::new())
+    }
+
+    fn sorted_with(
+        src: &[AlbumGroup],
+        key: SortKey,
+        desc: bool,
+        added: &HashMap<String, String>,
+    ) -> Vec<String> {
+        let mut v = src.to_vec();
+        let look = |g: &AlbumGroup| added.get(&album_scoped_key(Some(&g.artist), &g.base)).cloned();
+        v.sort_by(|a, b| {
+            album_cmp(a, look(a).as_deref(), b, look(b).as_deref(), key, desc)
+        });
+        v.into_iter().map(|g| g.base).collect()
+    }
+
+    #[test]
+    fn albums_sort_by_album_name_not_by_artist() {
+        // The whole point of the fix: an A-Z album list must run A-Z by the
+        // name on the row. Sorting by artist first put "Arrival" after
+        // "Reign in Blood" and the list read as unsorted.
+        let src = [
+            ag("Slayer", "Reign in Blood", None),
+            ag("ABBA", "Arrival", None),
+            ag("Slayer", "Hell Awaits", None),
+            ag("ABBA", "Waterloo", None),
         ];
-        v.sort_by(|a, b| album_group_cmp_dir(a, b, false));
-        let seen: Vec<_> = v.iter().map(|x| (x.artist.as_str(), x.base.as_str())).collect();
         assert_eq!(
-            seen,
-            vec![
-                ("ABBA", "Waterloo"),
-                ("abba", "Arrival"),
-                ("Slayer", "Hell Awaits"),
-                ("Slayer", "Reign in Blood"),
-            ]
+            sorted(&src, SortKey::Name, false),
+            vec!["Arrival", "Hell Awaits", "Reign in Blood", "Waterloo"]
         );
-        // Each artist's albums stay contiguous — the point of sorting on the
-        // artist key first.
-        v.sort_by(|a, b| album_group_cmp_dir(a, b, true));
-        let artists: Vec<_> = v.iter().map(|x| x.artist.to_lowercase()).collect();
-        let mut runs = artists.clone();
-        runs.dedup();
         assert_eq!(
-            runs.len(),
-            2,
-            "an artist's albums were split apart: {artists:?}"
+            sorted(&src, SortKey::Name, true),
+            vec!["Waterloo", "Reign in Blood", "Hell Awaits", "Arrival"]
         );
     }
 
     #[test]
-    fn album_group_reversal_is_also_an_involution() {
-        let g = |artist: &str, base: &str| AlbumGroup {
-            artist: artist.into(),
-            base: base.into(),
-            variants: vec![],
-        };
+    fn two_artists_same_album_title_stay_deterministically_ordered() {
+        // Name-only sorting makes these tie, so the artist is the tiebreak —
+        // without it the pair could swap on every re-sort.
         let src = [
-            g("Slayer", "Reign in Blood"),
-            g("abba", "Arrival"),
-            g("ABBA", "Arrival"),
-            g("Slayer", "Hell Awaits"),
+            ag("Slayer", "Greatest Hits", None),
+            ag("ABBA", "Greatest Hits", None),
         ];
-        let sorted = |desc: bool| {
-            let mut v = src.to_vec();
-            v.sort_by(|a, b| album_group_cmp_dir(a, b, desc));
-            v
-        };
-        let mut back = sorted(true);
-        back.reverse();
-        assert_eq!(sorted(false), back);
+        let mut v = src.to_vec();
+        v.sort_by(|a, b| album_cmp(a, None, b, None, SortKey::Name, false));
+        assert_eq!(v[0].artist, "ABBA");
+    }
+
+    #[test]
+    fn albums_sort_by_year_oldest_or_newest_first() {
+        let src = [
+            ag("A", "Later", Some(2001)),
+            ag("A", "Earlier", Some(1979)),
+            ag("A", "Middle", Some(1990)),
+        ];
+        assert_eq!(
+            sorted(&src, SortKey::Year, false),
+            vec!["Earlier", "Middle", "Later"]
+        );
+        assert_eq!(
+            sorted(&src, SortKey::Year, true),
+            vec!["Later", "Middle", "Earlier"]
+        );
+    }
+
+    #[test]
+    fn albums_with_no_year_sort_last_in_both_directions() {
+        // The unknown check sits outside the reversal on purpose: an album
+        // with no Date tag jumping to the head of a "Newest" list would read
+        // as data rather than as a gap.
+        let src = [
+            ag("A", "Undated", None),
+            ag("A", "Old", Some(1979)),
+            ag("A", "New", Some(2011)),
+        ];
+        assert_eq!(sorted(&src, SortKey::Year, false).last().unwrap(), "Undated");
+        assert_eq!(sorted(&src, SortKey::Year, true).last().unwrap(), "Undated");
+    }
+
+    #[test]
+    fn albums_sharing_a_year_stay_alphabetical_in_both_directions() {
+        // The tiebreak is *not* reversed with the primary key — a block of
+        // 1990 albums reading Z-A inside a "Oldest first" list would look
+        // like a bug.
+        let src = [
+            ag("A", "Zulu", Some(1990)),
+            ag("A", "Alpha", Some(1990)),
+        ];
+        assert_eq!(sorted(&src, SortKey::Year, false), vec!["Alpha", "Zulu"]);
+        assert_eq!(sorted(&src, SortKey::Year, true), vec!["Alpha", "Zulu"]);
+    }
+
+    #[test]
+    fn albums_sort_by_add_time() {
+        let src = [ag("A", "First", None), ag("A", "Second", None)];
+        let mut added = HashMap::new();
+        added.insert(
+            album_scoped_key(Some("A"), "First"),
+            "2020-01-01T00:00:00Z".to_string(),
+        );
+        added.insert(
+            album_scoped_key(Some("A"), "Second"),
+            "2026-01-01T00:00:00Z".to_string(),
+        );
+        assert_eq!(
+            sorted_with(&src, SortKey::Added, false, &added),
+            vec!["First", "Second"]
+        );
+        assert_eq!(
+            sorted_with(&src, SortKey::Added, true, &added),
+            vec!["Second", "First"]
+        );
+        // An album the walk never reached sorts last either way, rather than
+        // pretending to be the oldest or the newest.
+        assert_eq!(
+            sorted_with(&src, SortKey::Added, true, &HashMap::new()),
+            vec!["First", "Second"],
+        );
+    }
+
+    #[test]
+    fn reversing_an_album_sort_twice_is_the_identity_for_every_key() {
+        let src = [
+            ag("Slayer", "Reign in Blood", Some(1986)),
+            ag("ABBA", "Arrival", Some(1976)),
+            ag("ABBA", "Arrival", Some(1976)),
+            ag("Nobody", "Undated", None),
+        ];
+        for key in SortKey::ALL {
+            let mut back = sorted(&src, key, true);
+            back.reverse();
+            if key == SortKey::Name {
+                assert_eq!(sorted(&src, key, false), back, "{key:?}");
+            } else {
+                // With unknowns pinned last in both directions, reversing
+                // can't be a pure mirror — but the known ones must still
+                // mirror, and the unknown must stay at the end.
+                assert_eq!(sorted(&src, key, false).last().unwrap(), "Undated");
+                assert_eq!(sorted(&src, key, true).last().unwrap(), "Undated");
+            }
+        }
+    }
+
+    // --- parse_year / album_year_index / fold_album_added --------------------
+
+    #[test]
+    fn parse_year_handles_the_shapes_a_real_date_tag_holds() {
+        assert_eq!(parse_year("1990"), Some(1990));
+        assert_eq!(parse_year("1990-05-01"), Some(1990));
+        assert_eq!(parse_year("1990/2003"), Some(1990));
+        assert_eq!(parse_year("Released 2011"), Some(2011));
+        assert_eq!(parse_year(""), None);
+        assert_eq!(parse_year("199"), None);
+        // A catalogue number is four digits and is not a year.
+        assert_eq!(parse_year("VICP-608"), None);
+    }
+
+    #[test]
+    fn album_year_index_keeps_the_earliest_and_collapses_discs() {
+        let t = |a: &str, al: &str, d: &str| (a.to_string(), al.to_string(), d.to_string());
+        let idx = album_year_index(&[
+            // A reissue whose tracks disagree: the original is what a
+            // release year means on a row.
+            t("Slayer", "Reign in Blood", "2013"),
+            t("Slayer", "Reign in Blood", "1986"),
+            // Both discs of a set feed the one collapsed row.
+            t("Gamma Ray", "Blast from the Past [Disc 1]", "2000"),
+            t("Gamma Ray", "Blast from the Past [Disc 2]", "2000"),
+            // No parseable year contributes nothing rather than a zero.
+            t("Nobody", "Undated", "n/a"),
+        ]);
+        assert_eq!(idx.get(&album_scoped_key(Some("Slayer"), "Reign in Blood")), Some(&1986));
+        assert_eq!(
+            idx.get(&album_scoped_key(Some("Gamma Ray"), "Blast from the Past")),
+            Some(&2000)
+        );
+        assert!(!idx.contains_key(&album_scoped_key(Some("Nobody"), "Undated")));
+    }
+
+    #[test]
+    fn fold_album_added_keeps_the_newest_track_per_album() {
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let pairs = vec![
+            p("file", "a/1.flac"),
+            p("Album", "Reign in Blood"),
+            p("AlbumArtist", "Slayer"),
+            p("Added", "2020-01-01T00:00:00Z"),
+            p("file", "a/2.flac"),
+            p("Album", "Reign in Blood"),
+            p("AlbumArtist", "Slayer"),
+            p("Added", "2026-03-03T00:00:00Z"),
+        ];
+        let mut out = HashMap::new();
+        fold_album_added(&pairs, &mut out);
+        assert_eq!(
+            out.get(&album_scoped_key(Some("Slayer"), "Reign in Blood")).map(String::as_str),
+            Some("2026-03-03T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn fold_album_added_collapses_discs_and_accumulates_across_pages() {
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[
+                p("file", "a/1.flac"),
+                p("Album", "Blast from the Past [Disc 1]"),
+                p("AlbumArtist", "Gamma Ray"),
+                p("Last-Modified", "2019-01-01T00:00:00Z"),
+            ],
+            &mut out,
+        );
+        // The second page must merge into the same key, not replace it.
+        fold_album_added(
+            &[
+                p("file", "a/2.flac"),
+                p("Album", "Blast from the Past [Disc 2]"),
+                p("AlbumArtist", "Gamma Ray"),
+                p("Last-Modified", "2021-01-01T00:00:00Z"),
+            ],
+            &mut out,
+        );
+        assert_eq!(out.len(), 1, "the two discs did not collapse");
+        assert_eq!(
+            out.get(&album_scoped_key(Some("Gamma Ray"), "Blast from the Past")).map(String::as_str),
+            Some("2021-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn fold_album_added_prefers_added_over_last_modified() {
+        // The rung decides which the server sent; when both arrive, the real
+        // database add-time is the one that means what the sort claims.
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[
+                p("file", "a/1.flac"),
+                p("Last-Modified", "1999-01-01T00:00:00Z"),
+                p("Added", "2026-01-01T00:00:00Z"),
+                p("Album", "X"),
+                p("AlbumArtist", "A"),
+            ],
+            &mut out,
+        );
+        assert_eq!(
+            out.get(&album_scoped_key(Some("A"), "X")).map(String::as_str),
+            Some("2026-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn fold_album_added_ignores_a_song_with_no_timestamp() {
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[p("file", "a/1.flac"), p("Album", "X"), p("AlbumArtist", "A")],
+            &mut out,
+        );
+        assert!(out.is_empty(), "an undated song must not claim an add-time");
     }
 
     // --- RecentlyAddedRung --------------------------------------------------
