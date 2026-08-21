@@ -78,6 +78,11 @@ pub struct Song {
     pub pos: Option<u32>,
     pub id: Option<u32>,
     pub last_modified: Option<String>,
+    /// MPD 0.24's `Added` — when the file entered the database, as opposed to
+    /// `last_modified`'s filesystem mtime. `#[serde(default)]` because older
+    /// servers never send it.
+    #[serde(default)]
+    pub added: Option<String>,
     pub composer: Option<String>,
     pub performer: Option<String>,
     pub comment: Option<String>,
@@ -799,19 +804,27 @@ pub fn name_cmp_dir(a: &str, b: &str, desc: bool) -> std::cmp::Ordering {
 /// place where allocating a `Song` per track is most of the cost, and every
 /// field but three is thrown away immediately.
 ///
-/// Keyed on the raw `AlbumArtist` tag (empty when absent) rather than
-/// `display_album_artist()`, because that is what `list Album group
-/// AlbumArtist` keys the album list itself on — a fallback here would build
-/// keys the album rows never look up.
+/// **`AlbumArtist` falls back to `Artist`, because MPD's own grouping does.**
+/// `list Album group AlbumArtist` reports `Dio` for an album whose song
+/// records carry `Artist: Dio` and no `AlbumArtist` at all — the server
+/// substitutes the fallback tag. Keying on the raw tag here therefore built
+/// `"\x1fHoly Diver"` for an album row keyed `"Dio\x1fHoly Diver"`, and on
+/// this library that was **more than half of them**: 348 of 801 rows matched.
+/// `live_diagnose_album_added_coverage` is what found it.
 pub fn fold_album_added(pairs: &[(String, String)], out: &mut HashMap<String, String>) {
     let mut album_artist = String::new();
+    let mut artist = String::new();
     let mut album = String::new();
     let mut added = String::new();
 
-    let mut flush = |album_artist: &mut String, album: &mut String, added: &mut String| {
+    let mut flush = |album_artist: &mut String,
+                     artist: &mut String,
+                     album: &mut String,
+                     added: &mut String| {
         if !album.is_empty() && !added.is_empty() {
             let base = album_base_and_disc(album).0;
-            let key = album_scoped_key(Some(album_artist), &base);
+            let credited = if album_artist.is_empty() { &*artist } else { &*album_artist };
+            let key = album_scoped_key(Some(credited), &base);
             out.entry(key)
                 .and_modify(|cur| {
                     if *added > *cur {
@@ -821,6 +834,7 @@ pub fn fold_album_added(pairs: &[(String, String)], out: &mut HashMap<String, St
                 .or_insert_with(|| added.clone());
         }
         album_artist.clear();
+        artist.clear();
         album.clear();
         added.clear();
     };
@@ -828,8 +842,9 @@ pub fn fold_album_added(pairs: &[(String, String)], out: &mut HashMap<String, St
     for (k, v) in pairs {
         match k.as_str() {
             // `file` opens a new song record, so it closes the previous one.
-            "file" => flush(&mut album_artist, &mut album, &mut added),
+            "file" => flush(&mut album_artist, &mut artist, &mut album, &mut added),
             "AlbumArtist" => album_artist.clone_from(v),
+            "Artist" => artist.clone_from(v),
             "Album" => album.clone_from(v),
             // Whichever the rung produced. `Added` wins if both are present.
             "Added" => added.clone_from(v),
@@ -837,7 +852,7 @@ pub fn fold_album_added(pairs: &[(String, String)], out: &mut HashMap<String, St
             _ => {}
         }
     }
-    flush(&mut album_artist, &mut album, &mut added);
+    flush(&mut album_artist, &mut artist, &mut album, &mut added);
 }
 
 /// What an album list is ordered by.
@@ -1933,6 +1948,82 @@ mod tests {
             out.get(&album_scoped_key(Some("Gamma Ray"), "Blast from the Past")).map(String::as_str),
             Some("2021-01-01T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn fold_album_added_falls_back_to_artist_like_mpd_does() {
+        // MPD's own `list Album group AlbumArtist` substitutes `Artist` when
+        // the AlbumArtist tag is absent — it reported "Dio" for an album whose
+        // song records carry only `Artist: Dio`. Keying on the raw tag here
+        // built "\x1fHoly Diver" against a row keyed "Dio\x1fHoly Diver", and
+        // on the real library that was 453 of 801 rows silently missing an
+        // add-time.
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[
+                p("file", "itunes/Dio/Holy Diver/01.m4a"),
+                p("Added", "2026-01-05T11:50:58Z"),
+                p("Artist", "Dio"),
+                p("Album", "Holy Diver"),
+            ],
+            &mut out,
+        );
+        assert_eq!(
+            out.keys().next().map(String::as_str),
+            Some(album_scoped_key(Some("Dio"), "Holy Diver").as_str())
+        );
+    }
+
+    #[test]
+    fn fold_album_added_prefers_album_artist_over_artist() {
+        // The fallback must not override a real AlbumArtist, or every
+        // compilation would split into one entry per guest artist.
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[
+                p("file", "comp/01.flac"),
+                p("Added", "2026-01-01T00:00:00Z"),
+                p("Artist", "Guest Artist"),
+                p("AlbumArtist", "Various Artists"),
+                p("Album", "Comp"),
+                p("file", "comp/02.flac"),
+                p("Added", "2026-02-01T00:00:00Z"),
+                p("Artist", "Another Guest"),
+                p("AlbumArtist", "Various Artists"),
+                p("Album", "Comp"),
+            ],
+            &mut out,
+        );
+        assert_eq!(out.len(), 1, "the compilation split by guest artist");
+        assert_eq!(
+            out.get(&album_scoped_key(Some("Various Artists"), "Comp")).map(String::as_str),
+            Some("2026-02-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn fold_album_added_does_not_leak_an_artist_between_songs() {
+        // `flush` clears on every `file`, so a song with no artist tag at all
+        // must not inherit the previous song's.
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let mut out = HashMap::new();
+        fold_album_added(
+            &[
+                p("file", "a/1.flac"),
+                p("Artist", "Dio"),
+                p("Album", "Holy Diver"),
+                p("Added", "2026-01-01T00:00:00Z"),
+                p("file", "b/1.flac"),
+                p("Album", "Untagged"),
+                p("Added", "2026-01-02T00:00:00Z"),
+            ],
+            &mut out,
+        );
+        assert!(out.contains_key(&album_scoped_key(Some("Dio"), "Holy Diver")));
+        assert!(out.contains_key(&album_scoped_key(Some(""), "Untagged")));
+        assert!(!out.contains_key(&album_scoped_key(Some("Dio"), "Untagged")));
     }
 
     #[test]

@@ -1003,8 +1003,19 @@ async fn live_recently_added_is_newest_first() {
         return;
     }
 
+    // Assert on the field the *rung* sorted by. Asserting on `last_modified`
+    // regardless is how this test first failed against a 0.24 server: the top
+    // rung sorts by `Added`, and on this library mtime is uniform (a mass
+    // rewrite) while `Added` spans months, so the two orders have nothing to
+    // do with each other.
+    fn key(s: &Song, rung: RecentlyAddedRung) -> Option<&String> {
+        match rung {
+            RecentlyAddedRung::AddedSince => s.added.as_ref(),
+            _ => s.last_modified.as_ref(),
+        }
+    }
     // Descending, with unknown timestamps allowed only at the tail.
-    let stamps: Vec<Option<&String>> = songs.iter().map(|s| s.last_modified.as_ref()).collect();
+    let stamps: Vec<Option<&String>> = songs.iter().map(|s| key(s, rung)).collect();
     for pair in stamps.windows(2) {
         match (pair[0], pair[1]) {
             (Some(a), Some(b)) => assert!(
@@ -1023,7 +1034,7 @@ async fn live_recently_added_is_newest_first() {
         .await
         .expect("wider recently-added query");
     let newest_narrow = stamps.first().copied().flatten();
-    let newest_wide = wider.iter().filter_map(|s| s.last_modified.as_ref()).max();
+    let newest_wide = wider.iter().filter_map(|s| key(s, rung)).max();
     assert_eq!(
         newest_narrow, newest_wide,
         "a wider window found a newer song, so the narrow one was not the newest end"
@@ -1321,4 +1332,59 @@ async fn live_album_added_walk_covers_the_library() {
         "timestamps don't order"
     );
     eprintln!("oldest: {}, newest: {}", stamps.first().unwrap(), stamps.last().unwrap());
+}
+
+/// Diagnostic, not an assertion — the fastest answer to "why does the Added
+/// sort put this album in the unknown bucket".
+///
+/// Prints the album rows with no add-time and the index keys matching no row.
+/// That output is what identified the real defect: MPD's
+/// `list Album group AlbumArtist` substitutes `Artist` when the `AlbumArtist`
+/// tag is absent, so a fold keyed on the raw tag produced `"\x1fHoly Diver"`
+/// against a row keyed `"Dio\x1fHoly Diver"` — 348 of 801 rows matched.
+#[tokio::test]
+#[ignore]
+async fn live_diagnose_album_added_coverage() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect");
+
+    let mut index = std::collections::HashMap::new();
+    let mut page = 0u32;
+    loop {
+        let pairs = client.added_page(page * 10_000, 10_000).await.expect("page");
+        let songs = pairs.iter().filter(|(k, _)| k == "file").count() as u32;
+        fold_album_added(&pairs, &mut index);
+        page += 1;
+        if songs < 10_000 || page >= 40 {
+            break;
+        }
+    }
+
+    let albums = client.list_albums_by_artist().await.expect("albums");
+    let rows: std::collections::HashSet<String> = albums
+        .iter()
+        .map(|(a, al)| album_scoped_key(Some(a), &album_base_and_disc(al).0))
+        .collect();
+
+    let show = |k: &String| k.replace('\u{1f}', " | ");
+    let missing: Vec<&String> = rows.iter().filter(|k| !index.contains_key(*k)).collect();
+    let extra: Vec<&String> = index.keys().filter(|k| !rows.contains(*k)).collect();
+
+    eprintln!(
+        "{} index entries, {} album rows, {} rows without an add-time, {} keys matching no row",
+        index.len(),
+        rows.len(),
+        missing.len(),
+        extra.len()
+    );
+    for k in missing.iter().take(10) {
+        eprintln!("  row with no add-time: {}", show(k));
+    }
+    for k in extra.iter().take(10) {
+        eprintln!("  index key matching no row: {}", show(k));
+    }
 }
