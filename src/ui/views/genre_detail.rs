@@ -15,6 +15,7 @@ pub fn view<'a>(
     genre_name: &'a str,
     albums: &'a [AlbumGroup],
     current_song: Option<&'a crate::mpd::types::Song>,
+    sort_desc: bool,
 ) -> Element<'a, Message> {
     let mut list = column![].spacing(0);
     for (i, album) in albums.iter().enumerate() {
@@ -67,6 +68,8 @@ pub fn view<'a>(
                 text(format!("{} albums", albums.len()))
                     .size(14)
                     .color(AppColors::text_muted()),
+                Space::with_width(Length::Fill),
+                link::sort_toggle(sort_desc),
             ]
             .align_y(Alignment::Center)
             .padding([12, 12]),

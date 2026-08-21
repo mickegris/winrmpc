@@ -1,6 +1,6 @@
 # Plan: A–Z / Z–A sorting for the library lists
 
-Status: **planned** (targeting 0.4.4). Requested for the Artists view; this
+Status: **implemented** (0.4.4). Requested for the Artists view; this
 covers which other lists should get it and which deliberately shouldn't.
 
 ## What's there now
@@ -98,10 +98,22 @@ its header.
 - Recently Added's order survives a `ToggleSortDirection` — the guard against
   a future refactor quietly folding it into the shared re-sort.
 
-## Open question for the implementer
+## Resolved: what Z–A means for the album lists
 
-Albums currently sorts on artist-then-album. Reversing it can mean either
-"reverse the whole list" (Z-artist first, and each artist's albums also
-reversed) or "reverse the artists, keep each artist's albums A–Z". The first
-is what a single comparator gives for free and what a reversed list looks like
-everywhere else in the app; going with that unless it reads badly in practice.
+Reversing flips **both** keys — last artist first, and that artist's albums
+also reversed. It's what a single reversed comparator gives, and what a
+reversed list looks like everywhere else in the app.
+
+## What landed
+
+| | |
+|---|---|
+| `src/mpd/types.rs` | `name_cmp` / `name_cmp_dir` / `album_group_cmp_dir` |
+| `src/config/settings.rs` | `sort_desc: bool`, `#[serde(default)]` |
+| `src/ui/app.rs` | `App::sort_library_lists()`, called from `ToggleSortDirection` and every `*Loaded` handler; the two byte-order `.sort()` calls removed |
+| `src/ui/widgets/link.rs` | `sort_toggle(desc)` — the `A–Z`/`Z–A` button |
+| six view headers | `artists_list`, `genres_list`, `playlists_list`, `albums_list` (as `Option<bool>`), `artist`, `genre_detail` |
+
+`albums_list::view` takes `sort_desc: Option<bool>` rather than a `bool`
+precisely because Recently Added shares it: `None` there means the control is
+**absent**, not present and doing nothing.

@@ -24,7 +24,13 @@ const LINE_HEIGHT_FACTOR: f32 = 1.3;
 /// Width of the bottom-left song-info slot. The clip container and the
 /// column inside it must agree on this or the truncation lands in the wrong
 /// place.
+///
+/// Bounded on both sides below, at compile time rather than in a test: below
+/// ~200px two 12px links plus a separator can't show a plausible
+/// "Artist – Album" at all, and above ~320 the slot crowds the transport
+/// controls at `min_size`'s 1000px width.
 const SONG_INFO_WIDTH: u16 = 250;
+const _: () = assert!(SONG_INFO_WIDTH >= 200 && SONG_INFO_WIDTH <= 320);
 
 /// MPD's four replay-gain modes (protocol: `replay_gain_mode {MODE}`).
 const REPLAY_GAIN_MODES: [&str; 4] = ["off", "track", "album", "auto"];
@@ -399,24 +405,6 @@ fn small_btn(label: &str, msg: Message) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The song-info column and the clip container around it are set from the
-    /// same constant. If they ever drift apart the clip lands somewhere other
-    /// than the slot edge — either truncating names that would have fitted,
-    /// or letting a long pair spill over the transport buttons, which is the
-    /// bug the clip exists to prevent.
-    #[test]
-    fn the_song_info_slot_is_wide_enough_for_a_name_pair() {
-        // Two 12px links plus a separator. At iced's ~0.5em average advance
-        // that is roughly 30 characters, which is a plausible
-        // "Artist – Album" and the reason the slot is clipped rather than
-        // sized to fit: it can't be.
-        assert!(SONG_INFO_WIDTH >= 200, "too narrow to show a name pair at all");
-        assert!(
-            SONG_INFO_WIDTH <= 320,
-            "wide enough to crowd the transport controls at the minimum window width"
-        );
-    }
 
     /// The glyph should also *look* like the button's main content rather than a
     /// speck in a wide box — 16px in a 52x28 button read as mostly air.

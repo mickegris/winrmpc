@@ -14,6 +14,7 @@ pub fn view<'a>(
     renaming: Option<&'a str>,
     rename_input: &'a str,
     queue_empty: bool,
+    sort_desc: bool,
 ) -> Element<'a, Message> {
     let header = row![
         link::back_button(),
@@ -23,6 +24,8 @@ pub fn view<'a>(
         text(format!("{} playlists", playlists.len()))
             .size(14)
             .color(AppColors::text_muted()),
+        Space::with_width(Length::Fill),
+        link::sort_toggle(sort_desc),
     ]
     .align_y(Alignment::Center)
     .padding([12, 12]);

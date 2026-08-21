@@ -106,6 +106,11 @@ pub enum Message {
     /// Switch Albums / Recently Added / Recently Played between the cover
     /// grid and the compact list. Shared by all three; persisted.
     ToggleAlbumGridView,
+    /// Flip every name-sorted library list between A-Z and Z-A. Re-sorts
+    /// what is already loaded rather than refetching — the data is in hand,
+    /// and a round trip to reverse a list the user is looking at would show
+    /// as a flicker.
+    ToggleSortDirection,
 
     // === Editing an existing server (Settings) ===
     /// Opens the inline editor for a server's connection details. Adding a

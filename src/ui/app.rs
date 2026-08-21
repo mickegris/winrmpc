@@ -1062,14 +1062,17 @@ impl App {
             // =================================================================
             Message::ArtistsLoaded(a) => {
                 self.artists = a;
+                self.sort_library_lists();
                 Task::none()
             }
             Message::AlbumsLoaded(a) => {
                 self.albums = a;
+                self.sort_library_lists();
                 self.queue_album_art()
             }
             Message::GenresLoaded(g) => {
                 self.genres = g;
+                self.sort_library_lists();
                 Task::none()
             }
             Message::ArtistSelected(name) => {
@@ -1093,7 +1096,9 @@ impl App {
                                 albums.push(a);
                             }
                         }
-                        albums.sort();
+                        // Ordering happens in `sort_library_lists` once the
+                        // groups exist; sorting the raw names here would be
+                        // byte order and would be overwritten anyway.
                         // Every entry shares this page's artist, so grouping
                         // here only does multi-disc collapsing (no
                         // cross-artist ambiguity is possible on this page).
@@ -1209,6 +1214,7 @@ impl App {
             }
             Message::GenreAlbumsLoaded(genre, albums) => {
                 self.genre_albums.insert(genre, albums);
+                self.sort_library_lists();
                 Task::none()
             }
             Message::ArtistAlbumsLoaded(artist, albums) => {
@@ -1223,6 +1229,7 @@ impl App {
                 // as the tag to look a track up by.
                 let targets = Self::album_art_targets(&albums);
                 self.artist_albums.insert(artist, albums);
+                self.sort_library_lists();
                 self.enqueue_album_art(targets)
             }
             Message::AlbumSongsLoaded(album, songs) => {
@@ -1305,6 +1312,12 @@ impl App {
                     },
                     |_| Message::Noop,
                 )
+            }
+            Message::ToggleSortDirection => {
+                self.config.sort_desc = !self.config.sort_desc;
+                self.config.save_and_log("list sort direction");
+                self.sort_library_lists();
+                Task::none()
             }
             Message::ToggleAlbumGridView => {
                 self.config.album_grid_view = !self.config.album_grid_view;
@@ -1389,6 +1402,7 @@ impl App {
             // =================================================================
             Message::PlaylistsLoaded(list) => {
                 self.playlists = list;
+                self.sort_library_lists();
                 Task::none()
             }
             Message::PlaylistSelected(name) => {
@@ -2648,6 +2662,33 @@ impl App {
         });
     }
 
+    /// Re-sort every name-sorted library list to the current direction.
+    ///
+    /// Called from both entry points — each `*Loaded` handler and
+    /// `ToggleSortDirection` — so the two can't drift onto different
+    /// comparators. Sorting lives here rather than in `view()` because views
+    /// take `&'a [T]` and would have to allocate a reordered copy every
+    /// frame.
+    ///
+    /// **The recency lists are deliberately absent.** `recently_added_albums`
+    /// and `recently_played` are ordered by time, which is the only thing
+    /// they are for; alphabetising them would defeat the feature. Anything
+    /// added here later should be checked against that.
+    fn sort_library_lists(&mut self) {
+        let desc = self.config.sort_desc;
+        self.artists.sort_by(|a, b| name_cmp_dir(a, b, desc));
+        self.genres.sort_by(|a, b| name_cmp_dir(a, b, desc));
+        self.playlists
+            .sort_by(|a, b| name_cmp_dir(&a.name, &b.name, desc));
+        self.albums.sort_by(|a, b| album_group_cmp_dir(a, b, desc));
+        for albums in self.artist_albums.values_mut() {
+            albums.sort_by(|a, b| album_group_cmp_dir(a, b, desc));
+        }
+        for albums in self.genre_albums.values_mut() {
+            albums.sort_by(|a, b| album_group_cmp_dir(a, b, desc));
+        }
+    }
+
     /// Show a transient progress/status note.
     fn toast_info(&mut self, text: impl Into<String>) {
         let text = text.into();
@@ -2726,10 +2767,10 @@ impl App {
             }
             View::Library => {
                 // Redirect to Artists if someone navigates here
-                views::artists_list::view(&self.artists)
+                views::artists_list::view(&self.artists, self.config.sort_desc)
             }
             View::Artists => {
-                views::artists_list::view(&self.artists)
+                views::artists_list::view(&self.artists, self.config.sort_desc)
             }
             View::Albums => {
                 views::albums_list::view(
@@ -2739,10 +2780,11 @@ impl App {
                     &self.art_handles,
                     self.config.album_grid_view,
                     self.current_song.as_ref(),
+                    Some(self.config.sort_desc),
                 )
             }
             View::Genres => {
-                views::genres_list::view(&self.genres)
+                views::genres_list::view(&self.genres, self.config.sort_desc)
             }
             View::RecentlyAdded => {
                 views::albums_list::view(
@@ -2752,6 +2794,8 @@ impl App {
                     &self.art_handles,
                     self.config.album_grid_view,
                     self.current_song.as_ref(),
+                    // Ordered by time, not by name — see `sort_library_lists`.
+                    None,
                 )
             }
             View::RecentlyPlayed => views::recently_played::view(
@@ -2776,6 +2820,7 @@ impl App {
                     bio,
                     self.show_artist_bio,
                     self.current_song.as_ref(),
+                    self.config.sort_desc,
                 )
             }
             View::AlbumDetail(name, artist) => {
@@ -2806,7 +2851,12 @@ impl App {
                     .get(name)
                     .map(|a| a.as_slice())
                     .unwrap_or(&[]);
-                views::genre_detail::view(name, albums, self.current_song.as_ref())
+                views::genre_detail::view(
+                    name,
+                    albums,
+                    self.current_song.as_ref(),
+                    self.config.sort_desc,
+                )
             }
             View::Browser => {
                 views::browser::view(
@@ -2863,6 +2913,7 @@ impl App {
                 self.playlist_renaming.as_deref(),
                 &self.playlist_rename_input,
                 self.queue.is_empty(),
+                self.config.sort_desc,
             ),
             View::PlaylistDetail(name) => {
                 let songs = self
@@ -3535,7 +3586,9 @@ impl App {
                                 artists.push(a);
                             }
                         }
-                        artists.sort();
+                        // Ordering is `sort_library_lists`' job — a byte-order
+                        // `sort()` here would file every lowercase initial
+                        // past Z, and would ignore the A-Z/Z-A direction.
                         artists
                     },
                     Message::ArtistsLoaded,
@@ -3610,7 +3663,9 @@ impl App {
                                 artists.push(a);
                             }
                         }
-                        artists.sort();
+                        // Ordering is `sort_library_lists`' job — a byte-order
+                        // `sort()` here would file every lowercase initial
+                        // past Z, and would ignore the A-Z/Z-A direction.
                         artists
                     },
                     Message::ArtistsLoaded,

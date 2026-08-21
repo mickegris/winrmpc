@@ -171,6 +171,26 @@ pub fn album_message(album: &str, artist: Option<&str>) -> Message {
     )
 }
 
+/// The A-Z / Z-A control for a library list. Shows the direction the list is
+/// **currently** in, matching `album_grid::layout_toggle`'s neighbour.
+///
+/// Deliberately text, not a glyph. The obvious reuse is barred anyway —
+/// `icon::MOVE_UP`/`MOVE_DOWN` already *are* `arrow_upward`/`arrow_downward`,
+/// and `icon::tests` asserts no two constants share a codepoint — but the
+/// real reason is that an arrow doesn't say *what* is being sorted, while
+/// "A-Z" does. Same argument as the player bar's Single and Consume keeping
+/// their words.
+pub fn sort_toggle<'a>(desc: bool) -> Element<'a, Message> {
+    let label = if desc { "Z\u{2013}A" } else { "A\u{2013}Z" };
+    with_tip(
+        button(text(label).size(12))
+            .on_press(Message::ToggleSortDirection)
+            .padding([4, 12])
+            .into(),
+        if desc { "Sort A to Z" } else { "Sort Z to A" },
+    )
+}
+
 /// The shared look for a compact glyph button: no background at rest, hover
 /// reveals `BG_HOVER` with accent text.
 fn icon_btn_style(_t: &iced::Theme, status: button::Status) -> button::Style {

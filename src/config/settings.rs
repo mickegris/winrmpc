@@ -82,6 +82,14 @@ pub struct AppConfig {
     /// doesn't feel inconsistent between them.
     #[serde(default)]
     pub album_grid_view: bool,
+    /// Z-A instead of A-Z for every name-sorted library list (Artists,
+    /// Albums, Genres, Playlists, and the album lists on Artist and Genre
+    /// detail). One flag for all of them, same reasoning as
+    /// `album_grid_view`: independent per-list sort memories would feel
+    /// arbitrary rather than helpful. The recency lists — Recently Added and
+    /// Recently Played — are not name-sorted and ignore it entirely.
+    #[serde(default)]
+    pub sort_desc: bool,
 
     // Multi-server
     /// Window geometry, restored at launch. See [`WindowConfig`].
@@ -228,6 +236,7 @@ impl Default for AppConfig {
             cd_device: None,
             recent_albums: Vec::new(),
             album_grid_view: false,
+            sort_desc: false,
             window: WindowConfig::default(),
             servers: vec![server],
             default_server: Some("Default".into()),

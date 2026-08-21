@@ -18,6 +18,10 @@ pub fn view<'a>(
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     grid_view: bool,
     current_song: Option<&'a Song>,
+    // `None` where the list isn't name-sorted (Recently Added), which is why
+    // this is an Option rather than a bool: the control must be absent
+    // there, not present and doing nothing.
+    sort_desc: Option<bool>,
 ) -> Element<'a, Message> {
     let body: Element<'a, Message> = if grid_view {
         let tiles: Vec<Element<'a, Message>> = albums
@@ -119,6 +123,14 @@ pub fn view<'a>(
                     .size(13)
                     .color(AppColors::text_muted()),
                 Space::with_width(Length::Fill),
+                // `None` on the recency lists: Recently Added is ordered by
+                // time, which is the only thing it's for, so the control is
+                // absent rather than present-and-ignored.
+                match sort_desc {
+                    Some(desc) => link::sort_toggle(desc),
+                    None => Space::with_width(0).into(),
+                },
+                Space::with_width(8),
                 album_grid::layout_toggle(grid_view),
             ]
             .align_y(Alignment::Center)

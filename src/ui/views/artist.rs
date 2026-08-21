@@ -14,6 +14,7 @@ pub fn view<'a>(
     bio: Option<&'a str>,
     show_bio: bool,
     current_song: Option<&'a Song>,
+    sort_desc: bool,
 ) -> Element<'a, Message> {
     // Fixed header
     let mut header = Column::new().spacing(4).padding(20);
@@ -57,6 +58,8 @@ pub fn view<'a>(
                         .size(14)
                         .color(AppColors::text_muted())
                 ),
+            Space::with_width(Length::Fill),
+            link::sort_toggle(sort_desc),
         ]
         .align_y(Alignment::Center),
     );

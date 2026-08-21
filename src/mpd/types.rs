@@ -765,6 +765,61 @@ impl RecentlyPlayedEntry {
     }
 }
 
+/// The comparator behind every A-Z / Z-A library list.
+///
+/// **Not `str::cmp`.** A plain `Vec<String>::sort()` is byte order, so every
+/// lowercase initial files after every uppercase one: `ZZ Top` (`Z` = 0x5A)
+/// sorts before `a-ha` (`a` = 0x61). A real library has `a-ha`, `dEUS`,
+/// `k.d. lang` and `will.i.am`, all of which were exiled past Z in the
+/// Artists list until this existed.
+///
+/// Case-folded first, then a byte-order tiebreak so the ordering stays
+/// **total** — names differing only in case must still have a defined
+/// order, or reversing the list twice isn't the identity and rows shuffle
+/// each time the direction is toggled.
+pub fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let folded = a.to_lowercase().cmp(&b.to_lowercase());
+    folded.then_with(|| a.cmp(b))
+}
+
+/// `name_cmp`, reversed when `desc`.
+pub fn name_cmp_dir(a: &str, b: &str, desc: bool) -> std::cmp::Ordering {
+    let ord = name_cmp(a, b);
+    if desc {
+        ord.reverse()
+    } else {
+        ord
+    }
+}
+
+/// Orders albums by artist, then by album title.
+///
+/// Reversing flips **both** keys, so Z-A gives the last artist first with
+/// that artist's albums also reversed. That is what a single reversed
+/// comparator gives, and what a reversed list looks like everywhere else in
+/// the app.
+pub fn album_group_cmp_dir(a: &AlbumGroup, b: &AlbumGroup, desc: bool) -> std::cmp::Ordering {
+    name_cmp(&a.artist, &b.artist)
+        .then_with(|| name_cmp(&a.base, &b.base))
+        .then_with(|| a.artist.cmp(&b.artist).then_with(|| a.base.cmp(&b.base)))
+        .pipe_reverse(desc)
+}
+
+/// Small helper so the `.then_with` chains above read in one direction.
+trait PipeReverse {
+    fn pipe_reverse(self, yes: bool) -> Self;
+}
+
+impl PipeReverse for std::cmp::Ordering {
+    fn pipe_reverse(self, yes: bool) -> Self {
+        if yes {
+            self.reverse()
+        } else {
+            self
+        }
+    }
+}
+
 /// Which `find` form a server accepts for the Recently Added query.
 ///
 /// The three rungs differ in *what* they call "recent" as much as in syntax,
@@ -1539,6 +1594,107 @@ mod tests {
         assert_eq!(v.len(), 8);
         // Most recent is at front
         assert_eq!(v[0].album, "9");
+    }
+
+    // --- name_cmp / list sorting --------------------------------------------
+
+    #[test]
+    fn name_cmp_files_lowercase_initials_where_they_belong() {
+        // The bug this replaces: `Vec<String>::sort()` is byte order, so
+        // every lowercase initial landed after every uppercase one. A real
+        // library has all four of these and they all sat past Z.
+        let mut v = vec!["ZZ Top", "a-ha", "will.i.am", "Blur", "dEUS", "k.d. lang"];
+        v.sort_by(|a, b| name_cmp(a, b));
+        assert_eq!(
+            v,
+            vec!["a-ha", "Blur", "dEUS", "k.d. lang", "will.i.am", "ZZ Top"]
+        );
+        // Explicitly: the byte comparison this replaced got it wrong.
+        assert!("ZZ Top" < "a-ha", "premise of the test no longer holds");
+    }
+
+    #[test]
+    fn name_cmp_is_a_total_order_across_case_only_differences() {
+        // Case-folding alone makes these Equal, which is not a total order:
+        // a sort could then leave them in either order and reversing twice
+        // would shuffle the list. The byte tiebreak is what fixes that.
+        assert_ne!(name_cmp("abba", "ABBA"), std::cmp::Ordering::Equal);
+        assert_eq!(name_cmp("ABBA", "abba"), std::cmp::Ordering::Less);
+        assert_eq!(name_cmp("abba", "abba"), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn reversing_the_sort_twice_is_the_identity() {
+        let names = ["ZZ Top", "abba", "ABBA", "a-ha", "Blur"];
+        let sorted = |desc: bool| {
+            let mut v = names.to_vec();
+            v.sort_by(|a, b| name_cmp_dir(a, b, desc));
+            v
+        };
+        let asc = sorted(false);
+        let mut back = sorted(true);
+        back.reverse();
+        assert_eq!(asc, back, "A-Z and reversed Z-A must agree");
+    }
+
+    #[test]
+    fn album_groups_sort_by_artist_then_album_and_keep_an_artist_together() {
+        let g = |artist: &str, base: &str| AlbumGroup {
+            artist: artist.into(),
+            base: base.into(),
+            variants: vec![base.into()],
+        };
+        let mut v = [
+            g("Slayer", "Reign in Blood"),
+            g("abba", "Arrival"),
+            g("Slayer", "Hell Awaits"),
+            g("ABBA", "Waterloo"),
+        ];
+        v.sort_by(|a, b| album_group_cmp_dir(a, b, false));
+        let seen: Vec<_> = v.iter().map(|x| (x.artist.as_str(), x.base.as_str())).collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("ABBA", "Waterloo"),
+                ("abba", "Arrival"),
+                ("Slayer", "Hell Awaits"),
+                ("Slayer", "Reign in Blood"),
+            ]
+        );
+        // Each artist's albums stay contiguous — the point of sorting on the
+        // artist key first.
+        v.sort_by(|a, b| album_group_cmp_dir(a, b, true));
+        let artists: Vec<_> = v.iter().map(|x| x.artist.to_lowercase()).collect();
+        let mut runs = artists.clone();
+        runs.dedup();
+        assert_eq!(
+            runs.len(),
+            2,
+            "an artist's albums were split apart: {artists:?}"
+        );
+    }
+
+    #[test]
+    fn album_group_reversal_is_also_an_involution() {
+        let g = |artist: &str, base: &str| AlbumGroup {
+            artist: artist.into(),
+            base: base.into(),
+            variants: vec![],
+        };
+        let src = [
+            g("Slayer", "Reign in Blood"),
+            g("abba", "Arrival"),
+            g("ABBA", "Arrival"),
+            g("Slayer", "Hell Awaits"),
+        ];
+        let sorted = |desc: bool| {
+            let mut v = src.to_vec();
+            v.sort_by(|a, b| album_group_cmp_dir(a, b, desc));
+            v
+        };
+        let mut back = sorted(true);
+        back.reverse();
+        assert_eq!(sorted(false), back);
     }
 
     // --- RecentlyAddedRung --------------------------------------------------
