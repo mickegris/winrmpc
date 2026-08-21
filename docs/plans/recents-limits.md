@@ -1,6 +1,8 @@
 # Plan: the limits on Recently Added and Recently Played
 
-Status: **planned** (targeting 0.4.4). Follow-up to
+Status: **Part A implemented** (0.4.4); **Part B not done** — Recently Played
+was reported as working, so its cap stays at 30 days / 100 entries. Follow-up
+to
 [`recently-added-and-played-history.md`](recently-added-and-played-history.md),
 which shipped both features in 0.4.2 and gave each a cap that is now the
 thing being hit.
@@ -78,6 +80,10 @@ mutex) so a legacy server isn't probed on every view entry.
 
 ### A3 — prefer `Added` over `Last-Modified` where the server has it
 
+*Implemented.* The ladder lives on `RecentlyAddedRung` in `src/mpd/types.rs`
+rather than in the client, so `query()` is a pure function and the ordering of
+`sort` before `window` is unit-testable.
+
 MPD 0.24 tracks a real database *add* time: the `added-since` filter and the
 `Added` sort name. That is the tag this view actually wants, and it is immune
 to the mtime problems above. The target server here is 0.24.0.
@@ -90,8 +96,10 @@ Same try-once-and-fall-back shape as A1, so the ladder is:
 `added-since` → `modified-since` + `sort` → `modified-since` unsorted. One
 cached capability flag per rung.
 
-This is separable from A1/A2 and can be dropped if the ladder feels like too
-much machinery for one view; A1 alone fixes the reported symptom.
+**Only an ACK falls through to the next rung.** A connection error propagates
+instead — walking the whole ladder on a dead socket would cache a rung the
+server never actually rejected, and the app would then permanently use a
+weaker query than it needs to.
 
 ### A4 — surface the window in the view
 
@@ -135,13 +143,23 @@ an album out entirely.
   `caps_at_100` test becomes the guard that the constant and the assertion
   can't drift apart.
 - **Live** (`live_tests.rs`, `#[ignore]`d): `live_recently_added_is_newest_first`
-  — request a window *smaller* than the number of matches, and assert the
-  result is descending by `last_modified`. That is the exact failure: with the
-  old query a small window returns an arbitrary slice, so this test fails
-  before the fix and passes after.
-- **Live**: `live_recently_added_added_since_is_supported` — records whether
-  the 0.24 rung is actually available on the test server, so A3's ladder isn't
-  guesswork.
+  — request a window *smaller* than the number of matches, assert the result
+  is descending by `last_modified`, then re-query with a wider window and
+  assert it surfaces nothing newer. That second half is what actually
+  distinguishes "sorted" from "an arbitrary slice that happened to come back
+  in order".
+- **Live**: `live_recently_added_reports_which_rung_the_server_answers_on` —
+  prints the highest supported rung and asserts it is cached rather than
+  re-probed, so A3's ladder isn't guesswork.
+
+### What landed
+
+| | |
+|---|---|
+| `src/mpd/types.rs` | `RecentlyAddedRung` — the three query forms, the ladder, `is_server_sorted()` |
+| `src/mpd/client.rs` | `find_recently_added` returns `(Vec<Song>, RecentlyAddedRung)`; `recently_added_rung: Arc<AtomicU8>` caches the probe across clones |
+| `src/ui/app.rs` | `RECENTLY_ADDED_DAYS` (90) / `RECENTLY_ADDED_LIMIT` (5000); handler toasts on error, logs on truncation, warns on an unsorted rung |
+| `src/ui/views/albums_list.rs` | optional `subtitle` — "· last 90 days" |
 
 ## Not doing
 

@@ -56,6 +56,19 @@ const TOAST_ERROR_SECS: u64 = 8;
 /// More than this on screen and they'd cover the content they're reporting on.
 const MAX_TOASTS: usize = 3;
 
+/// How far back Recently Added looks.
+const RECENTLY_ADDED_DAYS: i64 = 90;
+
+/// How many songs the Recently Added query may return.
+///
+/// The bound is not optional: an unbounded `added-since`/`modified-since`
+/// scan on a large library can outrun the socket read. What changed in 0.4.4
+/// is *which* songs the bound keeps — the query now sorts server-side, so the
+/// limit drops the oldest matches rather than an arbitrary slice of MPD's
+/// database order. Sized for albums, not tracks: these collapse to unique
+/// albums, so 5000 songs is roughly 350 rows.
+const RECENTLY_ADDED_LIMIT: u32 = 5000;
+
 /// A transient message shown over the main content.
 #[derive(Debug, Clone)]
 pub struct Toast {
@@ -1228,10 +1241,46 @@ impl App {
             // =================================================================
             // Recently Added / Recently Played history
             // =================================================================
-            Message::RecentlyAddedLoaded(mut songs) => {
-                // Newest-modified first; unknown last_modified sinks to the
-                // bottom rather than the top.
+            Message::RecentlyAddedLoaded(result) => {
+                let (mut songs, rung) = match result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // Previously `.unwrap_or_default()`, which rendered a
+                        // failed query as an empty library section — visually
+                        // identical to "nothing was added".
+                        self.toast_error(format!("Recently Added failed: {e}"));
+                        return Task::none();
+                    }
+                };
+
+                // Newest first; unknown last_modified sinks to the bottom
+                // rather than the top. Redundant on a server-sorted rung and
+                // kept anyway: it's the only ordering the unsorted rung gets,
+                // and it costs nothing on a list already in order.
                 songs.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+
+                // Hitting the limit exactly means older additions were cut.
+                // Without this the truncated list is indistinguishable from a
+                // complete one, which is exactly how the old query's silent
+                // truncation went unnoticed.
+                if songs.len() as u32 >= RECENTLY_ADDED_LIMIT {
+                    let oldest = songs
+                        .last()
+                        .and_then(|s| s.last_modified.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    tracing::info!(
+                        "Recently Added hit its {RECENTLY_ADDED_LIMIT}-song limit \
+                         (oldest shown: {oldest}); older additions are not listed"
+                    );
+                }
+                if !rung.is_server_sorted() {
+                    tracing::warn!(
+                        "This MPD server has no `sort` clause, so Recently Added shows an \
+                         arbitrary {RECENTLY_ADDED_LIMIT} of the matching songs rather than \
+                         the newest"
+                    );
+                }
+
                 let pairs: Vec<(String, String)> = songs
                     .iter()
                     .map(|s| (s.display_album_artist().to_string(), s.display_album().to_string()))
@@ -2686,6 +2735,7 @@ impl App {
                 views::albums_list::view(
                     &self.albums,
                     "Albums",
+                    None,
                     &self.art_handles,
                     self.config.album_grid_view,
                     self.current_song.as_ref(),
@@ -2698,6 +2748,7 @@ impl App {
                 views::albums_list::view(
                     &self.recently_added_albums,
                     "Recently Added",
+                    Some(format!("· last {RECENTLY_ADDED_DAYS} days")),
                     &self.art_handles,
                     self.config.album_grid_view,
                     self.current_song.as_ref(),
@@ -3593,13 +3644,14 @@ impl App {
                 let client = self.client.clone();
                 Task::perform(
                     async move {
-                        let since = (chrono::Utc::now() - chrono::Duration::days(30))
-                            .format("%Y-%m-%dT%H:%M:%SZ")
-                            .to_string();
+                        let since = (chrono::Utc::now()
+                            - chrono::Duration::days(RECENTLY_ADDED_DAYS))
+                        .format("%Y-%m-%dT%H:%M:%SZ")
+                        .to_string();
                         client
-                            .find_recently_added(&since, 2000)
+                            .find_recently_added(&since, RECENTLY_ADDED_LIMIT)
                             .await
-                            .unwrap_or_default()
+                            .map_err(|e| e.to_string())
                     },
                     Message::RecentlyAddedLoaded,
                 )

@@ -11,6 +11,10 @@ use std::collections::HashMap;
 pub fn view<'a>(
     albums: &'a [AlbumGroup],
     title: &'a str,
+    // A note under the count, e.g. the window Recently Added covers. Without
+    // it a list bounded by a query looks the same as a list that is simply
+    // short.
+    subtitle: Option<String>,
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     grid_view: bool,
     current_song: Option<&'a Song>,
@@ -109,6 +113,10 @@ pub fn view<'a>(
                 Space::with_width(12),
                 text(format!("{} albums", albums.len()))
                     .size(14)
+                    .color(AppColors::text_muted()),
+                Space::with_width(8),
+                text(subtitle.unwrap_or_default())
+                    .size(13)
                     .color(AppColors::text_muted()),
                 Space::with_width(Length::Fill),
                 album_grid::layout_toggle(grid_view),

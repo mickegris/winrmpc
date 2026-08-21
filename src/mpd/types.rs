@@ -765,6 +765,87 @@ impl RecentlyPlayedEntry {
     }
 }
 
+/// Which `find` form a server accepts for the Recently Added query.
+///
+/// The three rungs differ in *what* they call "recent" as much as in syntax,
+/// and the top one is the only one that means what the view says:
+///
+/// - `Added` is MPD 0.24's real database add-time. Immune to the mtime
+///   problem below.
+/// - `Last-Modified` is the file's mtime, which lies in both directions:
+///   `cp -p` / `rsync -a` / a restored backup carry the original date
+///   forward, so files added today can be years old and never appear, while
+///   editing a tag on an old file resurfaces it as "recently added".
+/// - The bottom rung is mtime *unsorted*, for servers with no `sort` clause
+///   (pre-0.22). There the `window` truncates MPD's database order — an
+///   effectively arbitrary slice — so the caller must sort what it gets and
+///   accept that the set itself may be wrong. It exists so an ancient server
+///   shows something rather than nothing.
+///
+/// Discriminants are the on-the-wire cache value in `MpdClient`; `0` is
+/// reserved for "not probed yet", so they start at 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RecentlyAddedRung {
+    /// MPD 0.24+ — database add-time, sorted server-side.
+    AddedSince = 1,
+    /// MPD 0.22+ — file mtime, sorted server-side.
+    ModifiedSinceSorted = 2,
+    /// Pre-0.22 — file mtime, unsorted; the caller must sort.
+    ModifiedSinceUnsorted = 3,
+}
+
+impl RecentlyAddedRung {
+    /// The rung tried first on an unprobed server.
+    pub const TOP: Self = Self::AddedSince;
+
+    pub fn from_repr(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(Self::AddedSince),
+            2 => Some(Self::ModifiedSinceSorted),
+            3 => Some(Self::ModifiedSinceUnsorted),
+            _ => None,
+        }
+    }
+
+    /// This rung and every weaker one, in the order they should be tried.
+    pub fn from(start: Self) -> impl Iterator<Item = Self> {
+        [
+            Self::AddedSince,
+            Self::ModifiedSinceSorted,
+            Self::ModifiedSinceUnsorted,
+        ]
+        .into_iter()
+        .skip_while(move |r| *r != start)
+    }
+
+    /// Whether the server orders the result for us. When false the caller's
+    /// own sort is the only ordering there is — and the `window` has already
+    /// chosen *which* rows, so sorting can't recover the ones it dropped.
+    pub fn is_server_sorted(self) -> bool {
+        !matches!(self, Self::ModifiedSinceUnsorted)
+    }
+
+    /// The `find` command for this rung. `since` must already be escaped.
+    ///
+    /// `sort` runs **before** `window` in MPD, which is the whole point: a
+    /// descending sort (the `-` prefix) makes the limit drop the *oldest*
+    /// matches instead of an arbitrary slice of database order.
+    pub fn query(self, since: &str, limit: u32) -> String {
+        match self {
+            Self::AddedSince => {
+                format!("find \"(added-since '{since}')\" sort -Added window 0:{limit}")
+            }
+            Self::ModifiedSinceSorted => format!(
+                "find \"(modified-since '{since}')\" sort -Last-Modified window 0:{limit}"
+            ),
+            Self::ModifiedSinceUnsorted => {
+                format!("find \"(modified-since '{since}')\" window 0:{limit}")
+            }
+        }
+    }
+}
+
 /// Drop entries older than 30 days, then cap at the 100 newest. `entries`
 /// must already be newest-first; this never reorders.
 pub fn prune_recently_played(entries: &mut Vec<RecentlyPlayedEntry>, now: i64) {
@@ -1458,6 +1539,86 @@ mod tests {
         assert_eq!(v.len(), 8);
         // Most recent is at front
         assert_eq!(v[0].album, "9");
+    }
+
+    // --- RecentlyAddedRung --------------------------------------------------
+
+    #[test]
+    fn recently_added_top_rung_sorts_by_added_descending() {
+        // `sort` must come before `window`: MPD applies them in that order,
+        // and that ordering is the whole fix — it makes the limit drop the
+        // oldest matches instead of an arbitrary slice of database order.
+        let q = RecentlyAddedRung::AddedSince.query("2026-01-01T00:00:00Z", 5000);
+        assert_eq!(
+            q,
+            "find \"(added-since '2026-01-01T00:00:00Z')\" sort -Added window 0:5000"
+        );
+        assert!(q.find("sort").unwrap() < q.find("window").unwrap());
+    }
+
+    #[test]
+    fn recently_added_middle_rung_sorts_by_last_modified_descending() {
+        let q = RecentlyAddedRung::ModifiedSinceSorted.query("2026-01-01T00:00:00Z", 10);
+        assert_eq!(
+            q,
+            "find \"(modified-since '2026-01-01T00:00:00Z')\" sort -Last-Modified window 0:10"
+        );
+        // The minus is what makes it *descending*. Without it the window
+        // keeps the oldest additions, i.e. exactly the wrong end.
+        assert!(q.contains("sort -Last-Modified"));
+    }
+
+    #[test]
+    fn recently_added_bottom_rung_is_the_legacy_unsorted_query() {
+        let q = RecentlyAddedRung::ModifiedSinceUnsorted.query("2026-01-01T00:00:00Z", 10);
+        assert_eq!(q, "find \"(modified-since '2026-01-01T00:00:00Z')\" window 0:10");
+        assert!(!q.contains("sort"));
+    }
+
+    #[test]
+    fn only_the_bottom_rung_needs_a_client_side_sort() {
+        assert!(RecentlyAddedRung::AddedSince.is_server_sorted());
+        assert!(RecentlyAddedRung::ModifiedSinceSorted.is_server_sorted());
+        assert!(!RecentlyAddedRung::ModifiedSinceUnsorted.is_server_sorted());
+    }
+
+    #[test]
+    fn the_ladder_descends_and_never_retries_a_rung_already_rejected() {
+        let from_top: Vec<_> = RecentlyAddedRung::from(RecentlyAddedRung::TOP).collect();
+        assert_eq!(
+            from_top,
+            vec![
+                RecentlyAddedRung::AddedSince,
+                RecentlyAddedRung::ModifiedSinceSorted,
+                RecentlyAddedRung::ModifiedSinceUnsorted,
+            ]
+        );
+        // A server already known to lack `added-since` must not be asked for
+        // it again on every view entry.
+        let from_middle: Vec<_> =
+            RecentlyAddedRung::from(RecentlyAddedRung::ModifiedSinceSorted).collect();
+        assert_eq!(
+            from_middle,
+            vec![
+                RecentlyAddedRung::ModifiedSinceSorted,
+                RecentlyAddedRung::ModifiedSinceUnsorted,
+            ]
+        );
+        assert_eq!(
+            RecentlyAddedRung::from(RecentlyAddedRung::ModifiedSinceUnsorted).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rung_discriminants_round_trip_and_reserve_zero_for_unprobed() {
+        // `MpdClient` caches the rung as a `u8` where 0 means "not probed",
+        // so no rung may claim it.
+        assert_eq!(RecentlyAddedRung::from_repr(0), None);
+        for r in RecentlyAddedRung::from(RecentlyAddedRung::TOP) {
+            assert_eq!(RecentlyAddedRung::from_repr(r as u8), Some(r));
+            assert_ne!(r as u8, 0);
+        }
     }
 
     // --- prune_recently_played ---------------------------------------------

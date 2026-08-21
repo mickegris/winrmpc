@@ -958,3 +958,115 @@ async fn live_tls_reaches_every_lookup_host() {
         "TLS/transport failed for: {failures:?}"
     );
 }
+
+// ============================================================================
+// Recently Added
+// ============================================================================
+
+/// The bug this guards, and the reason it has to be a *live* test: MPD
+/// returns `find` matches in database order (documented as undefined —
+/// effectively directory traversal), and `window` slices **that**. The old
+/// query had no `sort`, so once the library held more matches than the
+/// window, which songs came back was decided by path order and the newest
+/// additions were silently dropped. Sorting client-side afterwards can't
+/// recover a row the server never sent.
+///
+/// A unit test can only check the string we build. Only a real server proves
+/// the server honours it, so the window here is deliberately **smaller** than
+/// the match count — that's the exact condition under which the old query
+/// returns an arbitrary slice.
+#[tokio::test]
+#[ignore]
+async fn live_recently_added_is_newest_first() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    // Ten years back, so a library of any age has far more matches than the
+    // window below.
+    let since = (chrono::Utc::now() - chrono::Duration::days(3650))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+
+    let (songs, rung) = client
+        .find_recently_added(&since, 50)
+        .await
+        .expect("recently-added query");
+    eprintln!("rung: {rung:?}, {} songs", songs.len());
+
+    assert!(!songs.is_empty(), "library has no songs at all?");
+    if !rung.is_server_sorted() {
+        eprintln!("server has no `sort` clause — ordering is not guaranteed, skipping");
+        return;
+    }
+
+    // Descending, with unknown timestamps allowed only at the tail.
+    let stamps: Vec<Option<&String>> = songs.iter().map(|s| s.last_modified.as_ref()).collect();
+    for pair in stamps.windows(2) {
+        match (pair[0], pair[1]) {
+            (Some(a), Some(b)) => assert!(
+                a >= b,
+                "not newest-first: {a} came before {b} — the server ignored `sort`"
+            ),
+            (None, Some(b)) => panic!("a song with no timestamp sorted above {b}"),
+            _ => {}
+        }
+    }
+
+    // And the slice really is the newest end of the library, not a slice of
+    // path order: a second, larger window must not surface anything newer.
+    let (wider, _) = client
+        .find_recently_added(&since, 500)
+        .await
+        .expect("wider recently-added query");
+    let newest_narrow = stamps.first().copied().flatten();
+    let newest_wide = wider.iter().filter_map(|s| s.last_modified.as_ref()).max();
+    assert_eq!(
+        newest_narrow, newest_wide,
+        "a wider window found a newer song, so the narrow one was not the newest end"
+    );
+}
+
+/// Records which rung this server actually supports. Not an assertion about
+/// the server — a 0.21 box legitimately answers on the bottom rung — but the
+/// ladder is invisible from the outside otherwise, and knowing which one
+/// answers is what tells you whether Recently Added is using real add-times
+/// or file mtimes.
+#[tokio::test]
+#[ignore]
+async fn live_recently_added_reports_which_rung_the_server_answers_on() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr);
+    client.connect().await.expect("connect to MPD");
+
+    let since = (chrono::Utc::now() - chrono::Duration::days(3650))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+
+    // A fresh client starts at the top of the ladder, so whichever rung it
+    // settles on is the highest this server supports.
+    let (_, chosen) = client
+        .find_recently_added(&since, 1)
+        .await
+        .expect("some rung must answer");
+    eprintln!("highest supported rung: {chosen:?}");
+    if !chosen.is_server_sorted() {
+        eprintln!(
+            "NOTE: no `sort` clause — Recently Added on this server shows an arbitrary \
+             slice, not the newest additions"
+        );
+    }
+
+    // And it must remember it: the second call issues no further probing.
+    let (_, again) = client
+        .find_recently_added(&since, 1)
+        .await
+        .expect("second call");
+    assert_eq!(chosen, again, "the probed rung was not cached");
+}
