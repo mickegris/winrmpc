@@ -4,9 +4,40 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-21. **v0.4.4 released** — merged via PR #27, tagged, and
-CI attached all three binaries (Linux tarball, Windows `.exe`, macOS `.app`
-zip). All seven jobs green.
+Last updated: 2026-08-21. **v0.4.5 released** — a bug-fix release for two
+defects the live suite found in 0.4.4.
+
+## 0.4.5 — what shipped
+
+The live suite had never been run against a real server during the 0.4.4 cycle.
+It was, and it found two defects that **cannot be reproduced offline**:
+
+| Defect | Why no offline test could catch it |
+|---|---|
+| `RecentlyAddedLoaded` re-sorted by `last_modified`, discarding the `sort -Added` order it had just requested | A fixture can't have a uniform mtime. On 10.0.1.3 every file reports the same `Last-Modified` (a mass rewrite) while `Added` spans eight months, so mtime there is nearly noise |
+| `fold_album_added` keyed on the raw `AlbumArtist` tag; MPD substitutes `Artist` when it's absent | A mock server can't disagree with itself about a fallback tag. Cost: 453 of 801 album rows had no add-time |
+
+`live_diagnose_album_added_coverage` is kept as a permanent diagnostic — it
+prints the mismatched keys and is what found the second one.
+
+### Verified against the real server (10.0.1.3, MPD 0.24.0)
+
+**19 of 19 live tests pass**, including the two network-gated ones
+(`WINRMPC_TEST_NETWORK=1`). Numbers worth keeping:
+
+- The add-time walk is **801 albums in 2 pages, ~115ms** — `ADDED_PAGE`
+  (10 000) is comfortable and the Added sort is effectively instant, which had
+  been flagged as unknown.
+- Add-times span 2026-01-05 → 2026-08-21; the server answers on the
+  `AddedSince` rung.
+- Album add-time coverage is **801 of 801**.
+
+### Still not verified
+
+- **No manual UI pass** for 0.4.4 or 0.4.5. Worth eyeballing: a track with a
+  long artist *and* long album in the player bar (it should truncate, not
+  collide with Previous, and the bar's height shouldn't change between
+  tracks), and the sort controls' placement in all six list headers.
 
 ## Pending for 0.4.5 — mention in the release notes
 

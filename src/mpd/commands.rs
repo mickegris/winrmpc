@@ -83,6 +83,7 @@ pub fn parse_song(pairs: &[(String, String)]) -> Song {
             "Pos" => song.pos = v.parse().ok(),
             "Id" => song.id = v.parse().ok(),
             "Last-Modified" => song.last_modified = Some(v.clone()),
+            "Added" => song.added = Some(v.clone()),
             "Composer" => song.composer = Some(v.clone()),
             "Performer" => song.performer = Some(v.clone()),
             "Comment" => song.comment = Some(v.clone()),

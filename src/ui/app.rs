@@ -1277,11 +1277,26 @@ impl App {
                     }
                 };
 
-                // Newest first; unknown last_modified sinks to the bottom
-                // rather than the top. Redundant on a server-sorted rung and
-                // kept anyway: it's the only ordering the unsorted rung gets,
-                // and it costs nothing on a list already in order.
-                songs.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+                // Sort by the field the *rung* ordered on, not always by
+                // `last_modified`.
+                //
+                // This was a real shipped bug in 0.4.4: the top rung asks for
+                // `sort -Added`, and re-sorting the result by mtime threw that
+                // ordering away and replaced it with a worse one. On the test
+                // library every file reports the same `Last-Modified` (a mass
+                // rewrite) while `Added` spans months, so the whole point of
+                // reaching for 0.24's add-time was being discarded one line
+                // after it arrived. `live_recently_added_is_newest_first`
+                // caught it.
+                //
+                // `None` sorts last either way: `Option`'s ordering puts it
+                // below every `Some`, and this compare is reversed.
+                match rung {
+                    RecentlyAddedRung::AddedSince => {
+                        songs.sort_by(|a, b| b.added.cmp(&a.added))
+                    }
+                    _ => songs.sort_by(|a, b| b.last_modified.cmp(&a.last_modified)),
+                }
 
                 // Hitting the limit exactly means older additions were cut.
                 // Without this the truncated list is indistinguishable from a
@@ -1290,7 +1305,7 @@ impl App {
                 if songs.len() as u32 >= RECENTLY_ADDED_LIMIT {
                     let oldest = songs
                         .last()
-                        .and_then(|s| s.last_modified.clone())
+                        .and_then(|s| s.added.clone().or_else(|| s.last_modified.clone()))
                         .unwrap_or_else(|| "unknown".to_string());
                     tracing::info!(
                         "Recently Added hit its {RECENTLY_ADDED_LIMIT}-song limit \
