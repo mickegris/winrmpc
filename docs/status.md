@@ -4,9 +4,52 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-16. **v0.4.3 released** — all eight 0.4.3 plans shipped,
-plus the fixes that came out of testing it on Linux and macOS. Binaries for
-Windows, macOS and Linux are attached to the release, built by CI.
+Last updated: 2026-08-21. **Working on 0.4.4**, on branch
+`improve/recents-and-player-bar-links-0.4.4`. Not released, not merged.
+
+## 0.4.4 — on the branch
+
+| | Plan |
+|---|---|
+| **Recently Added truncated the wrong end** — the reported bug | [recents-limits](plans/recents-limits.md) |
+| Player bar's artist/album are links | [player-bar-clickable-links](plans/player-bar-clickable-links.md) |
+| A–Z / Z–A sorting for six library lists | [list-sorting](plans/list-sorting.md) |
+
+The Recently Added fix is the one worth remembering: `find "(modified-since
+…)" window 0:2000` sliced MPD's database order and the client sorted the
+survivors, so past 2000 matches *which* albums appeared was decided by path
+order. It now sorts server-side (`sort` runs before `window`), via a three-rung
+ladder down from 0.24's real `added-since` add-time.
+
+Two bugs came out of the work rather than the report:
+- `Vec<String>::sort()` is byte order, so `a-ha`, `dEUS`, `k.d. lang` and
+  `will.i.am` were all filed past `ZZ Top` in the Artists list.
+- Splitting the player bar's one `text` into two links loses the word wrap
+  that kept it inside its 250px slot; without a clip container it would draw
+  over the transport buttons.
+
+**262 offline tests (was 246), 17 live.** Clippy is clean on the changed
+code — note the repo has 15 pre-existing warnings under a newer clippy than
+CI pins, and `cargo fmt --check` was already dirty before this branch.
+
+### Not verified yet
+
+- **Nothing here has been run against the real server.** The Recently Added
+  live tests (`live_recently_added_is_newest_first`,
+  `live_recently_added_reports_which_rung_the_server_answers_on`) are the
+  acceptance check and need `WINRMPC_TEST_MPD=10.0.1.3:6600 cargo test --
+  --ignored --test-threads=1`. The first is designed to fail on the old query.
+- **No manual UI pass.** Specifically worth eyeballing: a track with a long
+  artist *and* long album, to confirm the player bar truncates rather than
+  colliding with Previous and that the bar's height stops changing between
+  tracks; and the A–Z/Z–A button's placement in all six headers.
+- Recently Played was reported as working and is **untouched** — its 30-day /
+  100-entry cap stands (Part B of the recents plan, deliberately not done).
+
+### Suggested next
+
+1. Run the live suite against 10.0.1.3, then the manual UI pass.
+2. Version bump + release via the `release` skill.
 
 ## 0.4.3 — what shipped
 
