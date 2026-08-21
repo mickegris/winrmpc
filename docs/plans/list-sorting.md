@@ -104,31 +104,36 @@ The first cut sorted albums artist-then-title, which reads as unsorted to
 anyone scanning the column of titles. Albums now sort on the **title**, with
 the artist as the tiebreak.
 
-Two more keys landed with it — **Year** and **Added** — as a Name/Year/Added
-picker beside the direction button, whose wording follows the key ("A–Z"/"Z–A"
-for names, "Oldest"/"Newest" for dates). A missing year or add-time sorts
-**last in both directions**: the unknown check sits outside the reversal,
-because an undated album heading a "Newest" list would read as data rather
-than as a gap.
+One more key landed with it — **Added** — as a Name/Added picker beside the
+direction button, whose wording follows the key ("A–Z"/"Z–A" for names,
+"Oldest"/"Newest" for dates). A missing add-time sorts **last in both
+directions**: the unknown check sits outside the reversal, because an album
+the walk never reached heading a "Newest" list would read as data rather than
+as a gap.
 
-The cost asymmetry between the two is the design:
+Add-times have no `list` equivalent — `Added` is not a tag — so they need a
+paged walk of every song, done only when the Added sort is selected and folded
+down to three fields per song without building a `Song`.
 
-- **Years** come from `list Date group AlbumArtist group Album` once on
-  connect. `list` returns one line per distinct value, so a whole library is a
-  few thousand lines.
-- **Add-times** have no `list` equivalent — `Added` is not a tag — so they
-  need a paged walk of every song, done only when the Added sort is selected
-  and folded down to three fields per song without building a `Song`.
+### Tried and removed: sorting by release year
+
+Year sorting was built and then taken out before release. It read
+`list Date group AlbumArtist group Album`, which is cheap — `list` returns one
+line per distinct value, not one per song — but rests on an assumption about
+how MPD nests two `group` levels that was never confirmed against a real
+server. A swapped nesting attaches every year to the wrong album, silently and
+plausibly enough to survive a review. The on-row year display went with it,
+since it drew on the same unverified query. Re-adding means confirming the
+nesting first.
 
 ## What landed
 
 | | |
 |---|---|
-| `src/mpd/types.rs` | `name_cmp` / `name_cmp_dir` / `SortKey` / `album_cmp` / `parse_year` / `album_year_index` / `fold_album_added` |
-| `src/mpd/commands.rs` | `parse_grouped_values2` — two nested `group` levels, clearing the inner one when the outer changes |
-| `src/mpd/client.rs` | `list_album_years`, `added_page` |
+| `src/mpd/types.rs` | `name_cmp` / `name_cmp_dir` / `SortKey` / `album_cmp` / `fold_album_added` |
+| `src/mpd/client.rs` | `added_page` |
 | `src/config/settings.rs` | `sort_desc: bool`, `#[serde(default)]` |
-| `src/ui/app.rs` | `App::sort_library_lists()` + `load_album_added()`; `album_years` / `album_added` state, cleared on `SwitchServer` |
+| `src/ui/app.rs` | `App::sort_library_lists()` + `load_album_added()`; `album_added` state, cleared on `SwitchServer` |
 | `src/ui/widgets/link.rs` | `sort_toggle(desc)` for name-only lists, `album_sort_controls(key, desc)` for the album lists |
 | six view headers | `artists_list`, `genres_list`, `playlists_list`, `albums_list` (as `Option<bool>`), `artist`, `genre_detail` |
 

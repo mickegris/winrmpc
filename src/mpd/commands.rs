@@ -240,37 +240,6 @@ pub fn parse_grouped_values(
     out
 }
 
-/// [`parse_grouped_values`] for two nested `group` levels, as returned by
-/// `list {value} group {outer} group {inner}`.
-///
-/// MPD emits a group header only when that group's value *changes*, and the
-/// groups nest in the order they were given — so when `outer` changes, any
-/// remembered `inner` belongs to the previous outer group and must be
-/// cleared. Without that a year could leak sideways onto the first album of
-/// the next artist, which is exactly the kind of wrong-but-plausible data
-/// that never gets noticed.
-pub fn parse_grouped_values2(
-    pairs: &[(String, String)],
-    outer: &str,
-    inner: &str,
-    value_key: &str,
-) -> Vec<(String, String, String)> {
-    let mut cur_outer = String::new();
-    let mut cur_inner = String::new();
-    let mut out = Vec::new();
-    for (k, v) in pairs {
-        if k == outer {
-            cur_outer = v.clone();
-            cur_inner.clear();
-        } else if k == inner {
-            cur_inner = v.clone();
-        } else if k == value_key {
-            out.push((cur_outer.clone(), cur_inner.clone(), v.clone()));
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,51 +468,6 @@ mod tests {
     #[test]
     fn parse_grouped_values_empty_input() {
         assert!(parse_grouped_values(&[], "AlbumArtist", "Album").is_empty());
-    }
-
-    #[test]
-    fn parse_grouped_values2_reads_nested_groups() {
-        let p = pairs(&[
-            ("AlbumArtist", "Slayer"),
-            ("Album", "Reign in Blood"),
-            ("Date", "1986"),
-            ("Date", "2013"),
-            ("Album", "Hell Awaits"),
-            ("Date", "1985"),
-        ]);
-        assert_eq!(
-            parse_grouped_values2(&p, "AlbumArtist", "Album", "Date"),
-            vec![
-                ("Slayer".into(), "Reign in Blood".into(), "1986".into()),
-                ("Slayer".into(), "Reign in Blood".into(), "2013".into()),
-                ("Slayer".into(), "Hell Awaits".into(), "1985".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_grouped_values2_clears_the_inner_group_when_the_outer_changes() {
-        // MPD emits a group header only when that group's value changes, so
-        // a remembered inner value belongs to the *previous* outer group.
-        // Without clearing, this year leaks sideways onto another artist's
-        // album — wrong but entirely plausible data.
-        let p = pairs(&[
-            ("AlbumArtist", "Slayer"),
-            ("Album", "Reign in Blood"),
-            ("Date", "1986"),
-            ("AlbumArtist", "ABBA"),
-            ("Date", "1976"),
-        ]);
-        let got = parse_grouped_values2(&p, "AlbumArtist", "Album", "Date");
-        assert_eq!(got, vec![
-            ("Slayer".into(), "Reign in Blood".into(), "1986".into()),
-            ("ABBA".into(), String::new(), "1976".into()),
-        ]);
-    }
-
-    #[test]
-    fn parse_grouped_values2_empty_input() {
-        assert!(parse_grouped_values2(&[], "AlbumArtist", "Album", "Date").is_empty());
     }
 
     #[test]

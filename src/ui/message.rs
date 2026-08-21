@@ -112,8 +112,6 @@ pub enum Message {
     /// One page of the add-time walk, or the error that ended it. The `u32`
     /// is the page index, so the handler knows which page to ask for next.
     AlbumAddedPage(u32, Result<Vec<(String, String)>, String>),
-    /// Every album's release year, from the cheap `list Date …` on connect.
-    AlbumYearsLoaded(Vec<(String, String, String)>),
     /// Flip every name-sorted library list between A-Z and Z-A. Re-sorts
     /// what is already loaded rather than refetching — the data is in hand,
     /// and a round trip to reverse a list the user is looking at would show

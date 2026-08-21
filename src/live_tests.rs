@@ -1255,59 +1255,6 @@ async fn a_connection_error_does_not_walk_the_ladder() {
     );
 }
 
-/// `list Date group AlbumArtist group Album` is a guess about MPD's nesting
-/// until a real server answers it. If the two group levels come back the
-/// other way round — or nested grouping isn't supported at all — every year
-/// is silently attached to the wrong album, which is precisely the kind of
-/// wrong-but-plausible data that survives a code review.
-#[tokio::test]
-#[ignore]
-async fn live_album_years_attach_to_the_right_albums() {
-    let Some(addr) = mpd_addr() else {
-        eprintln!("skipping: set WINRMPC_TEST_MPD");
-        return;
-    };
-    let client = MpdClient::new(&addr);
-    client.connect().await.expect("connect to MPD");
-
-    let triples = client.list_album_years().await.expect("list Date");
-    assert!(
-        !triples.is_empty(),
-        "no (artist, album, date) triples — either the library has no Date \
-         tags or the nested `group` isn't parsing"
-    );
-
-    let index = album_year_index(&triples);
-    eprintln!("{} albums carry a year, from {} triples", index.len(), triples.len());
-    assert!(!index.is_empty(), "no triple yielded a parseable year");
-
-    // The album names must be real albums, not artist names in the wrong
-    // slot — which is exactly what a swapped nesting would produce.
-    let albums = client
-        .list_albums_by_artist()
-        .await
-        .expect("album list to check against");
-    let known: std::collections::HashSet<String> = albums
-        .iter()
-        .map(|(artist, album)| {
-            album_scoped_key(Some(artist), &album_base_and_disc(album).0)
-        })
-        .collect();
-    let matched = index.keys().filter(|k| known.contains(*k)).count();
-    eprintln!("{matched} of {} year keys match a real album row", index.len());
-    assert!(
-        matched * 2 > index.len(),
-        "fewer than half the year keys match an album in the library — the \
-         group nesting is probably the other way round"
-    );
-
-    // Years must be plausible; a catalogue number read as a year would show
-    // up here.
-    for (_, y) in index.iter().take(200) {
-        assert!((1900..=2100).contains(y), "implausible year {y}");
-    }
-}
-
 /// The add-time walk against a real library: paging must terminate, cover
 /// most albums, and produce timestamps that actually sort.
 ///

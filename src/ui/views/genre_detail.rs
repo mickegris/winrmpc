@@ -39,13 +39,6 @@ pub fn view<'a>(
         if !album.artist.is_empty() {
             label = label.push(link::artist_link(&album.artist, 12));
         }
-        if let Some(year) = album.year {
-            label = label.push(
-                text(year.to_string())
-                    .size(11)
-                    .color(AppColors::text_muted()),
-            );
-        }
         if album.variants.len() > 1 {
             label = label.push(
                 text(format!("{} discs", album.variants.len()))

@@ -162,14 +162,6 @@ pub fn view<'a>(
         ]
         .align_y(Alignment::Center);
 
-        if let Some(year) = group.year {
-            label = label.push(Space::with_width(8));
-            label = label.push(
-                text(year.to_string())
-                    .size(11)
-                    .color(AppColors::text_muted()),
-            );
-        }
         if group.variants.len() > 1 {
             label = label.push(Space::with_width(8));
             label = label.push(

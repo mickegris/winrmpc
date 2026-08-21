@@ -123,13 +123,9 @@ pub struct App {
     genres: Vec<String>,
     artist_albums: HashMap<String, Vec<AlbumGroup>>,
     genre_albums: HashMap<String, Vec<AlbumGroup>>,
-    /// `album_scoped_key` -> release year, from one cheap `list Date …` on
-    /// connect. Stamped onto every `AlbumGroup` in `sort_library_lists`, so a
-    /// list loaded before this arrives picks the years up on the next sort.
-    album_years: HashMap<String, i32>,
     /// `album_scoped_key` -> newest add-time. Loaded **lazily**, only when
-    /// the Added sort is actually selected: unlike the years, this needs a
-    /// paged walk of every song in the library.
+    /// the Added sort is actually selected — it needs a paged walk of every
+    /// song in the library, since `Added` is not a tag `list` can enumerate.
     album_added: HashMap<String, String>,
     /// Guards against starting a second add-time walk while one is running.
     album_added_loading: bool,
@@ -380,7 +376,6 @@ impl App {
             genres: Vec::new(),
             artist_albums: HashMap::new(),
             genre_albums: HashMap::new(),
-            album_years: HashMap::new(),
             album_added: HashMap::new(),
             album_added_loading: false,
             album_songs: HashMap::new(),
@@ -1353,12 +1348,6 @@ impl App {
                     self.toast_info("Reading add times from the server…");
                     return self.load_album_added(0);
                 }
-                Task::none()
-            }
-            Message::AlbumYearsLoaded(triples) => {
-                self.album_years = album_year_index(&triples);
-                tracing::info!("Loaded release years for {} albums", self.album_years.len());
-                self.sort_library_lists();
                 Task::none()
             }
             Message::AlbumAddedPage(page, result) => {
@@ -2427,10 +2416,9 @@ impl App {
                 Task::none()
             }
             Message::SwitchServer(name) => {
-                // Both index the *previous* server's library; keeping them
-                // would silently order the new server's albums by another
+                // Indexes the *previous* server's library; keeping it would
+                // silently order the new server's albums by another
                 // machine's dates.
-                self.album_years.clear();
                 self.album_added.clear();
                 self.album_added_loading = false;
                 if name == self.active_server {
@@ -2763,20 +2751,14 @@ impl App {
         let desc = self.config.sort_desc;
         let key = self.config.sort_key;
 
-        // Name-only lists ignore `sort_key` — an artist has no year.
+        // Name-only lists ignore `sort_key` — an artist has no add-time.
         self.artists.sort_by(|a, b| name_cmp_dir(a, b, desc));
         self.genres.sort_by(|a, b| name_cmp_dir(a, b, desc));
         self.playlists
             .sort_by(|a, b| name_cmp_dir(&a.name, &b.name, desc));
 
-        let years = &self.album_years;
         let added = &self.album_added;
         let sort_albums = |albums: &mut Vec<AlbumGroup>| {
-            // Stamp the years on first, so a list that loaded before the
-            // year query landed still sorts by them.
-            for g in albums.iter_mut() {
-                g.year = years.get(&album_scoped_key(Some(&g.artist), &g.base)).copied();
-            }
             albums.sort_by(|a, b| {
                 let ka = album_scoped_key(Some(&a.artist), &a.base);
                 let kb = album_scoped_key(Some(&b.artist), &b.base);
@@ -3151,7 +3133,6 @@ impl App {
         let c4 = self.client.clone();
         let c5 = self.client.clone();
         let c6 = self.client.clone();
-        let c7 = self.client.clone();
 
         let status_task = Task::perform(
             async move { c1.status().await.ok().map(Box::new) },
@@ -3193,15 +3174,6 @@ impl App {
             },
         );
 
-        // Cheap enough to fetch unconditionally: `list` returns one line
-        // per *distinct* value, so this is a few thousand lines for a whole
-        // library rather than one per song. The add-times are the opposite,
-        // which is why they're loaded only on demand.
-        let years_task = Task::perform(
-            async move { c7.list_album_years().await.unwrap_or_default() },
-            Message::AlbumYearsLoaded,
-        );
-
         Task::batch([
             status_task,
             song_task,
@@ -3209,7 +3181,6 @@ impl App {
             outputs_task,
             partitions_task,
             replay_gain_task,
-            years_task,
         ])
     }
 

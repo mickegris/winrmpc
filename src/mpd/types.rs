@@ -301,15 +301,6 @@ pub struct AlbumGroup {
     pub artist: String,
     pub base: String,
     pub variants: Vec<String>,
-    /// Earliest `Date` tag seen across the group, or `None` when the album
-    /// carries no date. Earliest rather than latest because a reissue's
-    /// tracks often carry the reissue year while one or two keep the
-    /// original — the original is what "release year" means on a row.
-    ///
-    /// Filled by `apply_album_years` from a separate `list Date …` query, so
-    /// it is `None` until that lands (and stays `None` on a server where the
-    /// query fails).
-    pub year: Option<i32>,
 }
 
 /// Groups `(album_artist, album)` pairs (as returned by
@@ -343,7 +334,6 @@ pub fn group_albums_by_artist(pairs: &[(String, String)]) -> Vec<AlbumGroup> {
                     artist: artist.clone(),
                     base,
                     variants: vec![album.clone()],
-                    year: None,
                 });
             }
         }
@@ -802,44 +792,6 @@ pub fn name_cmp_dir(a: &str, b: &str, desc: bool) -> std::cmp::Ordering {
     }
 }
 
-/// The year out of a `Date` tag, which is not reliably a year: real tags hold
-/// `1990`, `1990-05-01`, `1990/2003` and worse. Takes the first four-digit
-/// run in a plausible range and ignores the rest.
-pub fn parse_year(date: &str) -> Option<i32> {
-    let b = date.as_bytes();
-    for i in 0..b.len().saturating_sub(3) {
-        if b[i..i + 4].iter().all(|c| c.is_ascii_digit()) {
-            // A four-digit run may still be a catalogue number; the range
-            // check is what keeps `VICP-6085` out.
-            let y: i32 = date[i..i + 4].parse().ok()?;
-            if (1000..=2999).contains(&y) {
-                return Some(y);
-            }
-        }
-    }
-    None
-}
-
-/// Folds `list Date group AlbumArtist group Album` triples into one year per
-/// album, keyed like [`album_scoped_key`] and **disc-collapsed** so a set's
-/// discs share the entry their single collapsed row will look up.
-///
-/// Keeps the **earliest** year: a reissue's tracks often carry the reissue
-/// date while one or two keep the original, and the original is what a
-/// "release year" column means.
-pub fn album_year_index(triples: &[(String, String, String)]) -> HashMap<String, i32> {
-    let mut out: HashMap<String, i32> = HashMap::new();
-    for (artist, album, date) in triples {
-        let Some(year) = parse_year(date) else { continue };
-        let base = album_base_and_disc(album).0;
-        let key = album_scoped_key(Some(artist), &base);
-        out.entry(key)
-            .and_modify(|y| *y = (*y).min(year))
-            .or_insert(year);
-    }
-    out
-}
-
 /// Accumulates each album's **newest** add-time from one page of raw `find`
 /// pairs, without ever building a `Song`.
 ///
@@ -900,19 +852,16 @@ pub enum SortKey {
     /// is expected to run A-Z by the name on the row, and sorting by artist
     /// first makes it look unsorted to anyone reading the titles.
     Name,
-    /// Release year, from the `Date` tag.
-    Year,
     /// When the file entered MPD's database (0.24's `Added`, else mtime).
     Added,
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 3] = [SortKey::Name, SortKey::Year, SortKey::Added];
+    pub const ALL: [SortKey; 2] = [SortKey::Name, SortKey::Added];
 
     pub fn label(self) -> &'static str {
         match self {
             SortKey::Name => "Name",
-            SortKey::Year => "Year",
             SortKey::Added => "Added",
         }
     }
@@ -943,14 +892,14 @@ impl std::fmt::Display for SortKey {
 /// more expensive) query than the album list itself — see
 /// `App::album_added`. Passing them in keeps this a pure function.
 ///
-/// **A missing year or add-time sorts last in *both* directions.** The
-/// unknown-ness is checked outside the reversal on purpose: an album with no
-/// `Date` tag jumping to the top of a "newest first" list would read as data,
+/// **A missing add-time sorts last in *both* directions.** The unknown-ness
+/// is checked outside the reversal on purpose: an album the walk never
+/// reached jumping to the top of a "newest first" list would read as data,
 /// and the same rule already governs `last_modified` in Recently Added.
 ///
 /// The name is always the final tiebreak, so the order stays total and
 /// flipping the direction twice restores the list rather than shuffling
-/// albums that share a year.
+/// albums added at the same moment.
 pub fn album_cmp(
     a: &AlbumGroup,
     a_added: Option<&str>,
@@ -968,15 +917,14 @@ pub fn album_cmp(
 
     match key {
         SortKey::Name => by_name().pipe_reverse(desc),
-        SortKey::Year => unknown_last(a.year, b.year, |x, y| x.cmp(&y), desc, by_name),
         SortKey::Added => unknown_last(a_added, b_added, |x, y| x.cmp(y), desc, by_name),
     }
 }
 
 /// Compares two optional keys with `Some` always ahead of `None`, reversing
 /// only the comparison between two `Some`s. Ties fall through to `tiebreak`,
-/// which is **not** reversed either — a group of same-year albums stays A-Z
-/// whichever way the years run.
+/// which is **not** reversed either — albums sharing an add-time stay A-Z
+/// whichever way the dates run.
 fn unknown_last<T>(
     a: Option<T>,
     b: Option<T>,
@@ -1825,12 +1773,11 @@ mod tests {
         assert_eq!(asc, back, "A-Z and reversed Z-A must agree");
     }
 
-    fn ag(artist: &str, base: &str, year: Option<i32>) -> AlbumGroup {
+    fn ag(artist: &str, base: &str) -> AlbumGroup {
         AlbumGroup {
             artist: artist.into(),
             base: base.into(),
             variants: vec![base.into()],
-            year,
         }
     }
 
@@ -1858,10 +1805,10 @@ mod tests {
         // name on the row. Sorting by artist first put "Arrival" after
         // "Reign in Blood" and the list read as unsorted.
         let src = [
-            ag("Slayer", "Reign in Blood", None),
-            ag("ABBA", "Arrival", None),
-            ag("Slayer", "Hell Awaits", None),
-            ag("ABBA", "Waterloo", None),
+            ag("Slayer", "Reign in Blood"),
+            ag("ABBA", "Arrival"),
+            ag("Slayer", "Hell Awaits"),
+            ag("ABBA", "Waterloo"),
         ];
         assert_eq!(
             sorted(&src, SortKey::Name, false),
@@ -1878,8 +1825,8 @@ mod tests {
         // Name-only sorting makes these tie, so the artist is the tiebreak —
         // without it the pair could swap on every re-sort.
         let src = [
-            ag("Slayer", "Greatest Hits", None),
-            ag("ABBA", "Greatest Hits", None),
+            ag("Slayer", "Greatest Hits"),
+            ag("ABBA", "Greatest Hits"),
         ];
         let mut v = src.to_vec();
         v.sort_by(|a, b| album_cmp(a, None, b, None, SortKey::Name, false));
@@ -1887,52 +1834,8 @@ mod tests {
     }
 
     #[test]
-    fn albums_sort_by_year_oldest_or_newest_first() {
-        let src = [
-            ag("A", "Later", Some(2001)),
-            ag("A", "Earlier", Some(1979)),
-            ag("A", "Middle", Some(1990)),
-        ];
-        assert_eq!(
-            sorted(&src, SortKey::Year, false),
-            vec!["Earlier", "Middle", "Later"]
-        );
-        assert_eq!(
-            sorted(&src, SortKey::Year, true),
-            vec!["Later", "Middle", "Earlier"]
-        );
-    }
-
-    #[test]
-    fn albums_with_no_year_sort_last_in_both_directions() {
-        // The unknown check sits outside the reversal on purpose: an album
-        // with no Date tag jumping to the head of a "Newest" list would read
-        // as data rather than as a gap.
-        let src = [
-            ag("A", "Undated", None),
-            ag("A", "Old", Some(1979)),
-            ag("A", "New", Some(2011)),
-        ];
-        assert_eq!(sorted(&src, SortKey::Year, false).last().unwrap(), "Undated");
-        assert_eq!(sorted(&src, SortKey::Year, true).last().unwrap(), "Undated");
-    }
-
-    #[test]
-    fn albums_sharing_a_year_stay_alphabetical_in_both_directions() {
-        // The tiebreak is *not* reversed with the primary key — a block of
-        // 1990 albums reading Z-A inside a "Oldest first" list would look
-        // like a bug.
-        let src = [
-            ag("A", "Zulu", Some(1990)),
-            ag("A", "Alpha", Some(1990)),
-        ];
-        assert_eq!(sorted(&src, SortKey::Year, false), vec!["Alpha", "Zulu"]);
-        assert_eq!(sorted(&src, SortKey::Year, true), vec!["Alpha", "Zulu"]);
-    }
-
-    #[test]
     fn albums_sort_by_add_time() {
-        let src = [ag("A", "First", None), ag("A", "Second", None)];
+        let src = [ag("A", "First"), ag("A", "Second")];
         let mut added = HashMap::new();
         added.insert(
             album_scoped_key(Some("A"), "First"),
@@ -1961,10 +1864,10 @@ mod tests {
     #[test]
     fn reversing_an_album_sort_twice_is_the_identity_for_every_key() {
         let src = [
-            ag("Slayer", "Reign in Blood", Some(1986)),
-            ag("ABBA", "Arrival", Some(1976)),
-            ag("ABBA", "Arrival", Some(1976)),
-            ag("Nobody", "Undated", None),
+            ag("Slayer", "Reign in Blood"),
+            ag("ABBA", "Arrival"),
+            ag("ABBA", "Arrival"),
+            ag("Nobody", "Undated"),
         ];
         for key in SortKey::ALL {
             let mut back = sorted(&src, key, true);
@@ -1979,42 +1882,6 @@ mod tests {
                 assert_eq!(sorted(&src, key, true).last().unwrap(), "Undated");
             }
         }
-    }
-
-    // --- parse_year / album_year_index / fold_album_added --------------------
-
-    #[test]
-    fn parse_year_handles_the_shapes_a_real_date_tag_holds() {
-        assert_eq!(parse_year("1990"), Some(1990));
-        assert_eq!(parse_year("1990-05-01"), Some(1990));
-        assert_eq!(parse_year("1990/2003"), Some(1990));
-        assert_eq!(parse_year("Released 2011"), Some(2011));
-        assert_eq!(parse_year(""), None);
-        assert_eq!(parse_year("199"), None);
-        // A catalogue number is four digits and is not a year.
-        assert_eq!(parse_year("VICP-608"), None);
-    }
-
-    #[test]
-    fn album_year_index_keeps_the_earliest_and_collapses_discs() {
-        let t = |a: &str, al: &str, d: &str| (a.to_string(), al.to_string(), d.to_string());
-        let idx = album_year_index(&[
-            // A reissue whose tracks disagree: the original is what a
-            // release year means on a row.
-            t("Slayer", "Reign in Blood", "2013"),
-            t("Slayer", "Reign in Blood", "1986"),
-            // Both discs of a set feed the one collapsed row.
-            t("Gamma Ray", "Blast from the Past [Disc 1]", "2000"),
-            t("Gamma Ray", "Blast from the Past [Disc 2]", "2000"),
-            // No parseable year contributes nothing rather than a zero.
-            t("Nobody", "Undated", "n/a"),
-        ]);
-        assert_eq!(idx.get(&album_scoped_key(Some("Slayer"), "Reign in Blood")), Some(&1986));
-        assert_eq!(
-            idx.get(&album_scoped_key(Some("Gamma Ray"), "Blast from the Past")),
-            Some(&2000)
-        );
-        assert!(!idx.contains_key(&album_scoped_key(Some("Nobody"), "Undated")));
     }
 
     #[test]

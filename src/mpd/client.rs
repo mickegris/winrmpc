@@ -389,34 +389,6 @@ impl MpdClient {
         }
     }
 
-    /// `list Date group AlbumArtist group Album` — every album's release
-    /// year(s), for the Year sort.
-    ///
-    /// Cheap enough to run unconditionally on connect: `list` returns one
-    /// line per *distinct* value, so an 800-album library is a few thousand
-    /// lines, not one per song. It deliberately does **not** replace
-    /// `list_albums_by_artist` — an album with no `Date` tag contributes
-    /// nothing here, so this can only ever be a lookup layered onto the real
-    /// album list.
-    ///
-    /// Returns `(album_artist, album, date)` triples; the caller folds them
-    /// into years. An ACK (pre-0.21 `group`, or a server without nested
-    /// grouping) degrades to an empty list, which just means no years — the
-    /// Year sort then puts everything in the unknown bucket rather than
-    /// failing.
-    pub async fn list_album_years(&self) -> MpdResult<Vec<(String, String, String)>> {
-        match self.cmd("list Date group AlbumArtist group Album").await {
-            Ok(pairs) => Ok(commands::parse_grouped_values2(
-                &pairs,
-                "AlbumArtist",
-                "Album",
-                "Date",
-            )),
-            Err(MpdError::Server { .. }) => Ok(Vec::new()),
-            Err(e) => Err(e),
-        }
-    }
-
     /// One page of the library ordered newest-added first.
     ///
     /// **This is the expensive query in the app**, and the paging is what
