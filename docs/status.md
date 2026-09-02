@@ -36,7 +36,7 @@ Two things fell out of the work rather than the report:
   `ui/widgets/link.rs` while the strings they must match are produced in
   `mpd/types.rs`. Moved to where they're produced; `link.rs` re-exports.
 
-**295 offline tests (was 268), 20 live (was 19).** No new clippy warnings —
+**299 offline tests (was 268), 20 live (was 19).** No new clippy warnings —
 note the repo still carries 15 pre-existing ones under a newer clippy than CI
 pins.
 
@@ -78,27 +78,26 @@ scope approved for this branch.
 finds: **6 of 45** multi-disc groups on the real library, 5 of them
 case-only.
 
-### Found by the smoke test, not fixed here
+### Found by the smoke test, and fixed
 
-**The playing track's cover is fetched from MusicBrainz once per status
-poll while the fetch is in flight.** A 15-second run of the release binary
-against the real server logged the *same* album's cover arriving from
-MusicBrainz **four times**, ~1.2s apart — which is exactly the throttle
-interval, so they were four real requests serialized behind
-`MusicBrainzThrottle`.
+**The playing track's cover was fetched from MusicBrainz once per status
+poll while the fetch was in flight.** A 15-second run of the release binary
+against the real server logged the *same* album's cover arriving **four
+times**, ~1.2s apart — exactly the throttle interval, so four real requests
+serialized behind `MusicBrainzThrottle`, each holding a slot the background
+sweep needed.
 
-Cause: `CurrentSongUpdated` fires on every 500ms poll and its art guard is
-`!self.art_handles.contains_key(&art_key)` (`app.rs:865`), which only becomes
-true *after* a fetch completes. The background queue has `art_pending` for
-exactly this reason; the one-off path (playing track, artist images,
-`fetch_recent_art`) has no in-flight set. Every duplicate also burns a ~1.1s
-global throttle slot that the stage-2 sweep needs.
+Cause: `CurrentSongUpdated` fires on every 500ms poll and its only art guard
+was `!self.art_handles.contains_key(&art_key)`, which becomes true when a
+fetch *finishes*. The background queue has `art_pending` for exactly this;
+the one-off path (playing track, artist images, `fetch_recent_art`) had
+nothing.
 
-**Pre-existing** — both the guard and the 500ms cadence predate this branch,
-and nothing here touches them. Left alone because it is outside the scope
-agreed for this work, not because it is acceptable. The fix is small: an
-`art_inflight: HashSet<String>` inserted before `Task::perform` and removed
-in the `ArtLoaded` handler.
+Fixed with `oneoff_art_pending`, and by moving *both* guards inside
+`fetch_art`/`fetch_artist_art` — three call sites each repeated the
+`art_handles` check and none could have known a fetch was already running.
+**Re-measured under the same cold-cache conditions: four fetches became
+one.** Pre-existing, not introduced by this branch.
 
 ### Still pending, and blocked on the user
 

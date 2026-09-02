@@ -187,6 +187,19 @@ pub struct App {
     /// up in two lists).
     art_pending: HashSet<String>,
     art_inflight: usize,
+    /// Keys with a **one-off** art fetch already running — the playing
+    /// track's cover, an artist image, a recents thumb. The background queue
+    /// has `art_pending` for this; the one-off path had nothing, and its
+    /// only guard was `art_handles`, which is populated when a fetch
+    /// *finishes*.
+    ///
+    /// `CurrentSongUpdated` fires on every 500ms status poll, so a cover
+    /// that takes seconds to arrive — anything reaching MusicBrainz, which
+    /// is serialized globally at ~1.1s per request — was re-requested on
+    /// every poll until the first one landed. Observed against the real
+    /// server: the same album fetched **four times**, 1.2s apart, each
+    /// duplicate burning a throttle slot the background sweep needed.
+    oneoff_art_pending: HashSet<String>,
     /// Second stage: albums the local stage found no art for, awaiting a
     /// MusicBrainz lookup. Drained only once `art_queue` is empty and only
     /// one at a time, because every entry costs 1.1–2.2s of globally
@@ -417,6 +430,7 @@ impl App {
             art_queue: VecDeque::new(),
             art_pending: HashSet::new(),
             art_inflight: 0,
+            oneoff_art_pending: HashSet::new(),
             mb_queue: VecDeque::new(),
             mb_pending: HashSet::new(),
             mb_inflight: 0,
@@ -861,11 +875,13 @@ impl App {
                     tasks.push(self.reset_lyrics_scroll());
                 }
                 if let Some(ref s) = song {
+                    // `fetch_art` is a no-op when the cover is already loaded
+                    // or already being fetched — which matters here above all,
+                    // because this arm runs on every 500ms poll.
                     let art_key = s.art_key();
-                    if !self.art_handles.contains_key(&art_key) {
-                        tasks.push(self.fetch_art(s.file.clone(), art_key));
-                    }
+                    let file = s.file.clone();
                     tasks.push(self.fetch_lyrics(s));
+                    tasks.push(self.fetch_art(file, art_key));
                 }
                 self.current_song = song.map(|s| *s);
                 if tasks.is_empty() {
@@ -1287,16 +1303,12 @@ impl App {
                 self.enqueue_album_art(targets)
             }
             Message::AlbumSongsLoaded(album, songs) => {
-                if let Some(first) = songs.first() {
-                    let key = first.art_key();
-                    if !self.art_handles.contains_key(&key) {
-                        let task = self.fetch_art(first.file.clone(), key);
-                        self.album_songs.insert(album, songs);
-                        return task;
-                    }
-                }
+                let art = songs.first().map(|f| (f.file.clone(), f.art_key()));
                 self.album_songs.insert(album, songs);
-                Task::none()
+                match art {
+                    Some((file, key)) => self.fetch_art(file, key),
+                    None => Task::none(),
+                }
             }
 
             // =================================================================
@@ -1539,16 +1551,12 @@ impl App {
                 )
             }
             Message::PlaylistSongsLoaded(name, songs) => {
-                if let Some(first) = songs.first() {
-                    let key = first.art_key();
-                    if !self.art_handles.contains_key(&key) {
-                        let task = self.fetch_art(first.file.clone(), key);
-                        self.playlist_songs.insert(name, songs);
-                        return task;
-                    }
-                }
+                let art = songs.first().map(|f| (f.file.clone(), f.art_key()));
                 self.playlist_songs.insert(name, songs);
-                Task::none()
+                match art {
+                    Some((file, key)) => self.fetch_art(file, key),
+                    None => Task::none(),
+                }
             }
             Message::PlaylistPlay(name) => {
                 self.playing_from_playlist = Some(name.clone());
@@ -1903,6 +1911,11 @@ impl App {
             // Album Art
             // =================================================================
             Message::ArtLoaded(key, data) => {
+                // Released on the miss path too: a fetch that found nothing
+                // has still finished, and leaving the key in the set would
+                // make it permanently unfetchable for the rest of the
+                // session.
+                self.oneoff_art_pending.remove(&key);
                 if let Some(bytes) = data {
                     if let Some(handle) =
                         widgets::art_image::bytes_to_handle(&bytes)
@@ -2558,6 +2571,13 @@ impl App {
                 // `art_pending` keeps the two consistent — fetches already
                 // running now report as non-queue completions (their key is
                 // no longer pending) and so must not decrement it.
+                //
+                // `oneoff_art_pending` is deliberately **not** cleared. It is
+                // a duplicate-suppression set, not a work queue: clearing it
+                // would let a second fetch start for a key whose first is
+                // still running, which is the thing it exists to prevent. It
+                // self-cleans, since every one-off fetch ends in an
+                // `ArtLoaded` that removes its key.
                 self.art_queue.clear();
                 self.art_pending.clear();
                 self.art_inflight = 0;
@@ -3323,11 +3343,38 @@ impl App {
         Task::batch([status_task, song_task, queue_task])
     }
 
-    fn fetch_art(&self, uri: String, key: String) -> Task<Message> {
+    /// Claims `key` for a one-off art fetch, returning `false` when one must
+    /// not start: the cover is already loaded, or a fetch for it is already
+    /// running.
+    ///
+    /// Pure, and takes its state as parameters, so the rule is testable —
+    /// building an `App` needs `AppConfig::load()`, which resolves the *real*
+    /// user config path.
+    ///
+    /// **An already-loaded key is not inserted**, and the short-circuit is
+    /// what guarantees it: nothing would ever remove it, since no `ArtLoaded`
+    /// is coming, so it would block that cover for the rest of the session.
+    fn claim_oneoff_art(
+        pending: &mut HashSet<String>,
+        key: &str,
+        already_loaded: bool,
+    ) -> bool {
+        !already_loaded && pending.insert(key.to_string())
+    }
+
+    /// One-off art fetch. **Owns both guards** — already-loaded and
+    /// already-running — rather than leaving the first to each call site and
+    /// the second to nobody. Three callers repeated the `art_handles` check
+    /// and none of them could have known a fetch was already in flight.
+    fn fetch_art(&mut self, uri: String, key: String) -> Task<Message> {
         // Never request art for CD audio tracks. MPD tries to open the CD drive
         // when asked for albumart/readpicture on cdda:// URIs, which corrupts its
         // internal state and triggers cascading "Failed to open CD drive" failures.
         if uri.starts_with("cdda://") {
+            return Task::none();
+        }
+        let loaded = self.art_handles.contains_key(&key);
+        if !Self::claim_oneoff_art(&mut self.oneoff_art_pending, &key, loaded) {
             return Task::none();
         }
 
@@ -3394,11 +3441,12 @@ impl App {
         )
     }
 
-    fn fetch_artist_art(&self, artist_name: String) -> Task<Message> {
+    fn fetch_artist_art(&mut self, artist_name: String) -> Task<Message> {
         let cache = self.art_cache.clone_inner();
         let key = format!("artist:{artist_name}");
 
-        if self.art_handles.contains_key(&key) {
+        let loaded = self.art_handles.contains_key(&key);
+        if !Self::claim_oneoff_art(&mut self.oneoff_art_pending, &key, loaded) {
             return Task::none();
         }
 
@@ -3777,18 +3825,20 @@ impl App {
     /// `art_handles`.  Passes an empty URI so the MPD embedded-art step is
     /// skipped (we have no file path), but disk cache and MusicBrainz fallback
     /// both work via the `art_key_for` key alone.
-    fn fetch_recent_art(&self) -> Task<Message> {
-        let tasks: Vec<Task<Message>> = self
+    fn fetch_recent_art(&mut self) -> Task<Message> {
+        // Keys collected up front so the loop can take `&mut self` —
+        // `fetch_art` now records the fetch as in-flight, and it can't do
+        // that from inside an iterator borrowing `self.recent_albums`.
+        let keys: Vec<String> = self
             .recent_albums
             .iter()
-            .filter_map(|r| {
-                let key = art_key_for(&r.artist, &r.album);
-                if self.art_handles.contains_key(&key) {
-                    None
-                } else {
-                    Some(self.fetch_art(String::new(), key))
-                }
-            })
+            .map(|r| art_key_for(&r.artist, &r.album))
+            .collect();
+        // `fetch_art` owns both guards, so a key already loaded or already
+        // being fetched drops out here rather than at the call site.
+        let tasks: Vec<Task<Message>> = keys
+            .into_iter()
+            .map(|key| self.fetch_art(String::new(), key))
             .collect();
         Task::batch(tasks)
     }
@@ -4683,5 +4733,51 @@ mod tests {
     fn a_fresh_toast_has_not_expired() {
         assert!(!toast(false, 0).expired());
         assert!(!toast(true, 0).expired());
+    }
+
+    /// The bug this guards: `CurrentSongUpdated` runs on every 500ms poll,
+    /// and the only check was `art_handles`, which is populated when a fetch
+    /// *finishes*. A cover coming from MusicBrainz takes seconds — the real
+    /// server produced four identical fetches, 1.2s apart, each holding a
+    /// throttle slot the background sweep needed.
+    #[test]
+    fn a_second_fetch_is_refused_while_the_first_is_still_running() {
+        let mut pending = HashSet::new();
+        assert!(App::claim_oneoff_art(&mut pending, "a\u{1f}b", false));
+        assert!(
+            !App::claim_oneoff_art(&mut pending, "a\u{1f}b", false),
+            "a poll arriving mid-fetch must not start a second one"
+        );
+    }
+
+    /// `ArtLoaded` releases the key on the miss path too, so a fetch that
+    /// found nothing can be retried rather than being blocked forever.
+    #[test]
+    fn releasing_the_key_allows_a_later_fetch() {
+        let mut pending = HashSet::new();
+        assert!(App::claim_oneoff_art(&mut pending, "k", false));
+        pending.remove("k");
+        assert!(App::claim_oneoff_art(&mut pending, "k", false));
+    }
+
+    /// An already-loaded cover must be refused *without* being recorded as
+    /// pending. Nothing would ever remove it — no `ArtLoaded` is coming — so
+    /// inserting it would block that key for the rest of the session, which
+    /// is worse than the duplicate fetches this exists to stop.
+    #[test]
+    fn an_already_loaded_key_is_refused_and_not_recorded() {
+        let mut pending = HashSet::new();
+        assert!(!App::claim_oneoff_art(&mut pending, "k", true));
+        assert!(pending.is_empty(), "a loaded key must not be left pending");
+        // And it stays fetchable if the handle is later dropped (a cache purge).
+        assert!(App::claim_oneoff_art(&mut pending, "k", false));
+    }
+
+    #[test]
+    fn different_keys_do_not_block_each_other() {
+        let mut pending = HashSet::new();
+        assert!(App::claim_oneoff_art(&mut pending, "one", false));
+        assert!(App::claim_oneoff_art(&mut pending, "two", false));
+        assert_eq!(pending.len(), 2);
     }
 }
