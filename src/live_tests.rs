@@ -6,6 +6,7 @@
 //!
 //! ```text
 //! WINRMPC_TEST_MPD=10.0.1.3:6600 \
+//! WINRMPC_TEST_MPD_PASSWORD=secret \      # only if the server wants one
 //! WINRMPC_TEST_SNAPCAST=10.0.1.3:1705 \
 //!   cargo test -- --ignored --test-threads=1
 //! ```
@@ -23,6 +24,13 @@ fn mpd_addr() -> Option<String> {
     std::env::var("WINRMPC_TEST_MPD").ok().filter(|s| !s.is_empty())
 }
 
+/// The password for that server, if it wants one. Without this the suite
+/// cannot run against a password-protected server at all — every command
+/// comes back `ACK [4@0] … you don't have permission`.
+fn mpd_password() -> Option<String> {
+    std::env::var("WINRMPC_TEST_MPD_PASSWORD").ok().filter(|s| !s.is_empty())
+}
+
 fn snapcast_addr() -> Option<String> {
     std::env::var("WINRMPC_TEST_SNAPCAST").ok().filter(|s| !s.is_empty())
 }
@@ -31,7 +39,7 @@ fn snapcast_addr() -> Option<String> {
 /// can't disturb whatever the real `default` partition is doing. Returns the
 /// client and the partition name (caller must call `cleanup_partition`).
 async fn connect_scratch(addr: &str, name: &str) -> MpdClient {
-    let client = MpdClient::new(addr);
+    let client = MpdClient::new(addr, mpd_password());
     client.connect().await.expect("connect to MPD");
     // Ignore "already exists" — a previous aborted run may have left it.
     let _ = client.new_partition(name).await;
@@ -152,7 +160,7 @@ async fn live_add_all_stops_at_the_first_failure_keeping_earlier_tracks() {
 #[ignore = "needs a live MPD server; set WINRMPC_TEST_MPD"]
 async fn live_album_grouping_collapses_real_multidisc_albums() {
     let Some(addr) = mpd_addr() else { return };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect");
 
     let pairs = client
@@ -179,13 +187,17 @@ async fn live_album_grouping_collapses_real_multidisc_albums() {
     );
     for g in &multi {
         for v in &g.variants {
-            // Case-insensitive: the grouping key folds case, so a variant
-            // may legitimately differ from the group's first-seen spelling
-            // (one real album is tagged "Decade Of Aggression - Disc 2"
-            // alongside "Decade of Aggression - Disc 1 of 2").
+            // Compared through `album_grouping_key`, not by string equality:
+            // a variant may legitimately differ from the group's first-seen
+            // spelling in case (this library has "Decade Of Aggression -
+            // Disc 2" beside "Decade of Aggression - Disc 1 of 2") *and* in
+            // punctuation (The Beatles' "1967-1970" beside "1967–1970",
+            // hyphen against en dash — the case the folding was added for).
+            // Asserting raw equality here would be asserting that the
+            // folding doesn't work.
             assert_eq!(
-                album_base_and_disc(v).0.to_lowercase(),
-                g.base.to_lowercase(),
+                album_grouping_key(&g.artist, &album_base_and_disc(v).0),
+                album_grouping_key(&g.artist, &g.base),
                 "variant {v:?} of group {:?} must strip to the group's base",
                 g.base
             );
@@ -198,13 +210,15 @@ async fn live_album_grouping_collapses_real_multidisc_albums() {
     }
 
     // Art keys: every disc of a set must resolve to one shared cache key.
-    // Compared case-insensitively for the same reason as above — the art
-    // key is built from the raw tag, which may vary in case across discs.
+    //
+    // Asserted the way the **app** builds it — from the group's `base`, which
+    // is what `album_art_targets`, the grid tiles and `enqueue_album_art` all
+    // use. That is the path a blank cover would actually come from.
     for g in &multi {
         let keys: std::collections::HashSet<String> = g
             .variants
             .iter()
-            .map(|v| art_key_for(&g.artist, v).to_lowercase())
+            .map(|_| art_key_for(&g.artist, &g.base))
             .collect();
         assert_eq!(
             keys.len(),
@@ -213,6 +227,28 @@ async fn live_album_grouping_collapses_real_multidisc_albums() {
             g.base
         );
     }
+
+    // Diagnostic, not an assertion. `art_key_for` disc-strips but does *not*
+    // fold case or punctuation, so a per-track key built from the raw tag
+    // (`Song::art_key()`, which is what Now Playing uses) can differ from the
+    // group-level key the grid stores under — the cover then shows in one
+    // place and not the other. Pre-existing: it already split on case before
+    // the punctuation folding made it visible here. Printed rather than
+    // failed because folding the art key would re-key every cached cover in
+    // every existing install; see docs/status.md.
+    let mut split = 0usize;
+    for g in &multi {
+        let raw: std::collections::HashSet<String> = g
+            .variants
+            .iter()
+            .map(|v| art_key_for(&g.artist, v))
+            .collect();
+        if raw.len() > 1 {
+            split += 1;
+            eprintln!("art key splits across discs: {:?} -> {raw:?}", g.base);
+        }
+    }
+    eprintln!("{split} of {} multi-disc groups split their art key", multi.len());
 }
 
 /// Real compilations: where `AlbumArtist` differs from `Artist`, the art key
@@ -222,7 +258,7 @@ async fn live_album_grouping_collapses_real_multidisc_albums() {
 #[ignore = "needs a live MPD server; set WINRMPC_TEST_MPD"]
 async fn live_compilation_art_key_uses_album_artist_not_track_artist() {
     let Some(addr) = mpd_addr() else { return };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect");
 
     let pairs = client.list_albums_by_artist().await.expect("albums");
@@ -435,7 +471,7 @@ async fn snapcast_keeps_the_connection_on_an_rpc_error_response() {
 #[ignore = "needs a live MPD server; set WINRMPC_TEST_MPD"]
 async fn live_replay_gain_round_trips() {
     let Some(addr) = mpd_addr() else { return };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect");
 
     let original = client
@@ -469,7 +505,7 @@ async fn live_replay_gain_round_trips() {
 #[ignore = "needs a live MPD server; set WINRMPC_TEST_MPD"]
 async fn live_concurrent_art_fetches_do_not_desync_the_connection() {
     let Some(addr) = mpd_addr() else { return };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect");
 
     // A spread of real albums, like a grid page.
@@ -537,7 +573,7 @@ async fn live_concurrent_art_fetches_do_not_desync_the_connection() {
 #[ignore]
 async fn live_diagnose_album_art_sources() {
     let Some(addr) = mpd_addr() else { return };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect to MPD");
 
     // Albums reported as showing no cover, plus a few known-good controls.
@@ -607,7 +643,7 @@ async fn live_diagnose_album_art_sources() {
 #[ignore]
 async fn live_probe_cue_album_art_fallback() {
     let Some(addr) = mpd_addr() else { return };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect to MPD");
 
     for album in ["A Broken Frame [UK]", "Speak & Spell [UK]", "Songs of Faith and Devotion"] {
@@ -778,7 +814,7 @@ async fn live_outputs_never_include_dummy_placeholders() {
         eprintln!("skipping: set WINRMPC_TEST_MPD");
         return;
     };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect");
 
     let original = client
@@ -982,7 +1018,7 @@ async fn live_recently_added_is_newest_first() {
         eprintln!("skipping: set WINRMPC_TEST_MPD");
         return;
     };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect to MPD");
 
     // Ten years back, so a library of any age has far more matches than the
@@ -1053,7 +1089,7 @@ async fn live_recently_added_reports_which_rung_the_server_answers_on() {
         eprintln!("skipping: set WINRMPC_TEST_MPD");
         return;
     };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect to MPD");
 
     let since = (chrono::Utc::now() - chrono::Duration::days(3650))
@@ -1143,7 +1179,8 @@ async fn mock_mpd_rejecting(
 #[tokio::test]
 async fn recently_added_falls_back_to_modified_since_on_a_pre_0_24_server() {
     let (addr, seen) = mock_mpd_rejecting("0.23.5", &["added-since"]).await;
-    let client = MpdClient::new(&addr);
+    // Hermetic mock: no auth, and deliberately no dependence on the env var.
+    let client = MpdClient::new(&addr, None);
     client.connect().await.expect("connect");
 
     let (songs, rung) = client
@@ -1171,7 +1208,8 @@ async fn recently_added_falls_back_to_modified_since_on_a_pre_0_24_server() {
 #[tokio::test]
 async fn recently_added_falls_back_to_the_legacy_query_on_a_pre_0_22_server() {
     let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
-    let client = MpdClient::new(&addr);
+    // Hermetic mock: no auth, and deliberately no dependence on the env var.
+    let client = MpdClient::new(&addr, None);
     client.connect().await.expect("connect");
 
     let (songs, rung) = client
@@ -1193,7 +1231,8 @@ async fn recently_added_falls_back_to_the_legacy_query_on_a_pre_0_22_server() {
 #[tokio::test]
 async fn the_recently_added_rung_is_probed_once_and_then_remembered() {
     let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
-    let client = MpdClient::new(&addr);
+    // Hermetic mock: no auth, and deliberately no dependence on the env var.
+    let client = MpdClient::new(&addr, None);
     client.connect().await.expect("connect");
 
     for _ in 0..3 {
@@ -1218,7 +1257,8 @@ async fn the_recently_added_rung_is_probed_once_and_then_remembered() {
 #[tokio::test]
 async fn a_cloned_client_shares_the_probed_rung() {
     let (addr, seen) = mock_mpd_rejecting("0.21.0", &["added-since", "sort"]).await;
-    let client = MpdClient::new(&addr);
+    // Hermetic mock: no auth, and deliberately no dependence on the env var.
+    let client = MpdClient::new(&addr, None);
     client.connect().await.expect("connect");
     client
         .find_recently_added("2026-01-01T00:00:00Z", 10)
@@ -1233,6 +1273,203 @@ async fn a_cloned_client_shares_the_probed_rung() {
 
     assert_eq!(rung, RecentlyAddedRung::ModifiedSinceUnsorted);
     assert_eq!(seen.lock().unwrap().len(), 4, "the clone re-probed");
+}
+
+/// The Search view's Artists/Albums sections are derived from the songs one
+/// `search any` already returned. This is the check that the derivation
+/// survives real tag shapes — this library holds `"Blue  Oyster Cult"` with
+/// two spaces, `"Alan Parsons Project, The"` in sort order, and `"ACDC"`
+/// without the slash.
+///
+/// Prints what it found, so it doubles as the diagnostic for "why is this
+/// artist missing from search".
+#[tokio::test]
+#[ignore = "needs a live MPD server; set WINRMPC_TEST_MPD"]
+async fn live_search_sections_are_derived_from_real_results() {
+    let Some(addr) = mpd_addr() else {
+        eprintln!("skipping: set WINRMPC_TEST_MPD");
+        return;
+    };
+    let client = MpdClient::new(&addr, mpd_password());
+    client.connect().await.expect("connect");
+
+    for query in ["beatles", "oyster", "greatest hits"] {
+        let songs = client.search("any", query).await.expect("search");
+        let sections = search_sections(&songs, query);
+        eprintln!(
+            "{query:>14}: {} songs, {} albums, {} artists {:?}",
+            songs.len(),
+            sections.albums.len(),
+            sections.artists.len(),
+            sections.artists,
+        );
+
+        // Whatever the library holds, the sections must never invent an
+        // entity that isn't in the results, and never offer a placeholder —
+        // navigating to one renders an empty page.
+        for artist in &sections.artists {
+            assert!(artist != "Unknown Artist");
+            assert!(
+                songs.iter().any(|s| s.display_artist() == artist
+                    || s.display_album_artist() == artist),
+                "{artist:?} is not in the results it was derived from"
+            );
+        }
+        for album in &sections.albums {
+            assert!(album.base != "Unknown Album");
+            assert!(!album.variants.is_empty(), "an album row with no variants");
+        }
+    }
+}
+
+/// A mock MPD that actually wants a password: every command is answered with
+/// the permission ACK a real server sends until the right `password` line
+/// arrives. This is the only way to test authentication offline — the real
+/// test server doesn't require one, and a server that does can't be asked to
+/// stop.
+async fn mock_mpd_requiring_password(
+    pw: &'static str,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+
+    let recorder = std::sync::Arc::clone(&seen);
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            let recorder = std::sync::Arc::clone(&recorder);
+            tokio::spawn(async move {
+                let (rh, mut wh) = tokio::io::split(stream);
+                let mut reader = BufReader::new(rh);
+                let _ = wh.write_all(b"OK MPD 0.24.0\n").await;
+                let _ = wh.flush().await;
+                // Authentication is per *connection*, so this state is
+                // deliberately scoped to the socket and not to the mock.
+                let mut authed = false;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let cmd = line.trim_end().to_string();
+                    recorder.lock().unwrap().push(cmd.clone());
+
+                    let reply = if let Some(rest) = cmd.strip_prefix("password ") {
+                        if rest == format!("\"{pw}\"") {
+                            authed = true;
+                            "OK\n".to_string()
+                        } else {
+                            "ACK [3@0] {password} incorrect password\n".to_string()
+                        }
+                    } else if !authed {
+                        let verb = cmd.split(' ').next().unwrap_or("");
+                        format!("ACK [4@0] {{{verb}}} you don't have permission for \"{verb}\"\n")
+                    } else {
+                        "OK\n".to_string()
+                    };
+                    let _ = wh.write_all(reply.as_bytes()).await;
+                    let _ = wh.flush().await;
+                }
+            });
+        }
+    });
+
+    (addr, seen)
+}
+
+/// The password has to go out *inside* `connect`, before anything else is
+/// sent. This is the whole bug: `MpdClient::password` existed and nothing
+/// ever called it, so a password-protected server was met with an
+/// unauthenticated connection and every command came back with a permission
+/// ACK.
+#[tokio::test]
+async fn connect_authenticates_before_it_sends_anything_else() {
+    let (addr, seen) = mock_mpd_requiring_password("s3cret").await;
+    let client = MpdClient::new(&addr, Some("s3cret".into()));
+
+    client.connect().await.expect("connect with the right password");
+    client.status().await.expect("a command after authenticating");
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.first().map(String::as_str),
+        Some("password \"s3cret\""),
+        "the very first line on the socket must be the password, not a command \
+         that the server will refuse"
+    );
+    assert!(seen.iter().any(|c| c == "status"));
+}
+
+/// A wrong password must fail the *connect*, not merely log a failed command.
+///
+/// If the connection were published anyway, MPD would answer every later
+/// command with `ACK [4@0] … you don't have permission` — and an ACK is
+/// deliberately not connection-fatal, so nothing would ever drop that socket.
+/// `ConnectionTick` short-circuits on `is_connected()`, so the app would sit
+/// there reporting a healthy connection while nothing worked.
+#[tokio::test]
+async fn a_wrong_password_fails_the_connect_and_leaves_no_connection() {
+    let (addr, _seen) = mock_mpd_requiring_password("s3cret").await;
+    let client = MpdClient::new(&addr, Some("wrong".into()));
+
+    let err = client.connect().await.expect_err("a wrong password must fail");
+    assert!(
+        matches!(err, crate::mpd::error::MpdError::Auth(_)),
+        "expected an Auth error, got {err:?}"
+    );
+    assert!(
+        err.to_string().to_lowercase().contains("password"),
+        "the message reaches a toast, so it has to name the cause: {err}"
+    );
+    assert!(
+        !client.is_connected().await,
+        "a client that failed to authenticate must not look connected, or \
+         ConnectionTick will never retry it"
+    );
+}
+
+/// Every reconnect must re-authenticate. MPD authenticates a connection, not
+/// a client, so the reconnect in `ConnectionTick` and the recovery that drops
+/// a desynced socket both come back with no permissions unless `connect`
+/// itself sends the password each time.
+#[tokio::test]
+async fn every_reconnect_re_sends_the_password() {
+    let (addr, seen) = mock_mpd_requiring_password("s3cret").await;
+    let client = MpdClient::new(&addr, Some("s3cret".into()));
+
+    client.connect().await.expect("first connect");
+    client.disconnect().await;
+    client.connect().await.expect("reconnect");
+    client.status().await.expect("a command after reconnecting");
+
+    let passwords = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c.starts_with("password "))
+        .count();
+    assert_eq!(passwords, 2, "each connection has to authenticate itself");
+}
+
+/// A server that wants no password must not be sent one — `password ""` is a
+/// wrong credential to MPD, not an absent one.
+#[tokio::test]
+async fn no_password_configured_sends_no_password_line() {
+    let (addr, seen) = mock_mpd_rejecting("0.24.0", &[]).await;
+    let client = MpdClient::new(&addr, None);
+
+    client.connect().await.expect("connect");
+    client.status().await.expect("status");
+
+    assert!(
+        !seen.lock().unwrap().iter().any(|c| c.starts_with("password")),
+        "nothing should have been authenticated"
+    );
 }
 
 /// A dead socket must not be read as "the server doesn't support this rung".
@@ -1254,7 +1491,8 @@ async fn a_connection_error_does_not_walk_the_ladder() {
         let _ = wh.flush().await;
     });
 
-    let client = MpdClient::new(&addr);
+    // Hermetic mock: no auth, and deliberately no dependence on the env var.
+    let client = MpdClient::new(&addr, None);
     client.connect().await.expect("connect");
     let err = client
         .find_recently_added("2026-01-01T00:00:00Z", 10)
@@ -1279,7 +1517,7 @@ async fn live_album_added_walk_covers_the_library() {
         eprintln!("skipping: set WINRMPC_TEST_MPD");
         return;
     };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect to MPD");
 
     const PAGE: u32 = 10_000;
@@ -1349,7 +1587,7 @@ async fn live_diagnose_album_added_coverage() {
         eprintln!("skipping: set WINRMPC_TEST_MPD");
         return;
     };
-    let client = MpdClient::new(&addr);
+    let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect");
 
     let mut index = std::collections::HashMap::new();

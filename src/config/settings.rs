@@ -271,6 +271,23 @@ impl AppConfig {
             .unwrap_or_else(|| self.mpd_addr())
     }
 
+    /// Password for the named server, following **exactly** the same fallback
+    /// chain as [`Self::server_addr`] — named server, then first server, then
+    /// the legacy fields. The two must agree: pairing a fallback address with
+    /// a password looked up only under the named server would connect to one
+    /// server holding another's credentials, or none at all.
+    ///
+    /// A present-but-blank password counts as absent. `password ""` is not an
+    /// empty credential to MPD, it is a wrong one, and an empty string is what
+    /// a hand-edited config or a cleared text box leaves behind.
+    pub fn server_password(&self, name: &str) -> Option<String> {
+        self.server(name)
+            .map(|s| s.password.clone())
+            .or_else(|| self.servers.first().map(|s| s.password.clone()))
+            .unwrap_or_else(|| self.mpd_password.clone())
+            .filter(|p| !p.is_empty())
+    }
+
     /// Environment override for the config directory. Set it to run a second
     /// profile against a different server, or to reproduce someone's config
     /// without touching your own.
@@ -478,6 +495,20 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server row, so the password tests read as the thing they assert
+    /// rather than as seven fields of boilerplate.
+    fn server(name: &str, host: &str, port: u16, password: Option<&str>) -> MpdServer {
+        MpdServer {
+            name: name.into(),
+            host: host.into(),
+            port,
+            password: password.map(str::to_string),
+            default_partition: None,
+            snapcast_host: None,
+            snapcast_port: None,
+        }
+    }
 
     /// The multi-server config shape documented in README.md must actually
     /// deserialize. It carries none of the legacy `mpd_*` fields, which were
@@ -808,5 +839,80 @@ port = 6600
 
         std::fs::remove_file(&blocker).ok();
         result.expect_err("saving beneath a regular file should fail");
+    }
+
+    /// `server_password` must walk the *same* fallback chain as
+    /// `server_addr`. If the two disagreed, an unknown name would resolve to
+    /// the first server's address paired with no password at all — a silent
+    /// connection to a real server with the wrong credentials.
+    #[test]
+    fn server_password_follows_the_same_fallback_chain_as_server_addr() {
+        let config = AppConfig {
+            servers: vec![
+                server("First", "first.local", 6600, Some("first-pw")),
+                server("Second", "second.local", 6601, Some("second-pw")),
+            ],
+            ..AppConfig::default()
+        };
+
+        assert_eq!(config.server_password("Second").as_deref(), Some("second-pw"));
+        // Unknown name: both fall back to the first server, together.
+        assert_eq!(config.server_addr("Nope"), "first.local:6600");
+        assert_eq!(config.server_password("Nope").as_deref(), Some("first-pw"));
+    }
+
+    /// With no `servers` at all, both helpers drop to the legacy fields —
+    /// still as a pair.
+    #[test]
+    fn server_password_falls_back_to_the_legacy_field() {
+        let config = AppConfig {
+            servers: Vec::new(),
+            mpd_host: "legacy.local".into(),
+            mpd_port: 6600,
+            mpd_password: Some("legacy-pw".into()),
+            ..AppConfig::default()
+        };
+
+        assert_eq!(config.server_addr("anything"), "legacy.local:6600");
+        assert_eq!(config.server_password("anything").as_deref(), Some("legacy-pw"));
+    }
+
+    /// A blank password is absent, not empty. `password ""` is a *wrong*
+    /// credential to MPD, and an empty string is what a hand-edited config or
+    /// a cleared text box leaves behind.
+    #[test]
+    fn a_blank_password_counts_as_no_password() {
+        let config = AppConfig {
+            servers: vec![server("Blank", "h", 6600, Some(""))],
+            ..AppConfig::default()
+        };
+
+        assert_eq!(config.server_password("Blank"), None);
+    }
+
+    /// A password set in the TOML has to survive a round trip, or the fix is
+    /// undone by the next `save()`.
+    #[test]
+    fn a_password_survives_a_save_load_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "winrmpc-pw-roundtrip-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("config.toml");
+
+        let config = AppConfig {
+            servers: vec![server("Home", "mpd.example", 6600, Some("s3cret pw"))],
+            ..AppConfig::default()
+        };
+        config.save_to(Some(&path)).expect("save");
+
+        let loaded = AppConfig::load_from(Some(path));
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(loaded.server_password("Home").as_deref(), Some("s3cret pw"));
     }
 }

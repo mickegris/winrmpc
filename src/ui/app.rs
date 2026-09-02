@@ -140,6 +140,13 @@ pub struct App {
     // Search
     search_query: String,
     search_results: Vec<Song>,
+    /// The Artists/Albums sections derived from `search_results`. Kept as
+    /// state rather than recomputed in `view()` for the same reason the
+    /// sorted lists are: `view` runs every frame and this allocates.
+    search_sections: SearchSections,
+    /// URIs ticked for a batch action. A `HashSet` because the song rows
+    /// test membership per row, per frame.
+    search_selected: std::collections::HashSet<String>,
 
     // Playlists
     playlists: Vec<PlaylistInfo>,
@@ -320,7 +327,10 @@ impl App {
             .clone()
             .or_else(|| config.servers.first().map(|s| s.name.clone()))
             .unwrap_or_else(|| "Default".into());
-        let client = MpdClient::new(&config.server_addr(&active_server));
+        let client = MpdClient::new(
+            &config.server_addr(&active_server),
+            config.server_password(&active_server),
+        );
         // Before anything is drawn: the palette is a process global, so it has
         // to reflect the saved preference before the first frame rather than
         // after the first toggle.
@@ -387,6 +397,8 @@ impl App {
 
             search_query: String::new(),
             search_results: Vec::new(),
+            search_sections: SearchSections::default(),
+            search_selected: std::collections::HashSet::new(),
 
             playlists: Vec::new(),
             playlist_songs: HashMap::new(),
@@ -595,7 +607,17 @@ impl App {
                     }
                     Err(e) => {
                         self.connected = false;
-                        self.toast_error(e);
+                        // `ConnectionTick` retries every 3s, so a *persistent*
+                        // failure — a server that is down, or a password the
+                        // server rejects — would otherwise raise the same
+                        // toast twenty times a minute for as long as it lasts,
+                        // burying every other message in the queue. Report a
+                        // change of state, not each attempt.
+                        if self.last_error.as_deref() != Some(e.as_str()) {
+                            self.toast_error(e);
+                        } else {
+                            self.last_error = Some(e);
+                        }
                     }
                 }
                 Task::none()
@@ -803,8 +825,17 @@ impl App {
                 if let Some(ref new_song) = song {
                     let new_album = new_song.display_album();
                     let new_artist = new_song.display_album_artist();
-                    let same_album = self.current_song.as_ref()
-                        .map(|s| s.display_album() == new_album)
+                    // Compare — and store — the disc-stripped base, not the
+                    // raw tag. Crossing from disc 1 to disc 2 of one album
+                    // is not "a new album", and storing the suffixed name
+                    // would both caption the tile `"X [Disc 2]"` and send
+                    // `AlbumSelected` after a base no group has, which
+                    // renders that one disc instead of the set.
+                    let new_base = album_base_and_disc(new_album).0;
+                    let same_album = self
+                        .current_song
+                        .as_ref()
+                        .map(|s| album_base_and_disc(s.display_album()).0 == new_base)
                         .unwrap_or(false);
                     if !same_album
                         && new_album != "Unknown Album"
@@ -812,7 +843,7 @@ impl App {
                     {
                         let entry = RecentAlbum {
                             artist: new_artist.to_string(),
-                            album: new_album.to_string(),
+                            album: new_base,
                         };
                         push_recent(&mut self.recent_albums, entry);
                         self.config.recent_albums = self.recent_albums.clone();
@@ -1170,11 +1201,17 @@ impl App {
                                     .map(|a| (art.clone(), a))
                                     .collect();
                                 let groups = group_albums_by_artist(&pairs);
+                                // Must compare through the *same* key the
+                                // grouping used. A plain `g.base ==
+                                // album_name` re-splits on exactly the
+                                // punctuation the key exists to fold, and
+                                // the row would fail to find its own disc
+                                // data — falling back to a single variant
+                                // and rendering half the album.
+                                let wanted = album_grouping_key(art, &album_name);
                                 let variants = groups
                                     .into_iter()
-                                    .find(|g| {
-                                        g.artist.eq_ignore_ascii_case(art) && g.base == album_name
-                                    })
+                                    .find(|g| album_grouping_key(&g.artist, &g.base) == wanted)
                                     .map(|g| g.variants)
                                     .unwrap_or_else(|| vec![album_name.clone()]);
 
@@ -1790,8 +1827,61 @@ impl App {
                 )
             }
             Message::SearchResults(results) => {
+                self.search_sections = search_sections(&results, &self.search_query);
                 self.search_results = results;
+                // A selection is only meaningful against the results it was
+                // made on. Carrying it across a new search would leave the
+                // count reading N while the ticked rows are off screen, and
+                // "Add to queue" would enqueue the *previous* query's tracks.
+                self.search_selected.clear();
+                // Results arrive *after* the view was entered, so
+                // `on_view_enter`'s sweep has already run against an empty
+                // section.
+                self.queue_album_art()
+            }
+            Message::SelectionQueued(count, result) => {
+                match result {
+                    Ok(()) => self.toast_info(format!("Added {count} tracks to the queue")),
+                    Err(e) => self.toast_error(format!(
+                        "Queued only part of the selection: {e}"
+                    )),
+                }
                 Task::none()
+            }
+            Message::SearchToggleSelected(uri) => {
+                if !self.search_selected.remove(&uri) {
+                    self.search_selected.insert(uri);
+                }
+                Task::none()
+            }
+            Message::SearchSelectAll(all) => {
+                self.search_selected.clear();
+                if all {
+                    self.search_selected
+                        .extend(self.search_results.iter().map(|s| s.file.clone()));
+                }
+                Task::none()
+            }
+            Message::SearchQueueSelected => {
+                // Display order, not `HashSet` order — enqueueing an album's
+                // tracks in an arbitrary order would be its own bug.
+                let uris: Vec<String> = self
+                    .search_results
+                    .iter()
+                    .filter(|s| self.search_selected.contains(&s.file))
+                    .map(|s| s.file.clone())
+                    .collect();
+                if uris.is_empty() {
+                    return Task::none();
+                }
+                let count = uris.len();
+                self.search_selected.clear();
+                self.playing_from_playlist = None;
+                let client = self.client.clone();
+                Task::perform(
+                    async move { client.add_all(&uris).await.map_err(|e| e.to_string()) },
+                    move |r| Message::SelectionQueued(count, r),
+                )
             }
             Message::SearchAddToQueue(uri) => {
                 self.playing_from_playlist = None;
@@ -2441,7 +2531,10 @@ impl App {
                 }
                 self.active_server = name.clone();
                 let addr = self.config.server_addr(&name);
-                self.client = MpdClient::new(&addr);
+                self.client = MpdClient::new(
+                    &addr,
+                    self.config.server_password(&name),
+                );
                 self.connected = false;
                 // Mirror legacy fields to the active server.
                 if let Some(s) = self.config.server(&name) {
@@ -2999,6 +3092,9 @@ impl App {
                 views::search::view(
                     &self.search_query,
                     &self.search_results,
+                    &self.search_sections,
+                    &self.search_selected,
+                    &self.art_handles,
                     self.current_file(),
                 )
             }
@@ -3530,6 +3626,10 @@ impl App {
                 .into_iter()
                 .map(|g| (g.artist.clone(), g.album.clone(), g.album.clone()))
                 .collect(),
+            // Search's Albums section draws the same covers as the album
+            // lists; without this the thumbs stay blank unless the album
+            // happened to be cached by an earlier sweep.
+            View::Search => Self::album_art_targets(&self.search_sections.albums),
             _ => return Task::none(),
         };
 

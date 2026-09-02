@@ -3,15 +3,34 @@
 Status: **items 1-5 implemented** (in `f423f18`), and the six findings from
 a **second review round against that fix commit itself** are implemented in
 the follow-up commit — see "Second review round" at the bottom of this file.
-Item 6 (punctuation-folded grouping key)
-remains **deliberately deferred** — it was already marked "follow-up sized,
-not part of the urgent batch" in this plan's own text, and that call still
-stands; it's a genuine parity gap, not a regression, and is sized more like
-a small feature than a bug fix. The "also worth folding in" `push_recent`
-de-dup note under item 1 was likewise left for later — it's a soft
-"consider," not a required fix, and changes `push_recent`'s de-dup
-semantics, which is a separate risk surface from the key-consistency bug
-it was attached to.
+Item 6 (punctuation-folded grouping key) **shipped in 0.5.0**, as did the
+"also worth folding in" `push_recent` de-dup note under item 1. Both had been
+deferred since 0.4.1 as follow-up-sized rather than urgent, which was the
+right call at the time — neither was a regression.
+
+**Item 6 as built**: `album_grouping_key(artist, base)` in `types.rs` folds
+case *and* punctuation (en/em dash/minus/non-breaking hyphens → `-`, smart
+quotes → straight, `…` → `...`, whitespace runs → one space) and is used by
+both consumers the plan named — `group_albums_by_artist`'s map key and the
+variant lookup in `AlbumSelected`. The user's own library turned out to
+contain exactly mikMPD's motivating case: The Beatles' `1967-1970` (ASCII
+hyphen) beside `1967–1970` (en dash), two rows of one 2-disc set. It was
+found by an existing live test failing on the *new* behaviour, which is the
+best evidence available that the fix does something.
+
+**One thing item 6 did not extend to: `art_key_for`.** It disc-strips but
+does not fold, so a per-track art key built from a raw tag can differ from
+the group-level key the grid stores under. That split predates this work (it
+already split on case) and folding it would re-key every cached cover in
+every existing install — a migration, not a fix. The grouping live test now
+prints every such split rather than asserting; on the real library it is 6 of
+45 multi-disc groups, 5 of them case-only.
+
+**The `push_recent` note as built**: de-dup moved to `RecentAlbum::grouping_key`
+(disc-stripped and folded), and the stored album name is now the base rather
+than the raw tag — which also fixes the tile caption and navigation, since
+`AlbumSelected` matches on a group's base and a disc-suffixed name matches
+none.
 
 Findings from reviewing the seven parity commits landed on `release/v0.4.1`
 (`b1329b3`..`b820700`). Every item below was **verified against the actual

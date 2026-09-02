@@ -17,6 +17,14 @@ pub enum MpdError {
     #[error("Parse error: {0}")]
     Parse(String),
 
+    /// The server refused our `password`. Distinct from `Server` because it
+    /// is the one ACK that must abort the connect rather than be reported as
+    /// a failed command: an unauthenticated connection answers every later
+    /// command with a permission ACK, which is not connection-fatal, so it
+    /// would never be dropped and never retried.
+    #[error("Authentication failed: {0}")]
+    Auth(String),
+
     #[error("Not connected")]
     NotConnected,
 
@@ -38,7 +46,15 @@ impl MpdError {
     /// logged `stream did not contain valid UTF-8` forever and answered
     /// `currentsong` with an ACK addressed to `{albumart}`.
     pub fn is_connection_fatal(&self) -> bool {
-        !matches!(self, MpdError::Server { .. } | MpdError::NotConnected)
+        // `Auth` is grouped with the two non-fatal arms for the same reason
+        // they are there: the socket itself is fine, MPD simply refused. It
+        // can only be produced by `connect`, which discards the connection
+        // itself, so it never actually reaches this test through `cmd` —
+        // classifying it as "the stream is desynced" would be a lie.
+        !matches!(
+            self,
+            MpdError::Server { .. } | MpdError::NotConnected | MpdError::Auth(_)
+        )
     }
 }
 

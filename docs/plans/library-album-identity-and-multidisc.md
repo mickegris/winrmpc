@@ -1,13 +1,29 @@
 # Plan: Album identity, multi-disc collapsing, grid view, richer search
 
-Status: **Parts A+B implemented** (artist-aware grouping + multi-disc
-collapsing — the plan's namesake). **Parts C (grid view) and D (search
-sections/batch-select) deliberately deferred**, not implemented — Part D's
-own text already flagged it as "bundle in only if the above ships smoothly,"
-and Part C's prerequisite note calls out real scope; landing all four parts
-in one pass risked a much larger, harder-to-review diff for a plan already
-flagged as "largest item in the set." Left as clean follow-up work; nothing
-about Parts A/B blocks them. Part of the mikMPD parity set (see
+Status: **all four parts implemented.** A+B (artist-aware grouping +
+multi-disc collapsing — the plan's namesake) shipped first; **C (grid view)
+followed in 0.4.2** as the shared `widgets/album_grid.rs`; **D (search
+sections + batch select) shipped in 0.5.0**. C and D were deliberately
+deferred out of the first pass — Part D's own text flagged it as "bundle in
+only if the above ships smoothly," and landing all four at once risked a much
+larger, harder-to-review diff for a plan already flagged as "largest item in
+the set."
+
+**Part D implementation notes / deviations**:
+- **The sections are derived from the one `search any` result set, not
+  fetched by three concurrent queries as sketched.** `search any` has already
+  matched every tag, so the artists and albums are in the reply; three
+  queries would spend three round trips on the one shared connection to
+  rediscover them, and could disagree with the songs on screen if the
+  database changed between them. `search_sections` is therefore a pure
+  function in `types.rs` and fully unit-tested, which the three-query version
+  could not have been.
+- **A section lists an entity only when its own name matches.** Not in the
+  plan, and necessary: a search for `love` returns hundreds of songs, and
+  listing every artist among them would bury the two the user meant.
+- Batch select landed with the sections rather than as the separate later
+  increment the plan allowed, since the row layout had to change anyway to
+  make room for the checkbox. Part of the mikMPD parity set (see
 [`mikmpd-parity-overview.md`](mikmpd-parity-overview.md), gaps #2/#3).
 
 Mirrors three mikMPD plans folded into one winrmpc-shaped piece of work,
