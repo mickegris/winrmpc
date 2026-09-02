@@ -158,6 +158,18 @@ pub enum Message {
     SearchSubmit,
     SearchResults(Vec<Song>),
     SearchAddToQueue(String),
+    /// Check/uncheck one search result for a batch action.
+    SearchToggleSelected(String),
+    /// The Songs header's select-all box: `true` selects every result,
+    /// `false` clears the selection.
+    SearchSelectAll(bool),
+    /// Enqueue every selected result, in the order they are displayed.
+    SearchQueueSelected,
+    /// Outcome of that bulk enqueue: how many were sent, and whether MPD
+    /// took them. `command_list` stops at the first failure, so an error
+    /// here means a *partial* selection was queued — which the user has to
+    /// be told about rather than left to notice.
+    SelectionQueued(usize, Result<(), String>),
 
     // === Album Art ===
     /// A one-off fetch: the playing track's cover, an artist image, a

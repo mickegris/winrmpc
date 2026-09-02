@@ -4,8 +4,110 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-08-21. **v0.4.5 released** — a bug-fix release for two
-defects the live suite found in 0.4.4.
+Last updated: 2026-09-02. **v0.5.0 in progress** on
+`fix/mpd-password-auth` — password authentication (which had never worked at
+all), plus the three deferrals listed below.
+
+## 0.5.0 — what's on the branch
+
+| | Where it came from |
+|---|---|
+| **MPD password auth never worked** — the reported bug | new |
+| Punctuation-folded album grouping key | [review-fixes-correctness](plans/review-fixes-correctness.md) §6, deferred since 0.4.1 |
+| `recent_albums` de-duped on the disc-stripped base | same doc, item 1's "also worth folding in" note |
+| Search sections + batch select | [library-album-identity-and-multidisc](plans/library-album-identity-and-multidisc.md) Part D, deferred since 0.4.1 |
+
+**The password bug is the one worth remembering.** `MpdClient::password()`
+existed from 0.4.0 and *nothing ever called it* — the field was loaded from
+TOML, editable in Settings, saved back, and read by no one. What made it
+present as "connected but empty" rather than as a login failure: `connect()`
+only opened the socket and read the banner, which succeeds regardless of
+auth, so the app set `connected = true`; every command then ACKed with a
+permission error, and an ACK is deliberately *not* connection-fatal, so the
+socket was never dropped and `ConnectionTick` never retried. The fix sends
+the password inside `connect()`, before the connection is published, and
+fails the whole connect on rejection.
+
+Two things fell out of the work rather than the report:
+- A persistent connect failure toasted **every 3 seconds forever**, since
+  `ConnectionTick` retries at that rate and every attempt raised a fresh
+  toast. Now only a *change* of error is reported.
+- The `UNKNOWN_ARTIST`/`UNKNOWN_ALBUM` placeholders were defined in
+  `ui/widgets/link.rs` while the strings they must match are produced in
+  `mpd/types.rs`. Moved to where they're produced; `link.rs` re-exports.
+
+**299 offline tests (was 268), 20 live (was 19).** No new clippy warnings —
+note the repo still carries 15 pre-existing ones under a newer clippy than CI
+pins.
+
+### Verified against the real server (miknuc.klova:6600, MPD 0.24.0)
+
+This is the user's own **password-protected** server, which is what made it
+the acceptance check: the full live suite passes with
+`WINRMPC_TEST_MPD_PASSWORD` set and fails with `ACK [4@0] … you don't have
+permission for "find"` without it. 849 albums, 849 of 849 with add-times.
+
+The punctuation fix was confirmed the same way, by an existing live test
+**failing on the new behaviour**:
+`live_album_grouping_collapses_real_multidisc_albums` asserted that every
+variant strips to its group's base, which stops being true the moment
+folding works — the library holds The Beatles' `1967-1970` and `1967–1970`
+as two tags of one set. The assertion now compares through
+`album_grouping_key`.
+
+### Still not verified
+
+- **No manual UI pass**, which matters more this round than usual: the Search
+  view was rewritten (three sections, a checkbox column added to every song
+  row, a batch action bar) and none of it has been seen rendered. Worth
+  eyeballing: the song row's columns still line up now that a checkbox leads
+  them, the action bar appearing/disappearing doesn't reflow the list
+  underneath, and the Albums section's covers actually arrive.
+- **Entering a wrong password** should now toast "Authentication failed:
+  incorrect password" once, not repeatedly. Only tested against a mock.
+
+### Known gap, deliberately not fixed here
+
+**`art_key_for` is not punctuation- or case-folded**, so a per-track art key
+built from a raw tag can differ from the group-level key the grid stores
+under — the cover shows in one place and not the other. Pre-existing (it
+already split on case). Folding it would re-key every cached cover in every
+existing install, which is a migration rather than a fix, and was out of the
+scope approved for this branch.
+`live_album_grouping_collapses_real_multidisc_albums` prints every split it
+finds: **6 of 45** multi-disc groups on the real library, 5 of them
+case-only.
+
+### Found by the smoke test, and fixed
+
+**The playing track's cover was fetched from MusicBrainz once per status
+poll while the fetch was in flight.** A 15-second run of the release binary
+against the real server logged the *same* album's cover arriving **four
+times**, ~1.2s apart — exactly the throttle interval, so four real requests
+serialized behind `MusicBrainzThrottle`, each holding a slot the background
+sweep needed.
+
+Cause: `CurrentSongUpdated` fires on every 500ms poll and its only art guard
+was `!self.art_handles.contains_key(&art_key)`, which becomes true when a
+fetch *finishes*. The background queue has `art_pending` for exactly this;
+the one-off path (playing track, artist images, `fetch_recent_art`) had
+nothing.
+
+Fixed with `oneoff_art_pending`, and by moving *both* guards inside
+`fetch_art`/`fetch_artist_art` — three call sites each repeated the
+`art_handles` check and none could have known a fetch was already running.
+**Re-measured under the same cold-cache conditions: four fetches became
+one.** Pre-existing, not introduced by this branch.
+
+### Still pending, and blocked on the user
+
+**macOS signing and notarisation** was flagged for 0.4.5, slipped it, and has
+slipped 0.5.0 too. The repo-side work (B/C/D in
+[`macos-signing-and-notarization.md`](plans/macos-signing-and-notarization.md))
+is ready to write, but step A is an account action that cannot be done from
+the repo, and `gh secret list` is **empty** — no secrets are configured. Until
+they are, the `.app` stays unsigned and the four places documenting
+`xattr -dr com.apple.quarantine` all stay correct and must not be changed.
 
 ## 0.4.5 — what shipped
 
@@ -39,9 +141,10 @@ prints the mismatched keys and is what found the second one.
   collide with Previous, and the bar's height shouldn't change between
   tracks), and the sort controls' placement in all six list headers.
 
-## Pending for 0.4.5 — mention in the release notes
+## Pending since 0.4.5 — still open, see "blocked on the user" above
 
-**The macOS app should be signed and notarised by then.** A paid Apple
+**The macOS app should be signed and notarised.** It wasn't by 0.4.5 and
+isn't by 0.5.0; the account-side step has not been done. A paid Apple
 Developer account now exists, which was the only blocker
 ([`macos-signing-and-notarization.md`](plans/macos-signing-and-notarization.md)).
 Once it lands, the notes should say plainly that the app now opens by

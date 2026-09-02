@@ -14,6 +14,13 @@ use tokio::sync::Mutex;
 pub struct MpdClient {
     conn: Arc<Mutex<Option<MpdConnection>>>,
     addr: String,
+    /// The server's password, if it wants one. Sent by `connect`, which is
+    /// the *only* correct place for it: MPD authenticates a connection, not
+    /// a client, so every path that opens a socket — the initial connect,
+    /// `ConnectionTick`'s reconnect, and the desync recovery that drops a
+    /// poisoned connection — has to re-send it or come back with no
+    /// permissions at all.
+    password: Option<String>,
     /// Which `find` form this server accepts for Recently Added, probed once
     /// and remembered. `0` is "not probed yet"; every other value is a
     /// `RecentlyAddedRung` discriminant. Shared across clones like `conn`,
@@ -26,26 +33,48 @@ impl Clone for MpdClient {
         Self {
             conn: Arc::clone(&self.conn),
             addr: self.addr.clone(),
+            password: self.password.clone(),
             recently_added_rung: Arc::clone(&self.recently_added_rung),
         }
     }
 }
 
 impl MpdClient {
-    pub fn new(addr: &str) -> Self {
+    /// `password` is `None` for a server that doesn't want one. It is taken
+    /// at construction rather than passed to `connect` so that no caller can
+    /// reconnect without it — see the field's comment.
+    pub fn new(addr: &str, password: Option<String>) -> Self {
         Self {
             conn: Arc::new(Mutex::new(None)),
             addr: addr.to_string(),
+            password,
             recently_added_rung: Arc::new(AtomicU8::new(0)),
         }
     }
 
     pub async fn connect(&self) -> MpdResult<()> {
-        let connection = MpdConnection::connect(&self.addr).await?;
+        let mut connection = MpdConnection::connect(&self.addr).await?;
+        // Authenticate before the connection is published to `self.conn`, so
+        // there is no window in which another task can borrow a socket that
+        // has no permissions yet. A wrong password fails the whole connect
+        // rather than leaving an unusable-but-`Some` connection behind: MPD
+        // answers every later command with `ACK [4@0] … you don't have
+        // permission`, and an ACK is deliberately *not* connection-fatal, so
+        // such a connection would never be dropped and never retried — the
+        // app would log "Connected to MPD" and then fail silently forever.
+        if let Some(pw) = self.password.as_deref() {
+            if let Err(e) = connection.command(&Self::password_command(pw)).await {
+                return Err(match e {
+                    MpdError::Server { message, .. } => MpdError::Auth(message),
+                    other => other,
+                });
+            }
+        }
         tracing::info!(
-            "Connected to MPD {} at {}",
+            "Connected to MPD {} at {}{}",
             connection.protocol_version,
-            self.addr
+            self.addr,
+            if self.password.is_some() { " (authenticated)" } else { "" }
         );
         // Re-probe the Recently Added ladder on a fresh connection. The
         // server behind this address may have been upgraded or replaced
@@ -765,8 +794,12 @@ impl MpdClient {
     // Authentication
     // ========================================================================
 
-    pub async fn password(&self, pw: &str) -> MpdResult<()> {
-        self.cmd_ok(&format!("password \"{}\"", Self::escape(pw))).await
+    /// The `password` command line. Private, and not routed through `cmd`:
+    /// authentication belongs to `connect` alone, and a public method here
+    /// would invite a caller to authenticate *a* connection rather than
+    /// *every* connection.
+    fn password_command(pw: &str) -> String {
+        format!("password \"{}\"", Self::escape(pw))
     }
 }
 
@@ -848,6 +881,33 @@ mod tests {
             "stream did not contain valid UTF-8",
         ))
         .is_connection_fatal());
+    }
+
+    /// The password goes through the same escaping as every other
+    /// interpolated string. A password is *exactly* the kind of value that
+    /// contains a quote or a backslash, and an unescaped one would either
+    /// break the command framing or inject a second command.
+    #[test]
+    fn password_command_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            MpdClient::password_command("plain-pw"),
+            "password \"plain-pw\""
+        );
+        assert_eq!(
+            MpdClient::password_command("a\"b"),
+            "password \"a\\\"b\""
+        );
+        assert_eq!(
+            MpdClient::password_command("back\\slash"),
+            "password \"back\\\\slash\""
+        );
+    }
+
+    /// `Auth` sits with the other two non-fatal arms: the socket is fine,
+    /// MPD simply refused us.
+    #[test]
+    fn an_auth_failure_is_not_a_desynced_connection() {
+        assert!(!MpdError::Auth("incorrect password".into()).is_connection_fatal());
     }
 
     #[test]

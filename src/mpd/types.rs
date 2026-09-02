@@ -173,11 +173,11 @@ impl Song {
     pub fn display_artist(&self) -> &str {
         tag_or(&self.artist)
             .or_else(|| tag_or(&self.album_artist))
-            .unwrap_or("Unknown Artist")
+            .unwrap_or(UNKNOWN_ARTIST)
     }
 
     pub fn display_album(&self) -> &str {
-        tag_or(&self.album).unwrap_or("Unknown Album")
+        tag_or(&self.album).unwrap_or(UNKNOWN_ALBUM)
     }
 
     /// The album artist, falling back to the track artist. Mirror image of
@@ -186,7 +186,7 @@ impl Song {
     pub fn display_album_artist(&self) -> &str {
         tag_or(&self.album_artist)
             .or_else(|| tag_or(&self.artist))
-            .unwrap_or("Unknown Artist")
+            .unwrap_or(UNKNOWN_ARTIST)
     }
 
     pub fn format_duration(&self) -> String {
@@ -301,11 +301,166 @@ pub fn validate_playlist_name(name: &str) -> Option<String> {
 /// that collapsed into this (artist, base-title) group — more than one
 /// means a multi-disc set tagged with a name suffix (`"X [Disc 1]"` /
 /// `"X [Disc 2]"`).
+/// The placeholders `Song::display_artist`/`display_album`/
+/// `display_album_artist` fall back to when a tag is missing or blank.
+///
+/// Defined here, where they are *produced*, rather than in the UI that
+/// happens to test for them: they are values that flow through art keys,
+/// grouping and external lookups, and every one of those has to recognise a
+/// placeholder as "no data" rather than as a name. `link::is_real_name` is
+/// the UI-side test that gates them out of clickable links.
+pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
+pub const UNKNOWN_ALBUM: &str = "Unknown Album";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlbumGroup {
     pub artist: String,
     pub base: String,
     pub variants: Vec<String>,
+}
+
+/// Folds the punctuation that two rips of one album disagree about, so a
+/// grouping key can survive the difference. Length is *not* preserved and
+/// the result is never displayed — it exists only to be compared.
+///
+/// | Folded | To | Why |
+/// |---|---|---|
+/// | `–` `—` `−` `‐` `‑` | `-` | The Beatles' `1967-1970` (ASCII hyphen) and `1967–1970` (en dash) are two directories and two album tags for one 2-disc set |
+/// | `‘` `’` `‛` | `'` | `Rockin' ` vs `Rockin’ ` |
+/// | `“` `”` `‟` | `"` | same, for titles that quote |
+/// | `…` | `...` | one character or three, depending on the tagger |
+/// | runs of whitespace | one space | this library really does hold `"Blue  Oyster Cult"` |
+///
+/// Then trimmed and lowercased. This is deliberately *not*
+/// `art::musicbrainz::normalize_for_lookup`, which does all of the above and
+/// then moves a sort-order article to the front (`"Beatles, The"` →
+/// `"The Beatles"`). That transform is right for asking a search engine a
+/// question and wrong here: it would collapse two genuinely differently
+/// tagged artists into one row on a guess, and `types.rs` has no business
+/// depending on the lookup layer.
+fn fold_for_grouping(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut pending_space = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            // Collapse the run; emit it only once something follows, which
+            // also trims the tail for free.
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        match ch {
+            '\u{2013}' | '\u{2014}' | '\u{2212}' | '\u{2010}' | '\u{2011}' => out.push('-'),
+            '\u{2018}' | '\u{2019}' | '\u{201B}' => out.push('\''),
+            '\u{201C}' | '\u{201D}' | '\u{201F}' => out.push('"'),
+            '\u{2026}' => out.push_str("..."),
+            _ => out.extend(ch.to_lowercase()),
+        }
+    }
+    out
+}
+
+/// The identity of one album row: artist and disc-stripped title, both
+/// folded by [`fold_for_grouping`].
+///
+/// **Every consumer of album identity must go through this**, or a row
+/// won't find its own disc data — mikMPD learned that the hard way and its
+/// note is emphatic about it. Today that means
+/// [`group_albums_by_artist`]'s map key and the variant lookup in
+/// `AlbumSelected` (`app.rs`), which re-derives the artist's groups and has
+/// to match the base it was handed.
+///
+/// The two halves are joined by the same ASCII Unit Separator the art keys
+/// use, so an artist ending in the album's first characters can't be
+/// confused for a different split.
+pub fn album_grouping_key(artist: &str, base: &str) -> String {
+    format!("{}\x1f{}", fold_for_grouping(artist), fold_for_grouping(base))
+}
+
+/// Case- and punctuation-insensitive containment, folded by the same rules
+/// the album grouping key uses.
+///
+/// `folded_needle` must already have been through [`fold_query`] — the
+/// caller folds once and tests many times, which is the whole reason this
+/// takes a pre-folded needle instead of a raw one.
+pub fn folded_contains(haystack: &str, folded_needle: &str) -> bool {
+    fold_for_grouping(haystack).contains(folded_needle)
+}
+
+/// Prepares a user-typed query for [`folded_contains`].
+pub fn fold_query(query: &str) -> String {
+    fold_for_grouping(query)
+}
+
+/// The Artists and Albums sections of the Search view, derived from the
+/// songs one `search any` already returned.
+#[derive(Debug, Default, PartialEq)]
+pub struct SearchSections {
+    pub artists: Vec<String>,
+    pub albums: Vec<AlbumGroup>,
+}
+
+/// Splits a flat search result into the entities it mentions.
+///
+/// **Derived from the one result set rather than fired as three separate
+/// queries**, which is where this departs from the plan. `search any` has
+/// already matched every tag, so the artists and albums are in the reply —
+/// three queries would cost three round trips on the one shared connection
+/// to rediscover them, and could disagree with the songs on screen if the
+/// database changed between them.
+///
+/// The sections list entities whose **own name** matches. A search for
+/// `beatles` should offer the artist and their albums; it should not list
+/// every artist who happens to have a song called "Beatles" — and, more to
+/// the point, a search for `love` must not promote all 300 artists who
+/// recorded a song with "love" in the title into an artist section. The
+/// Songs section is the one that keeps every match.
+pub fn search_sections(results: &[Song], query: &str) -> SearchSections {
+    let needle = fold_query(query);
+    if needle.is_empty() {
+        return SearchSections::default();
+    }
+
+    let mut artists: Vec<String> = Vec::new();
+    let mut album_pairs: Vec<(String, String)> = Vec::new();
+    for song in results {
+        // Both artist tags are candidates: a compilation matches on the
+        // track artist, an album-artist-only rip on the other, and
+        // `display_*` already resolves one to the other when either is
+        // missing, so the pair is at worst the same name twice.
+        for name in [song.display_artist(), song.display_album_artist()] {
+            // De-duplicated on the **exact** spelling, deliberately, even
+            // though the *matching* above is folded. Each distinct spelling
+            // is a distinct tag holding distinct songs — this library really
+            // does have both `"Blue Oyster Cult"` and `"Blue  Oyster Cult"`
+            // — and an artist row navigates by name, so folding the two into
+            // one row would leave the other's albums unreachable. The
+            // Artists list has the same duplicates for the same reason, so
+            // this also keeps the two views telling the same story.
+            if name != UNKNOWN_ARTIST
+                && folded_contains(name, &needle)
+                && !artists.iter().any(|a| a == name)
+            {
+                artists.push(name.to_string());
+            }
+        }
+        let album = song.display_album();
+        if album != UNKNOWN_ALBUM && folded_contains(album, &needle) {
+            album_pairs.push((song.display_album_artist().to_string(), album.to_string()));
+        }
+    }
+
+    artists.sort_by(|a, b| name_cmp(a, b));
+    let mut albums = group_albums_by_artist(&album_pairs);
+    // Album name first, artist as the tiebreak — the same rule the Albums
+    // list follows, and for the same reason: the column being read is the
+    // titles.
+    albums.sort_by(|a, b| name_cmp(&a.base, &b.base).then_with(|| name_cmp(&a.artist, &b.artist)));
+
+    SearchSections { artists, albums }
 }
 
 /// Groups `(album_artist, album)` pairs (as returned by
@@ -315,18 +470,16 @@ pub struct AlbumGroup {
 /// disc-suffixed variants of the same artist's album collapse into one.
 /// Preserves first-seen order.
 ///
-/// The **base** is case-folded for the key (though the first-seen spelling
-/// is what gets displayed) because inconsistent capitalisation across the
-/// discs of one set is common in real tags — this library has
-/// `"Decade Of Aggression - Disc 2"` alongside
-/// `"Decade of Aggression - Disc 1 of 2"`, which would otherwise be two
-/// rows of one album.
+/// The **base** is case- and punctuation-folded for the key (though the
+/// first-seen spelling is what gets displayed) — see
+/// [`album_grouping_key`], which owns the folding rules and the reasons
+/// for them.
 pub fn group_albums_by_artist(pairs: &[(String, String)]) -> Vec<AlbumGroup> {
-    let mut index: HashMap<(String, String), usize> = HashMap::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
     let mut groups: Vec<AlbumGroup> = Vec::new();
     for (artist, album) in pairs {
         let base = album_base_and_disc(album).0;
-        let key = (artist.to_lowercase(), base.to_lowercase());
+        let key = album_grouping_key(artist, &base);
         match index.get(&key) {
             Some(&i) => {
                 if !groups[i].variants.contains(album) {
@@ -720,12 +873,35 @@ pub struct RecentAlbum {
     pub album: String,
 }
 
+impl RecentAlbum {
+    /// This entry's album identity, for de-duplication.
+    ///
+    /// Disc-stripped **and** punctuation-folded, like every other album key
+    /// in the app. Without the stripping, `"Nostradamus (CD 1/2)"` and
+    /// `"Nostradamus (disc 2)"` are two entries for one album, and the
+    /// strip is only eight slots deep — playing one 3-disc set used to
+    /// consume nearly half of it and push out four genuinely different
+    /// albums.
+    ///
+    /// Strips here rather than trusting the caller so the invariant holds
+    /// for a `recent_albums` list loaded from an older config file, whose
+    /// entries were written raw.
+    pub fn grouping_key(&self) -> String {
+        album_grouping_key(&self.artist, &album_base_and_disc(&self.album).0)
+    }
+}
+
 /// Insert `entry` at the front of `recents`, deduplicating and capping at 8.
+///
+/// De-dup is by [`RecentAlbum::grouping_key`], not by field equality, so
+/// moving between the discs of one set moves that one entry to the front
+/// instead of adding a second.
 ///
 /// Extracted as a pure function so it can be unit-tested without the GUI.
 pub fn push_recent(recents: &mut Vec<RecentAlbum>, entry: RecentAlbum) {
     // Remove any existing occurrence (move-to-front semantics)
-    recents.retain(|r| r != &entry);
+    let key = entry.grouping_key();
+    recents.retain(|r| r.grouping_key() != key);
     recents.insert(0, entry);
     recents.truncate(8);
 }
@@ -1714,6 +1890,177 @@ mod tests {
         assert_eq!(s.display_format(), "FLAC");
     }
 
+    // --- album_grouping_key -------------------------------------------------
+
+    /// The case mikMPD documents: one 2-disc set whose two rips disagree by
+    /// a single character. Without folding these are two rows, each captioned
+    /// as a single disc and each holding half the tracks.
+    #[test]
+    fn an_en_dash_and_a_hyphen_are_one_album() {
+        let pairs = vec![
+            ("The Beatles".into(), "1967-1970 [Disc 1]".into()),
+            ("The Beatles".into(), "1967\u{2013}1970 [Disc 2]".into()),
+        ];
+        let groups = group_albums_by_artist(&pairs);
+
+        assert_eq!(groups.len(), 1, "one album, not two: {groups:?}");
+        assert_eq!(groups[0].variants.len(), 2, "both discs land in it");
+        assert_eq!(
+            groups[0].base, "1967-1970",
+            "the first-seen spelling is what gets displayed"
+        );
+    }
+
+    #[test]
+    fn smart_quotes_ellipses_and_doubled_spaces_all_fold() {
+        for (a, b) in [
+            ("Rockin\u{2019} the Joint", "Rockin' the Joint"),
+            ("Wish You Were Here\u{2026}", "Wish You Were Here..."),
+            ("Blue  Oyster Cult", "Blue Oyster Cult"),
+            ("  Trimmed  ", "Trimmed"),
+            ("\u{201C}Heroes\u{201D}", "\"Heroes\""),
+        ] {
+            assert_eq!(
+                album_grouping_key("Artist", a),
+                album_grouping_key("Artist", b),
+                "{a:?} and {b:?} should be one album"
+            );
+        }
+    }
+
+    /// Folding must not start merging albums that genuinely differ, and the
+    /// artist must still separate two same-titled albums.
+    #[test]
+    fn folding_does_not_collapse_genuinely_different_albums() {
+        assert_ne!(
+            album_grouping_key("A", "Greatest Hits"),
+            album_grouping_key("A", "Greatest Hits II")
+        );
+        assert_ne!(
+            album_grouping_key("Queen", "Greatest Hits"),
+            album_grouping_key("ABBA", "Greatest Hits")
+        );
+        // The separator stops an artist's tail being read as the album's head.
+        assert_ne!(
+            album_grouping_key("AB", "C"),
+            album_grouping_key("A", "BC")
+        );
+    }
+
+    /// The key is what `AlbumSelected` matches a row against, so it has to be
+    /// stable under the disc stripping the grouping already did.
+    #[test]
+    fn the_key_is_case_folded_like_the_grouping_it_replaces() {
+        assert_eq!(
+            album_grouping_key("Slayer", "Decade Of Aggression"),
+            album_grouping_key("slayer", "decade of aggression")
+        );
+    }
+
+    // --- search_sections ----------------------------------------------------
+
+    fn track(artist: &str, album_artist: &str, album: &str, title: &str) -> Song {
+        Song {
+            file: format!("{artist}/{album}/{title}.flac"),
+            artist: Some(artist.into()),
+            album_artist: Some(album_artist.into()),
+            album: Some(album.into()),
+            title: Some(title.into()),
+            ..Song::default()
+        }
+    }
+
+    /// The sections list entities whose **own name** matches. A search for
+    /// "love" must not promote every artist who recorded a song with "love"
+    /// in the title into an Artists section — that is the Songs section's job.
+    #[test]
+    fn sections_only_list_entities_whose_own_name_matches() {
+        let results = vec![
+            track("The Beatles", "The Beatles", "Love", "All You Need Is Love"),
+            track("Nirvana", "Nirvana", "Nevermind", "Lithium"),
+            track("Nirvana", "Nirvana", "Nevermind", "Love Buzz"),
+        ];
+        let s = search_sections(&results, "love");
+
+        assert!(s.artists.is_empty(), "no artist is called 'love': {:?}", s.artists);
+        assert_eq!(s.albums.len(), 1);
+        assert_eq!(s.albums[0].base, "Love");
+    }
+
+    #[test]
+    fn an_artist_search_lists_the_artist_and_their_matching_albums() {
+        let results = vec![
+            track("The Beatles", "The Beatles", "Revolver", "Taxman"),
+            track("The Beatles", "The Beatles", "Beatles For Sale", "No Reply"),
+        ];
+        let s = search_sections(&results, "beatles");
+
+        assert_eq!(s.artists, vec!["The Beatles".to_string()]);
+        // "Revolver" does not contain "beatles"; only the album that does.
+        assert_eq!(s.albums.len(), 1);
+        assert_eq!(s.albums[0].base, "Beatles For Sale");
+    }
+
+    /// Both artist tags are candidates, so a compilation's guest artist is
+    /// findable and an album-artist-only rip still surfaces.
+    #[test]
+    fn both_artist_tags_are_searched() {
+        let results = vec![track("Bobby Womack", "Various Artists", "Jackie Brown", "Across 110th Street")];
+
+        assert_eq!(search_sections(&results, "womack").artists, vec!["Bobby Womack".to_string()]);
+        assert_eq!(
+            search_sections(&results, "various").artists,
+            vec!["Various Artists".to_string()]
+        );
+    }
+
+    /// The sections are disc-collapsed and artist-scoped like every other
+    /// album list, because they are built by the same grouping function.
+    #[test]
+    fn album_sections_collapse_discs_and_separate_artists() {
+        let results = vec![
+            track("Slayer", "Slayer", "Decade Of Aggression - Disc 1", "Hell Awaits"),
+            track("Slayer", "Slayer", "Decade of Aggression - Disc 2 of 2", "Angel Of Death"),
+            track("Queen", "Queen", "Greatest Hits", "We Will Rock You"),
+            track("ABBA", "ABBA", "Greatest Hits", "SOS"),
+        ];
+
+        let discs = search_sections(&results, "aggression");
+        assert_eq!(discs.albums.len(), 1, "one album, two discs: {:?}", discs.albums);
+        assert_eq!(discs.albums[0].variants.len(), 2);
+
+        let hits = search_sections(&results, "greatest");
+        assert_eq!(hits.albums.len(), 2, "two artists, two rows");
+        assert_eq!(hits.albums[0].artist, "ABBA", "sorted by title then artist");
+    }
+
+    #[test]
+    fn the_placeholders_are_never_offered_as_entities() {
+        let mut s = song();
+        s.file = "x.flac".into();
+        let results = vec![s];
+        // `display_artist()`/`display_album()` are the placeholders here, and
+        // navigating to one renders an empty page.
+        let sections = search_sections(&results, "unknown");
+        assert!(sections.artists.is_empty());
+        assert!(sections.albums.is_empty());
+    }
+
+    #[test]
+    fn an_empty_or_blank_query_yields_no_sections() {
+        let results = vec![track("A", "A", "B", "C")];
+        assert_eq!(search_sections(&results, ""), SearchSections::default());
+        assert_eq!(search_sections(&results, "   "), SearchSections::default());
+    }
+
+    /// Query folding matches the grouping's: a typed hyphen finds an en dash.
+    #[test]
+    fn the_query_is_folded_like_the_grouping_key() {
+        let results = vec![track("The Beatles", "The Beatles", "1967\u{2013}1970", "Hey Jude")];
+        let s = search_sections(&results, "1967-1970");
+        assert_eq!(s.albums.len(), 1, "a typed hyphen must find an en dash");
+    }
+
     // --- push_recent ----------------------------------------------------
 
     #[test]
@@ -1734,6 +2081,41 @@ mod tests {
         push_recent(&mut v, RecentAlbum { artist: "A".into(), album: "1".into() });
         assert_eq!(v.len(), 2);
         assert_eq!(v[0].album, "1");
+    }
+
+    /// Two discs of one set are one entry. The strip is eight deep, so a
+    /// 3-disc album used to eat nearly half of it and evict four genuinely
+    /// different albums.
+    #[test]
+    fn push_recent_treats_the_discs_of_one_album_as_one_entry() {
+        let mut v = Vec::new();
+        push_recent(&mut v, RecentAlbum { artist: "Judas Priest".into(), album: "Nostradamus (CD 1/2)".into() });
+        push_recent(&mut v, RecentAlbum { artist: "Judas Priest".into(), album: "Nostradamus (disc 2)".into() });
+
+        assert_eq!(v.len(), 1, "one album: {v:?}");
+        assert_eq!(v[0].album, "Nostradamus (disc 2)", "the newest spelling wins the slot");
+    }
+
+    /// Same folding as the album lists — an entry written by an older build
+    /// (raw tag, en dash) must still match one recorded now.
+    #[test]
+    fn push_recent_folds_punctuation_like_the_album_lists() {
+        let mut v = vec![RecentAlbum {
+            artist: "The Beatles".into(),
+            album: "1967\u{2013}1970 [Disc 2]".into(),
+        }];
+        push_recent(&mut v, RecentAlbum { artist: "The Beatles".into(), album: "1967-1970".into() });
+
+        assert_eq!(v.len(), 1, "one album: {v:?}");
+    }
+
+    #[test]
+    fn push_recent_still_separates_different_albums() {
+        let mut v = Vec::new();
+        push_recent(&mut v, RecentAlbum { artist: "A".into(), album: "One".into() });
+        push_recent(&mut v, RecentAlbum { artist: "A".into(), album: "Two".into() });
+        push_recent(&mut v, RecentAlbum { artist: "B".into(), album: "One".into() });
+        assert_eq!(v.len(), 3);
     }
 
     #[test]

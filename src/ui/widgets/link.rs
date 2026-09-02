@@ -97,8 +97,9 @@ pub fn back_button<'a>() -> Element<'a, Message> {
 /// song carries no such tag. Navigating to them produces a junk view — MPD has
 /// no artist called "Unknown Artist" — so [`artist_link`] and [`album_link`]
 /// render them as inert text instead of links.
-pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
-pub const UNKNOWN_ALBUM: &str = "Unknown Album";
+// Re-exported from `mpd::types`, which produces them — a second definition
+// here would be one rename away from a link that silently stops being gated.
+pub use crate::mpd::types::{UNKNOWN_ALBUM, UNKNOWN_ARTIST};
 
 /// Is this a real name, or the placeholder for a missing tag?
 pub fn is_real_name(name: &str) -> bool {
