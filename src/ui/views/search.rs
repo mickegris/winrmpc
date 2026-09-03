@@ -41,14 +41,9 @@ fn album_row<'a>(
     art_handles: &'a HashMap<String, iced::widget::image::Handle>,
     index: usize,
 ) -> Element<'a, Message> {
-    let discs = group.variants.len();
-    let caption: Element<'a, Message> = if discs > 1 {
-        text(format!("{discs} discs"))
-            .size(11)
-            .color(AppColors::text_muted())
-            .into()
-    } else {
-        Space::with_width(0).into()
+    let caption: Element<'a, Message> = match group.disc_caption() {
+        Some(c) => text(c).size(11).color(AppColors::text_muted()).into(),
+        None => Space::with_width(0).into(),
     };
 
     let bg = song_row::row_bg(index, false);

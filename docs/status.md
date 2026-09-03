@@ -4,9 +4,36 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-09-02. **v0.5.0 in progress** on
-`fix/mpd-password-auth` — password authentication (which had never worked at
-all), plus the three deferrals listed below.
+Last updated: 2026-09-03. **v0.5.1** — a patch for two defects a manual pass
+of 0.5.0 found, both in code 0.5.0 itself shipped. **v0.5.0 released**:
+password authentication (which had never worked at all), plus three
+deferrals.
+
+## 0.5.1 — what shipped
+
+The manual UI pass 0.5.0 was released without finally happened, and found
+both of the things it was most likely to:
+
+| Reported | Cause |
+|---|---|
+| A one-disc album captioned **"2 discs"** (Scorpions, *Love at First Sting*) | The caption counted `variants.len()`, but a variant is any raw tag that folded into the group — including two capitalisations of one album. The grouping merging them is the feature; counting them as discs was the bug. 5 rows on the real library. |
+| **Search listed almost no albums** — `Metallica` gave 195 songs and 2 album rows | An album was offered only when its *title* matched the query. Searching an artist therefore hid their entire discography. Now the title **or** the artist matches: 2 → 14. |
+
+Both are in code 0.5.0 introduced (the search rule) or made visible (the
+caption — case-only variants already merged before 0.5.0, so that row was
+mis-captioned in earlier releases too; the punctuation folding only added
+one more).
+
+`AlbumGroup::disc_count()` **under-reports rather than over-reports** by
+design: a set distinguished only by a `disc` tag and not by its names — The
+Beatles' `1967-1970`/`1967–1970` — now reports one disc, where before it said
+two by accident. A missing caption is a gap; a wrong one is a claim, and the
+album page still shows the true count from `effective_disc`.
+
+**306 offline tests, 20 live.** Both fixes are pinned by live assertions, not
+just unit tests: the grouping test now fails if a group with no disc marker
+on any variant claims to be multi-disc, and the search test fails if an album
+by a matched artist isn't offered.
 
 ## 0.5.0 — what's on the branch
 

@@ -32,8 +32,7 @@ pub fn view<'a>(
                     album_grid::art_for(art_handles, &group.artist, &group.base),
                     group.base.clone(),
                     group.artist.clone(),
-                    (group.variants.len() > 1)
-                        .then(|| format!("{} discs", group.variants.len())),
+                    group.disc_caption(),
                     song_row::is_current_album(&group.artist, &group.base, current_song),
                 )
             })
@@ -88,11 +87,9 @@ pub fn view<'a>(
             if !group.artist.is_empty() {
                 label = label.push(link::artist_link(&group.artist, 12));
             }
-            if group.variants.len() > 1 {
+            if let Some(caption) = group.disc_caption() {
                 label = label.push(
-                    text(format!("{} discs", group.variants.len()))
-                        .size(11)
-                        .color(AppColors::accent()),
+                    text(caption).size(11).color(AppColors::accent()),
                 );
             }
 
