@@ -162,12 +162,10 @@ pub fn view<'a>(
         ]
         .align_y(Alignment::Center);
 
-        if group.variants.len() > 1 {
+        if let Some(caption) = group.disc_caption() {
             label = label.push(Space::with_width(8));
             label = label.push(
-                text(format!("{} discs", group.variants.len()))
-                    .size(11)
-                    .color(AppColors::accent()),
+                text(caption).size(11).color(AppColors::accent()),
             );
         }
 

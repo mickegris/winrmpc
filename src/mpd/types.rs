@@ -319,6 +319,52 @@ pub struct AlbumGroup {
     pub variants: Vec<String>,
 }
 
+impl AlbumGroup {
+    /// How many discs this row represents, from the variant names alone —
+    /// what the list captions show, without the song fetch
+    /// [`album_disc_count`] needs.
+    ///
+    /// **`variants.len()` is not the answer, and using it was a bug.** A
+    /// variant is any distinct raw album tag that folded into this group,
+    /// and the key folds case and punctuation — so a library holding both
+    /// `"Love at First Sting"` and `"Love At First Sting"` (a real pair on
+    /// the test library) produced a two-variant group and a row captioned
+    /// **"2 discs"** for a single-disc album. Spelling variants are exactly
+    /// what the grouping exists to merge; they say nothing about discs.
+    ///
+    /// So only variants carrying an actual disc marker count. `max` of the
+    /// highest disc number and the number of *distinct* ones, because
+    /// neither alone is right: `["X", "X [Disc 2]"]` (disc 1 untagged) is
+    /// two discs but only one marker, and `["X [Disc 1]", "X [disc 1]"]`
+    /// is one disc written two ways.
+    ///
+    /// **This under-reports rather than over-reports, deliberately.** A set
+    /// whose discs are distinguished only by a `disc` *tag* — The Beatles'
+    /// `1967-1970` and `1967–1970` on the test library, neither carrying a
+    /// marker in its name — reports 1 here, because nothing in the names
+    /// says otherwise. That is the documented cost of a caption that needs
+    /// no song fetch; [`album_disc_count`] takes the second signal once
+    /// `AlbumDetail` has the songs, and the album page shows the true count.
+    /// A missing caption is a gap; a wrong one is a claim.
+    pub fn disc_count(&self) -> usize {
+        let discs: std::collections::BTreeSet<u32> = self
+            .variants
+            .iter()
+            .filter_map(|v| album_base_and_disc(v).1)
+            .collect();
+        match discs.iter().next_back() {
+            None => 1,
+            Some(&highest) => (highest as usize).max(discs.len()),
+        }
+    }
+
+    /// The caption a list row shows, or `None` for a single disc.
+    pub fn disc_caption(&self) -> Option<String> {
+        let n = self.disc_count();
+        (n > 1).then(|| format!("{n} discs"))
+    }
+}
+
 /// Folds the punctuation that two rips of one album disagree about, so a
 /// grouping key can survive the difference. Length is *not* preserved and
 /// the result is never displayed — it exists only to be compared.
@@ -412,12 +458,20 @@ pub struct SearchSections {
 /// to rediscover them, and could disagree with the songs on screen if the
 /// database changed between them.
 ///
-/// The sections list entities whose **own name** matches. A search for
-/// `beatles` should offer the artist and their albums; it should not list
-/// every artist who happens to have a song called "Beatles" — and, more to
-/// the point, a search for `love` must not promote all 300 artists who
-/// recorded a song with "love" in the title into an artist section. The
-/// Songs section is the one that keeps every match.
+/// The sections list entities whose **own identity** matches — for an
+/// artist that is the name, for an album the title *or* its artist.
+///
+/// The album half is why: searching an artist has to offer that artist's
+/// albums. Matching on the title alone shipped in 0.5.0 and was wrong in the
+/// most ordinary case there is — a search for `Metallica` returned 195 songs
+/// and listed **two** albums, the self-titled one and someone else's
+/// *Plays Metallica By Four Cellos*, hiding the dozen actual Metallica
+/// albums the songs came from.
+///
+/// What neither half does is match on a *song*: a search for `love` must not
+/// promote all 300 artists who recorded a song with "love" in the title, nor
+/// their entire discographies, into the sections. The Songs section is the
+/// one that keeps every match.
 pub fn search_sections(results: &[Song], query: &str) -> SearchSections {
     let needle = fold_query(query);
     if needle.is_empty() {
@@ -448,8 +502,11 @@ pub fn search_sections(results: &[Song], query: &str) -> SearchSections {
             }
         }
         let album = song.display_album();
-        if album != UNKNOWN_ALBUM && folded_contains(album, &needle) {
-            album_pairs.push((song.display_album_artist().to_string(), album.to_string()));
+        let album_artist = song.display_album_artist();
+        if album != UNKNOWN_ALBUM
+            && (folded_contains(album, &needle) || folded_contains(album_artist, &needle))
+        {
+            album_pairs.push((album_artist.to_string(), album.to_string()));
         }
     }
 
@@ -1795,6 +1852,58 @@ mod tests {
         assert!(group_albums_by_artist(&[]).is_empty());
     }
 
+    // --- AlbumGroup::disc_count ---------------------------------------------
+
+    fn group(variants: &[&str]) -> AlbumGroup {
+        AlbumGroup {
+            artist: "A".into(),
+            base: album_base_and_disc(variants[0]).0,
+            variants: variants.iter().map(|v| v.to_string()).collect(),
+        }
+    }
+
+    /// The reported bug: Scorpions' "Love at First Sting" is one disc, and
+    /// the library holds it twice with different capitalisation. The grouping
+    /// merges them — that is what it is for — and the caption then read
+    /// "2 discs" because it counted variants.
+    #[test]
+    fn spelling_variants_are_not_discs() {
+        let g = group(&["Love at First Sting", "Love At First Sting"]);
+        assert_eq!(g.variants.len(), 2, "they really are two tags");
+        assert_eq!(g.disc_count(), 1, "but one disc");
+        assert_eq!(g.disc_caption(), None, "so no caption at all");
+    }
+
+    #[test]
+    fn real_disc_markers_still_count() {
+        assert_eq!(group(&["X [Disc 1]", "X [Disc 2]"]).disc_count(), 2);
+        assert_eq!(
+            group(&["X [Disc 1]", "X [Disc 2]"]).disc_caption(),
+            Some("2 discs".into())
+        );
+        assert_eq!(group(&["X (CD 1/2)", "X (disc 2)"]).disc_count(), 2);
+    }
+
+    /// Disc 1 left untagged is the common shape, and there is only one
+    /// marker to count — so the highest number has to be consulted too.
+    #[test]
+    fn an_untagged_first_disc_still_counts_as_two() {
+        assert_eq!(group(&["X", "X [Disc 2]"]).disc_count(), 2);
+    }
+
+    /// And the mirror: one disc written two ways is one disc, so the count
+    /// of *distinct* numbers is what matters, not the count of markers.
+    #[test]
+    fn one_disc_written_twice_is_one_disc() {
+        assert_eq!(group(&["X [Disc 1]", "X [disc 1]"]).disc_count(), 1);
+    }
+
+    #[test]
+    fn a_single_variant_is_always_one_disc() {
+        assert_eq!(group(&["X"]).disc_count(), 1);
+        assert_eq!(group(&["X [Disc 1]"]).disc_count(), 1);
+    }
+
     // --- album_disc_count ---------------------------------------------------
 
     #[test]
@@ -1988,7 +2097,7 @@ mod tests {
     }
 
     #[test]
-    fn an_artist_search_lists_the_artist_and_their_matching_albums() {
+    fn an_artist_search_lists_the_artist_and_all_their_albums() {
         let results = vec![
             track("The Beatles", "The Beatles", "Revolver", "Taxman"),
             track("The Beatles", "The Beatles", "Beatles For Sale", "No Reply"),
@@ -1996,9 +2105,11 @@ mod tests {
         let s = search_sections(&results, "beatles");
 
         assert_eq!(s.artists, vec!["The Beatles".to_string()]);
-        // "Revolver" does not contain "beatles"; only the album that does.
-        assert_eq!(s.albums.len(), 1);
-        assert_eq!(s.albums[0].base, "Beatles For Sale");
+        // "Revolver" doesn't contain "beatles" — it belongs because its
+        // *artist* does. Listing only the album that spells the query was
+        // the 0.5.0 bug.
+        let titles: Vec<&str> = s.albums.iter().map(|a| a.base.as_str()).collect();
+        assert_eq!(titles, vec!["Beatles For Sale", "Revolver"]);
     }
 
     /// Both artist tags are candidates, so a compilation's guest artist is
@@ -2032,6 +2143,43 @@ mod tests {
         let hits = search_sections(&results, "greatest");
         assert_eq!(hits.albums.len(), 2, "two artists, two rows");
         assert_eq!(hits.albums[0].artist, "ABBA", "sorted by title then artist");
+    }
+
+    /// The reported bug: searching an artist listed almost none of their
+    /// albums, because an album was only offered when its *title* matched.
+    /// "Metallica" returned 195 songs and two album rows.
+    #[test]
+    fn searching_an_artist_lists_that_artists_albums() {
+        let results = vec![
+            track("Metallica", "Metallica", "Ride the Lightning", "Fade to Black"),
+            track("Metallica", "Metallica", "Master of Puppets", "Battery"),
+            track("Metallica", "Metallica", "Metallica", "Enter Sandman"),
+            track("Apocalyptica", "Apocalyptica", "Plays Metallica By Four Cellos", "One"),
+        ];
+        let s = search_sections(&results, "metallica");
+
+        let titles: Vec<&str> = s.albums.iter().map(|a| a.base.as_str()).collect();
+        assert!(titles.contains(&"Ride the Lightning"), "{titles:?}");
+        assert!(titles.contains(&"Master of Puppets"), "{titles:?}");
+        assert!(titles.contains(&"Metallica"), "{titles:?}");
+        // Matched on its title rather than its artist, and still belongs.
+        assert!(titles.contains(&"Plays Metallica By Four Cellos"), "{titles:?}");
+        assert_eq!(titles.len(), 4);
+    }
+
+    /// Widening the album rule must not widen it to *songs*: a word common in
+    /// track titles still must not drag whole discographies into the section.
+    #[test]
+    fn a_song_title_match_does_not_pull_in_the_album() {
+        let results = vec![
+            track("Nirvana", "Nirvana", "Nevermind", "Love Buzz"),
+            track("The Beatles", "The Beatles", "Love", "All You Need Is Love"),
+        ];
+        let s = search_sections(&results, "love");
+
+        let titles: Vec<&str> = s.albums.iter().map(|a| a.base.as_str()).collect();
+        assert_eq!(titles, vec!["Love"], "Nevermind matched only on a song title");
+        assert!(s.artists.is_empty());
     }
 
     #[test]

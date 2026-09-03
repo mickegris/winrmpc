@@ -228,6 +228,35 @@ async fn live_album_grouping_collapses_real_multidisc_albums() {
         );
     }
 
+    // The 0.5.0 caption bug: the list rows counted *variants*, and a variant
+    // is any distinct raw tag that folded into the group — including two
+    // spellings of a one-disc album. Scorpions' "Love at First Sting" is
+    // stored twice with different capitalisation and was captioned
+    // "2 discs".
+    let mut would_have_lied = 0usize;
+    for g in &groups {
+        let markers = g
+            .variants
+            .iter()
+            .filter(|v| album_base_and_disc(v).1.is_some())
+            .count();
+        if markers == 0 {
+            assert_eq!(
+                g.disc_count(),
+                1,
+                "{:?} has no disc marker on any variant ({:?}) and must not \
+                 claim to be multi-disc",
+                g.base,
+                g.variants
+            );
+        }
+        if g.variants.len() > 1 && g.disc_count() == 1 {
+            would_have_lied += 1;
+            eprintln!("caption fixed: {:?} -> {:?}", g.base, g.variants);
+        }
+    }
+    eprintln!("{would_have_lied} single-disc albums were captioned as multi-disc before the fix");
+
     // Diagnostic, not an assertion. `art_key_for` disc-strips but does *not*
     // fold case or punctuation, so a per-track key built from the raw tag
     // (`Song::art_key()`, which is what Now Playing uses) can differ from the
@@ -1293,7 +1322,7 @@ async fn live_search_sections_are_derived_from_real_results() {
     let client = MpdClient::new(&addr, mpd_password());
     client.connect().await.expect("connect");
 
-    for query in ["beatles", "oyster", "greatest hits"] {
+    for query in ["beatles", "oyster", "greatest hits", "metallica", "scorpions"] {
         let songs = client.search("any", query).await.expect("search");
         let sections = search_sections(&songs, query);
         eprintln!(
@@ -1318,6 +1347,29 @@ async fn live_search_sections_are_derived_from_real_results() {
         for album in &sections.albums {
             assert!(album.base != "Unknown Album");
             assert!(!album.variants.is_empty(), "an album row with no variants");
+        }
+
+        // The 0.5.0 bug: an album was offered only when its *title* matched,
+        // so searching an artist listed almost none of their records.
+        // Whenever the query names an artist we actually matched, every
+        // album that artist appears on in the results must be offered.
+        let by_matched_artist: std::collections::HashSet<String> = songs
+            .iter()
+            .filter(|s| sections.artists.iter().any(|a| a == s.display_album_artist()))
+            .map(|s| album_grouping_key(s.display_album_artist(), &album_base_and_disc(s.display_album()).0))
+            .filter(|k| !k.ends_with("unknown album"))
+            .collect();
+        let offered: std::collections::HashSet<String> = sections
+            .albums
+            .iter()
+            .map(|a| album_grouping_key(&a.artist, &a.base))
+            .collect();
+        for key in &by_matched_artist {
+            assert!(
+                offered.contains(key),
+                "{query:?}: {key:?} is by an artist the search matched, but was \
+                 not offered as an album"
+            );
         }
     }
 }
