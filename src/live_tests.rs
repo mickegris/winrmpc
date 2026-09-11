@@ -84,6 +84,81 @@ async fn sample_uris(client: &MpdClient, n: usize) -> Vec<String> {
 }
 
 // ===========================================================================
+// Stored playlists — missing files and where `load` puts each row
+// ===========================================================================
+
+/// The acceptance test for `playlist_queue_index`, and the check that
+/// `is_missing_from_library` agrees with MPD in both directions.
+///
+/// For every stored playlist holding an entry flagged as missing, loads it
+/// into a scratch partition and asserts that the queue is exactly the
+/// unflagged entries, and that every playable row maps to the queue slot
+/// holding *its own* file. A false positive (a real song flagged) would
+/// shorten the expected queue; a false negative would leave `load` dropping
+/// something the mapping still counts. Either fails the length check before
+/// the per-row one. Prints what it found, since which files are gone is the
+/// useful half on a real library.
+///
+/// Passes vacuously on a server with no such playlist — it can't create one:
+/// `playlistadd` refuses a file the database doesn't have.
+#[tokio::test]
+#[ignore = "needs a live MPD server; set WINRMPC_TEST_MPD"]
+async fn live_playlist_rows_play_the_song_load_puts_there() {
+    let Some(addr) = mpd_addr() else { return };
+    let part = "winrmpc-test-playlist-missing";
+    let client = connect_scratch(&addr, part).await;
+
+    let playlists = client.list_playlists().await.expect("listplaylists");
+    let mut checked = 0;
+    for p in &playlists {
+        let songs = client.list_playlist(&p.name).await.expect("listplaylistinfo");
+        let missing: Vec<&Song> = songs.iter().filter(|s| s.is_missing_from_library()).collect();
+        if missing.is_empty() {
+            continue;
+        }
+        println!("{}: {} entries, {} missing", p.name, songs.len(), missing.len());
+        for m in &missing {
+            println!("  missing: {}", m.file);
+        }
+
+        client.clear().await.expect("clear");
+        client.load_playlist(&p.name).await.expect("load");
+        let queue = client.queue().await.expect("playlistinfo");
+        assert_eq!(
+            queue.len(),
+            songs.len() - missing.len(),
+            "{}: load queued a different number of songs than are playable",
+            p.name
+        );
+        let mut playable = 0;
+        for (i, s) in songs.iter().enumerate() {
+            if let Some(q) = playlist_queue_index(i, &songs) {
+                assert_eq!(
+                    queue[q as usize].file, s.file,
+                    "{}: row {i} maps to queue position {q}, which holds another song",
+                    p.name
+                );
+                playable += 1;
+            }
+        }
+        // How many rows the old `play <row index>` would have got wrong.
+        let wrong_before = songs
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| queue.get(*i).map(|q| &q.file) != Some(&s.file))
+            .filter(|(_, s)| !s.is_missing_from_library())
+            .count();
+        println!("  all {playable} playable rows map correctly; play-by-row-index had {wrong_before} wrong");
+        checked += 1;
+    }
+
+    cleanup_partition(&client, part).await;
+    if checked == 0 {
+        println!("no stored playlist on this server has a missing entry — nothing to check");
+    }
+}
+
+// ===========================================================================
 // MpdClient::add_all — the command_list bulk enqueue
 // ===========================================================================
 

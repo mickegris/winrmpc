@@ -4,10 +4,33 @@ Living document: what's true right now, what's unverified, what to pick up
 next. Durable architecture and domain rules belong in `CLAUDE.md`; this file
 is the part that goes stale, so it lives here rather than there.
 
-Last updated: 2026-09-03. **v0.5.1** — a patch for two defects a manual pass
-of 0.5.0 found, both in code 0.5.0 itself shipped. **v0.5.0 released**:
-password authentication (which had never worked at all), plus three
-deferrals.
+Last updated: 2026-09-11. **v0.5.2** — missing files in stored playlists,
+and playlist rows that played the wrong song. **v0.5.1** — a patch for two
+defects a manual pass of 0.5.0 found. **v0.5.0**: password authentication
+(which had never worked at all), plus three deferrals.
+
+## 0.5.2 — what shipped
+
+Missing files in stored playlists, ported from mikMPD v1.7 (its commit
+`01976d8`). Two parts, and the second is the one that matters:
+
+| | |
+|---|---|
+| **Marking** | An entry whose file is gone shows a warning glyph, the filename and "Missing file · {folder}"; queue/playlist actions are disabled, Remove stays; the header reads `N tracks  \|  M missing` |
+| **Playing a row played the wrong song** | `PlaylistPlayAt` sent `play <playlist index>`, but `load` skips missing entries, so every row below the first one was off by the number of dead entries above it. Now mapped through `playlist_queue_index` |
+
+**Verified live** on 10.0.1.3: `Bra grejs` (417 entries, **6** missing —
+mikMPD saw 5, one more has gone since) loads as exactly the 411 detected
+playable rows, and every one maps to its own file; the old behaviour got
+**409 of 411** wrong. `Spellista 1` (5 entries, 3 missing) likewise.
+
+**Not yet seen on screen** — the row layout (two-line missing row, disabled
+buttons, tooltip, header note) is untested beyond compiling. That's the
+manual check still owed; it shipped in 0.5.2 without it.
+
+**322 offline tests, 21 live.** Note the test server now refuses `partition`
+without a password, so the scratch-partition live tests need
+`WINRMPC_TEST_MPD_PASSWORD`.
 
 ## 0.5.1 — what shipped
 

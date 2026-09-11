@@ -26,6 +26,7 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 ### Stored Playlists
 - Browse, load, rename, and delete MPD stored playlists
 - Reorder and remove tracks within a playlist
+- Entries whose files have since been moved or deleted are marked as missing, with the folder they were in, so they can be found and removed; Play skips them and every other track still plays the song you clicked
 - **Add to playlist** picker reachable from Now Playing, albums, the queue, and search
 
 ### Lyrics
