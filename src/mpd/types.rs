@@ -159,6 +159,24 @@ impl Song {
             .unwrap_or_else(|| self.file.rsplit('/').next().unwrap_or(&self.file))
     }
 
+    /// A stored-playlist entry whose file is no longer in MPD's database —
+    /// moved, renamed or deleted since it was added to the playlist.
+    ///
+    /// `listplaylistinfo` answers such an entry with its `file:` line and
+    /// nothing else, while every song MPD knows carries `Last-Modified` and a
+    /// duration. **Both** being absent is the signal: requiring both keeps a
+    /// song whose duration the decoder couldn't determine from being flagged.
+    /// Streams and CD tracks are never in the database and are excluded —
+    /// they are not missing, just not files.
+    ///
+    /// Ported from mikMPD's `isMissingFromLibrary`, which was checked against
+    /// a real 417-entry playlist with five dead entries on MPD 0.24.0.
+    pub fn is_missing_from_library(&self) -> bool {
+        is_library_uri(&self.file)
+            && self.last_modified.is_none()
+            && self.duration_secs.is_none_or(|d| d == 0.0)
+    }
+
     /// The track artist, falling back to the **album artist** before giving up.
     ///
     /// Plenty of real files carry `AlbumArtist` and no `Artist` — a rip where
@@ -290,6 +308,47 @@ pub fn validate_playlist_name(name: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// Whether a URI names a file in MPD's database rather than a stream or a CD
+/// track.
+///
+/// mikMPD tests for `cdda:` and `http`/`https`/`icy`; this treats **any**
+/// `scheme://` as not-a-library-file. `rtsp://` and `mms://` streams are just
+/// as absent from the database, and flagging one as missing would do more than
+/// mislabel it: `load` *keeps* a stream, so counting it as skipped would throw
+/// off [`playlist_queue_index`] for every row below it.
+fn is_library_uri(file: &str) -> bool {
+    let file = file.trim();
+    !(file.contains("://") || file.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("cdda:")))
+}
+
+/// The queue position a stored-playlist row will occupy once the playlist is
+/// `load`ed, or `None` when the row is a missing file that `load` will skip
+/// (or `index` is out of range).
+///
+/// **A row's playlist index is not its queue position.** MPD silently drops
+/// entries whose files are gone when it loads a playlist, so every row after
+/// one moves up a place. Playing row N used to send `play N`, landing one song
+/// further down for each missing entry above it — in mikMPD's real 417-entry
+/// playlist with five dead files, the wrong song for 410 of 412 playable rows.
+pub fn playlist_queue_index(index: usize, songs: &[Song]) -> Option<u32> {
+    if songs.get(index)?.is_missing_from_library() {
+        return None;
+    }
+    Some(songs[..index].iter().filter(|s| !s.is_missing_from_library()).count() as u32)
+}
+
+/// The entry a stored playlist's header art is drawn from: the first one that
+/// isn't a missing file.
+///
+/// A missing entry has no tags, so its art key is the placeholder
+/// `Unknown Artist`/`Unknown Album` pair — a playlist that happened to start
+/// with one showed no cover and sent the placeholder off to be looked up.
+/// One function because the fetch and the view's lookup must pick the same
+/// song, or the cover loads under one key and is looked for under another.
+pub fn playlist_cover_song(songs: &[Song]) -> Option<&Song> {
+    songs.iter().find(|s| !s.is_missing_from_library())
 }
 
 // ============================================================================
@@ -2919,5 +2978,148 @@ mod tests {
     #[test]
     fn validate_playlist_name_accepts_plain_name() {
         assert_eq!(validate_playlist_name("Road Trip"), Some("Road Trip".to_string()));
+    }
+
+    // --- missing playlist entries ------------------------------------------
+
+    /// Exactly what `listplaylistinfo` returns for a file that is gone: the
+    /// `file:` line and nothing else. Parsed rather than hand-built, so the
+    /// test covers what the parser actually produces from it.
+    fn missing_entry(file: &str) -> Song {
+        let pairs = vec![("file".to_string(), file.to_string())];
+        crate::mpd::commands::parse_songs(&pairs).remove(0)
+    }
+
+    fn library_entry(file: &str) -> Song {
+        let pairs: Vec<(String, String)> = [
+            ("file", file),
+            ("Last-Modified", "2021-03-04T10:11:12Z"),
+            ("Title", "T"),
+            ("duration", "215.000"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        crate::mpd::commands::parse_songs(&pairs).remove(0)
+    }
+
+    #[test]
+    fn a_file_line_with_nothing_else_is_missing() {
+        assert!(missing_entry("Peter Gabriel/Us/04 - Peter Gabriel - Steam.flac").is_missing_from_library());
+    }
+
+    #[test]
+    fn a_library_song_is_not_missing() {
+        assert!(!library_entry("Foreigner - 4 (1981)/02 - Juke Box Hero.flac").is_missing_from_library());
+    }
+
+    /// Streams and CD tracks are never in the database — not missing, just not
+    /// files. Includes the schemes mikMPD doesn't list, since `load` keeps
+    /// those too.
+    #[test]
+    fn streams_and_cd_tracks_are_never_missing() {
+        for uri in [
+            "http://radio.example/stream.mp3",
+            "HTTPS://radio.example/stream",
+            "icy://radio.example/",
+            "rtsp://cam.example/audio",
+            "cdda:///3",
+            "CDDA:///dev/sr0/1",
+        ] {
+            assert!(!missing_entry(uri).is_missing_from_library(), "{uri}");
+        }
+    }
+
+    /// Requiring both signals keeps a song the library does have from being
+    /// flagged when only one of them is absent.
+    #[test]
+    fn one_absent_signal_alone_does_not_make_a_song_missing() {
+        let mut no_date = library_entry("a/b.flac");
+        no_date.last_modified = None;
+        assert!(!no_date.is_missing_from_library());
+
+        let mut no_duration = library_entry("a/b.flac");
+        no_duration.duration_secs = None;
+        assert!(!no_duration.is_missing_from_library());
+    }
+
+    #[test]
+    fn a_zero_duration_counts_as_absent() {
+        let mut s = missing_entry("a/b.flac");
+        s.duration_secs = Some(0.0);
+        assert!(s.is_missing_from_library());
+    }
+
+    fn playlist(count: usize, missing_at: &[usize]) -> Vec<Song> {
+        (0..count)
+            .map(|i| {
+                let mut s = if missing_at.contains(&i) {
+                    missing_entry(&format!("gone/{i}.flac"))
+                } else {
+                    library_entry(&format!("ok/{i}.flac"))
+                };
+                s.pos = Some(i as u32);
+                s
+            })
+            .collect()
+    }
+
+    #[test]
+    fn with_nothing_missing_every_row_keeps_its_index() {
+        let songs = playlist(10, &[]);
+        for i in 0..10 {
+            assert_eq!(playlist_queue_index(i, &songs), Some(i as u32));
+        }
+    }
+
+    /// `load` drops the missing entry, so everything after it moves up a place.
+    #[test]
+    fn rows_after_a_missing_file_move_up() {
+        let songs = playlist(10, &[2]);
+        assert_eq!(playlist_queue_index(1, &songs), Some(1));
+        assert_eq!(playlist_queue_index(3, &songs), Some(2));
+        assert_eq!(playlist_queue_index(9, &songs), Some(8));
+    }
+
+    #[test]
+    fn a_missing_row_has_no_queue_position() {
+        let songs = playlist(10, &[2]);
+        assert_eq!(playlist_queue_index(2, &songs), None);
+    }
+
+    #[test]
+    fn an_out_of_range_row_has_no_queue_position() {
+        let songs = playlist(3, &[]);
+        assert_eq!(playlist_queue_index(3, &songs), None);
+        assert_eq!(playlist_queue_index(0, &[]), None);
+    }
+
+    /// A stream is kept by `load`, so it must not shift the rows after it.
+    #[test]
+    fn a_stream_entry_keeps_its_queue_slot() {
+        let mut songs = playlist(3, &[]);
+        songs[0] = missing_entry("http://radio.example/live");
+        assert_eq!(playlist_queue_index(2, &songs), Some(2));
+    }
+
+    /// mikMPD's real playlist that exposed this: 417 entries, dead files at
+    /// these positions, loading as 412. Row 300 used to play queue position
+    /// 300 — five songs too far.
+    #[test]
+    fn the_real_playlist_maps_like_mpd_loads_it() {
+        let songs = playlist(417, &[2, 104, 258, 261, 294]);
+        assert_eq!(songs.iter().filter(|s| !s.is_missing_from_library()).count(), 412);
+        assert_eq!(playlist_queue_index(1, &songs), Some(1));
+        assert_eq!(playlist_queue_index(3, &songs), Some(2));
+        assert_eq!(playlist_queue_index(294, &songs), None);
+        assert_eq!(playlist_queue_index(300, &songs), Some(295));
+        assert_eq!(playlist_queue_index(416, &songs), Some(411));
+    }
+
+    #[test]
+    fn the_playlist_cover_skips_leading_missing_entries() {
+        let songs = playlist(4, &[0, 1]);
+        assert_eq!(playlist_cover_song(&songs).map(|s| s.file.as_str()), Some("ok/2.flac"));
+        assert!(playlist_cover_song(&playlist(2, &[0, 1])).is_none());
     }
 }

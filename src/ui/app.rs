@@ -1551,7 +1551,7 @@ impl App {
                 )
             }
             Message::PlaylistSongsLoaded(name, songs) => {
-                let art = songs.first().map(|f| (f.file.clone(), f.art_key()));
+                let art = playlist_cover_song(&songs).map(|f| (f.file.clone(), f.art_key()));
                 self.playlist_songs.insert(name, songs);
                 match art {
                     Some((file, key)) => self.fetch_art(file, key),
@@ -1586,13 +1586,24 @@ impl App {
                 )
             }
             Message::PlaylistPlayAt(name, pos) => {
+                // `pos` is the row's *playlist* index, and `load` skips missing
+                // files — so below the first one, `play pos` is the wrong song.
+                // A missing row has no queue position; its button is disabled,
+                // so `None` here is a stale click, not something to report.
+                let Some(queue_pos) = self
+                    .playlist_songs
+                    .get(&name)
+                    .and_then(|songs| playlist_queue_index(pos as usize, songs))
+                else {
+                    return Task::none();
+                };
                 self.playing_from_playlist = Some(name.clone());
                 let client = self.client.clone();
                 Task::perform(
                     async move {
                         client.clear().await.ok();
                         client.load_playlist(&name).await.ok();
-                        client.play_pos(pos).await.ok();
+                        client.play_pos(queue_pos).await.ok();
                     },
                     |_| Message::Tick,
                 )
@@ -3167,8 +3178,7 @@ impl App {
                     .get(name)
                     .map(|s| s.as_slice())
                     .unwrap_or(&[]);
-                let art_key = songs
-                    .first()
+                let art_key = playlist_cover_song(songs)
                     .map(|s| s.art_key())
                     .unwrap_or_default();
                 let art = self.art_handles.get(&art_key);
