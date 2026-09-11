@@ -24,9 +24,8 @@ mikMPD saw 5, one more has gone since) loads as exactly the 411 detected
 playable rows, and every one maps to its own file; the old behaviour got
 **409 of 411** wrong. `Spellista 1` (5 entries, 3 missing) likewise.
 
-**Not yet seen on screen** — the row layout (two-line missing row, disabled
-buttons, tooltip, header note) is untested beyond compiling. That's the
-manual check still owed; it shipped in 0.5.2 without it.
+**Checked on screen** by the user before release — the row layout (two-line
+missing row, disabled buttons, tooltip, header note).
 
 **322 offline tests, 21 live.** Note the test server now refuses `partition`
 without a password, so the scratch-partition live tests need
