@@ -116,7 +116,7 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 <a href="assets/outputs.png">
   <img src="assets/outputs.png" width="200" />
 </a>
-<a href="assets/radio">
+<a href="assets/radio.png">
   <img src="assets/radio.png" width="200" />
 </a>
 <a href="assets/snapcast.png">
