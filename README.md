@@ -101,26 +101,26 @@ The name stays `winrmpc` regardless of platform — consider the `win` a histori
 
 ## Screenshots
 
-<a href="assets/nowplaying.jpg">
-  <img src="assets/nowplaying.jpg" width="200" />
+<a href="assets/nowplaying.png">
+  <img src="assets/nowplaying.png" width="200" />
 </a>
-<a href="assets/album.jpg">
-  <img src="assets/album.jpg" width="200" />
+<a href="assets/album.png">
+  <img src="assets/album.png" width="200" />
 </a>
-<a href="assets/artist.jpg">
-  <img src="assets/artist.jpg" width="200" />
+<a href="assets/queue.png">
+  <img src="assets/queue.png" width="200" />
 </a>
-<a href="assets/queue.jpg">
-  <img src="assets/queue.jpg" width="200" />
+<a href="assets/partitions.png">
+  <img src="assets/partitions.png" width="200" />
 </a>
-<a href="assets/search.jpg">
-  <img src="assets/search.jpg" width="200" />
+<a href="assets/outputs.png">
+  <img src="assets/outputs.png" width="200" />
 </a>
-<a href="assets/partitions.jpg">
-  <img src="assets/partitions.jpg" width="200" />
+<a href="assets/radio">
+  <img src="assets/radio.png" width="200" />
 </a>
-<a href="assets/outputs.jpg">
-  <img src="assets/outputs.jpg" width="200" />
+<a href="assets/snapcast.png">
+  <img src="assets/snapcast.png" width="200" />
 </a>
 
 ## Building from Source
